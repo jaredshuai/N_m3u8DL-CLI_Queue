@@ -1,0 +1,22 @@
+{
+  "name": "m3u8-queue-downloader",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "svelte": "^5",
+    "@sveltejs/vite-plugin-svelte": "^5",
+    "vite": "^6",
+    "svelte-dnd-action": "^0.9"
+  }
+}
