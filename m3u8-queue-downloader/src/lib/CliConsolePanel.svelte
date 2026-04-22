@@ -158,19 +158,23 @@
       <strong>{displayTitle}</strong>
       <span>{task?.url}</span>
     </div>
-    <div class="cli-console-meta">
-      <span class="meta-badge {statusKey}">{statusLabel}</span>
-      {#if task?.status === 'downloading'}
-        <span class="meta-pill">{progressPct}%</span>
-        {#if task?.speed}
-          <span class="meta-pill">{task.speed}</span>
+    <div class="cli-console-controls">
+      <div class="cli-console-meta">
+        <span class="meta-badge {statusKey}">{statusLabel}</span>
+        {#if task?.status === 'downloading'}
+          <span class="meta-pill">{progressPct}%</span>
+          {#if task?.speed}
+            <span class="meta-pill">{task.speed}</span>
+          {/if}
+          {#if task?.threads}
+            <span class="meta-pill">线程 {task.threads}</span>
+          {/if}
         {/if}
-        {#if task?.threads}
-          <span class="meta-pill">线程 {task.threads}</span>
-        {/if}
-      {/if}
-      <button class="meta-btn" onclick={scrollToBottom}>回到底部</button>
-      <button class="meta-btn close" onclick={onClose}>关闭</button>
+      </div>
+      <div class="cli-console-actions-row">
+        <button class="meta-btn" onclick={scrollToBottom}>回到底部</button>
+        <button class="meta-btn close" onclick={onClose}>关闭</button>
+      </div>
     </div>
   </div>
 
@@ -232,6 +236,7 @@
 
   .cli-console-title {
     min-width: 0;
+    flex: 1;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -253,12 +258,30 @@
     text-overflow: ellipsis;
   }
 
+  .cli-console-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+
   .cli-console-meta {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
     justify-content: flex-end;
+    max-width: 100%;
+  }
+
+  .cli-console-actions-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: nowrap;
   }
 
   .meta-badge,
@@ -300,6 +323,22 @@
 
   .meta-btn.close {
     color: var(--color-status-fail);
+  }
+
+  @media (max-width: 900px) {
+    .cli-console-header {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .cli-console-controls {
+      align-items: stretch;
+    }
+
+    .cli-console-meta,
+    .cli-console-actions-row {
+      justify-content: flex-start;
+    }
   }
 
   .cli-console-subbar,
