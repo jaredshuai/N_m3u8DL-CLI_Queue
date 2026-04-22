@@ -333,6 +333,71 @@ async fn wait_for_confirmed_stop(stop_state: &Arc<AtomicU8>) -> bool {
     }
 }
 
+struct TerminalBuffer {
+    committed_lines: Vec<String>,
+    active_line: String,
+    pending_bytes: Vec<u8>,
+}
+
+impl TerminalBuffer {
+    fn new() -> Self {
+        Self {
+            committed_lines: Vec::new(),
+            active_line: String::new(),
+            pending_bytes: Vec::new(),
+        }
+    }
+
+    fn feed(&mut self, data: &[u8]) {
+        self.pending_bytes.extend_from_slice(data);
+
+        let text = decode_cli_bytes_lossy(&self.pending_bytes);
+        self.pending_bytes.clear();
+
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '\r' => {
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                        self.commit_active_line();
+                    } else {
+                        self.active_line.clear();
+                    }
+                }
+                '\n' => {
+                    self.commit_active_line();
+                }
+                _ => {
+                    self.active_line.push(ch);
+                }
+            }
+        }
+    }
+
+    fn commit_active_line(&mut self) {
+        let line = self.active_line.trim().to_string();
+        if !line.is_empty() {
+            self.committed_lines.push(line);
+        }
+        self.active_line.clear();
+    }
+
+    fn take_committed(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.committed_lines)
+    }
+
+    fn active_line(&self) -> &str {
+        &self.active_line
+    }
+
+    fn finish(&mut self) {
+        if !self.active_line.trim().is_empty() {
+            self.commit_active_line();
+        }
+    }
+}
+
 async fn read_cli_stream<R>(
     mut stream: R,
     task_id: String,
@@ -343,30 +408,33 @@ where
     R: AsyncRead + Unpin,
 {
     let mut buffer = [0_u8; 4096];
-    let mut pending = Vec::new();
+    let mut term = TerminalBuffer::new();
 
     loop {
         match stream.read(&mut buffer).await {
             Ok(0) => break,
             Ok(n) => {
-                pending.extend_from_slice(&buffer[..n]);
-                while let Some((segment, rest)) = take_cli_segment(&pending) {
-                    pending = rest;
-                    emit_cli_segment(&segment, &task_id, &app_handle, log_prefix);
+                term.feed(&buffer[..n]);
+
+                for line in term.take_committed() {
+                    emit_committed_line(&line, &task_id, &app_handle, log_prefix);
                 }
+
+                let active = term.active_line().trim().to_string();
+                emit_active_line(&active, &task_id, &app_handle, log_prefix);
             }
             Err(_) => break,
         }
     }
 
-    if !pending.is_empty() {
-        let trailing = decode_cli_bytes_lossy(&pending).trim().to_string();
-        if !trailing.is_empty() {
-            emit_cli_segment(&trailing, &task_id, &app_handle, log_prefix);
-        }
+    term.finish();
+    for line in term.take_committed() {
+        emit_committed_line(&line, &task_id, &app_handle, log_prefix);
     }
+    emit_active_line("", &task_id, &app_handle, log_prefix);
 }
 
+#[cfg(test)]
 fn take_cli_segment(input: &[u8]) -> Option<(String, Vec<u8>)> {
     let split_at = input.iter().position(|byte| *byte == b'\r' || *byte == b'\n')?;
     let mut rest_start = split_at + 1;
@@ -379,7 +447,7 @@ fn take_cli_segment(input: &[u8]) -> Option<(String, Vec<u8>)> {
     Some((segment, rest))
 }
 
-fn emit_cli_segment(
+fn emit_committed_line(
     segment: &str,
     task_id: &str,
     app_handle: &tauri::AppHandle,
@@ -416,6 +484,49 @@ fn emit_cli_segment(
         "line": line,
     });
     let _ = app_handle.emit("task-log", log_payload);
+
+    let terminal_payload = serde_json::json!({
+        "id": task_id,
+        "line": line,
+    });
+    let _ = app_handle.emit("task-terminal-committed-line", terminal_payload);
+}
+
+fn emit_active_line(
+    line: &str,
+    task_id: &str,
+    app_handle: &tauri::AppHandle,
+    log_prefix: Option<&str>,
+) {
+    if !line.is_empty() && log_prefix.is_none() {
+        let progress = parse_progress(line);
+        let speed = parse_speed(line);
+        let threads = parse_threads(line);
+
+        if progress.is_some() || speed.is_some() || threads.is_some() {
+            let payload = serde_json::json!({
+                "id": task_id,
+                "progress": progress,
+                "speed": speed,
+                "threads": threads,
+            });
+            let _ = app_handle.emit("task-progress", payload);
+        }
+    }
+
+    let prefixed = if line.is_empty() {
+        String::new()
+    } else if let Some(prefix) = log_prefix {
+        format!("{prefix}{line}")
+    } else {
+        line.to_string()
+    };
+
+    let payload = serde_json::json!({
+        "id": task_id,
+        "activeLine": prefixed,
+    });
+    let _ = app_handle.emit("task-terminal-active-line", payload);
 }
 
 fn decode_cli_bytes_lossy(bytes: &[u8]) -> String {
@@ -667,7 +778,7 @@ async fn kill_process(pid: u32) -> Result<KillProcessResult, String> {
 mod tests {
     use super::{
         decode_cli_bytes_lossy, find_cli_in_ancestors, parse_progress, parse_speed,
-        parse_threads, take_cli_segment, TaskRunner,
+        parse_threads, take_cli_segment, TaskRunner, TerminalBuffer,
     };
     use crate::test_support::spawn_sleeping_child;
     use std::fs;
@@ -792,5 +903,49 @@ mod tests {
         assert_eq!(missed, None);
 
         fs::remove_dir_all(&root).expect("cleanup temp dirs");
+    }
+
+    #[test]
+    fn terminal_buffer_cr_overwrites_active_line() {
+        let mut buf = TerminalBuffer::new();
+        buf.feed(b"Progress: 1/10\rProgress: 2/10\rProgress: 3/10");
+        assert_eq!(buf.active_line(), "Progress: 3/10");
+        assert!(buf.take_committed().is_empty());
+    }
+
+    #[test]
+    fn terminal_buffer_lf_commits_to_history() {
+        let mut buf = TerminalBuffer::new();
+        buf.feed(b"line one\nline two\n");
+        let committed = buf.take_committed();
+        assert_eq!(committed, vec!["line one", "line two"]);
+        assert_eq!(buf.active_line(), "");
+    }
+
+    #[test]
+    fn terminal_buffer_mixed_cr_and_lf() {
+        let mut buf = TerminalBuffer::new();
+        buf.feed(b"Starting download\nProgress: 1/10\rProgress: 2/10\rProgress: 3/10\nDone\n");
+        let committed = buf.take_committed();
+        assert_eq!(committed, vec!["Starting download", "Progress: 3/10", "Done"]);
+        assert_eq!(buf.active_line(), "");
+    }
+
+    #[test]
+    fn terminal_buffer_crlf_treated_as_newline() {
+        let mut buf = TerminalBuffer::new();
+        buf.feed(b"hello\r\nworld\r\n");
+        let committed = buf.take_committed();
+        assert_eq!(committed, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn terminal_buffer_finish_commits_trailing_active_line() {
+        let mut buf = TerminalBuffer::new();
+        buf.feed(b"trailing text");
+        assert_eq!(buf.active_line(), "trailing text");
+        buf.finish();
+        let committed = buf.take_committed();
+        assert_eq!(committed, vec!["trailing text"]);
     }
 }

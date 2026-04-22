@@ -12,8 +12,8 @@ mod test_support;
 use cli_output_store::CliOutputStore;
 use history_store::HistoryStore;
 use models::{
-    AddTaskPayload, AppSettings, CliOutputPage, CloseButtonBehavior, HistoryPage, HistoryStatus,
-    QueueState, Task,
+    AddTaskPayload, AppSettings, CliOutputPage, CliTerminalState, CloseButtonBehavior, HistoryPage,
+    HistoryStatus, QueueState, Task,
 };
 use queue_manager::QueueManager;
 use settings_store::SettingsStore;
@@ -95,6 +95,26 @@ fn get_cli_output_page(
     limit: usize,
 ) -> Result<CliOutputPage, String> {
     state.cli_output_store.page(&task_id, offset, limit)
+}
+
+#[tauri::command]
+fn get_cli_terminal_state(
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+    limit: usize,
+) -> Result<CliTerminalState, String> {
+    let page = state.cli_output_store.tail(&task_id, limit)?;
+    let active_line = state
+        .cli_output_store
+        .get_active_line(&task_id)
+        .unwrap_or_default();
+    Ok(CliTerminalState {
+        committed_lines: page.lines,
+        active_line,
+        offset: page.offset,
+        total: page.total,
+        has_more_before: page.has_more_before,
+    })
 }
 
 #[tauri::command]
@@ -730,6 +750,34 @@ pub fn run() {
                 });
             });
 
+            let qm_terminal = Arc::clone(&queue_manager);
+            app.listen("task-terminal-committed-line", move |event: tauri::Event| {
+                let qm = Arc::clone(&qm_terminal);
+                let payload = event.payload().to_string();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&payload) {
+                        let task_id = data["id"].as_str().unwrap_or("").to_string();
+                        let line = data["line"].as_str().unwrap_or("").to_string();
+                        qm.append_log(&task_id, line).await;
+                    }
+                });
+            });
+
+            let cos_active = Arc::clone(&cli_output_store);
+            app.listen("task-terminal-active-line", move |event: tauri::Event| {
+                let cos = Arc::clone(&cos_active);
+                let payload = event.payload().to_string();
+                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&payload) {
+                    let task_id = data["id"].as_str().unwrap_or("").to_string();
+                    let active_line = data["activeLine"].as_str().unwrap_or("").to_string();
+                    if active_line.is_empty() {
+                        cos.clear_active_line(&task_id);
+                    } else {
+                        cos.set_active_line(&task_id, active_line);
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -739,6 +787,7 @@ pub fn run() {
             get_history_page,
             get_cli_output_tail,
             get_cli_output_page,
+            get_cli_terminal_state,
             add_task,
             remove_task,
             remove_history_task,

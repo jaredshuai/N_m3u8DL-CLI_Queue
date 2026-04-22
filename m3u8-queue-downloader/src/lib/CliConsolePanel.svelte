@@ -3,7 +3,6 @@
   import { tick } from 'svelte';
   import {
     CLI_OUTPUT_PAGE_SIZE,
-    mergeCliOutputLines,
     prependCliOutputPage,
   } from './cli-output.js';
   import { displayProgressPercent } from './progress.js';
@@ -11,7 +10,8 @@
   let { task, onClose } = $props();
 
   let cliPanel = $state(null);
-  let cliOutputLines = $state([]);
+  let committedLines = $state([]);
+  let activeLine = $state('');
   let cliOutputOffset = $state(0);
   let cliOutputTotal = $state(0);
   let cliOutputHasMoreBefore = $state(false);
@@ -39,27 +39,52 @@
   );
 
   let progressPct = $derived(displayProgressPercent(task?.progress));
-  let cliTailLines = $derived(task?.logLines ?? []);
-  let cliLines = $derived(mergeCliOutputLines(cliOutputLines, cliTailLines));
 
-  async function loadCliOutputTail(taskId) {
+  // Only use the new terminal stream model; do not merge any legacy logLines.
+  let liveCommittedLines = $derived(task?.terminalCommittedLines ?? []);
+  let mergedCommittedLines = $derived(mergeCommitted(committedLines, liveCommittedLines));
+
+  let liveActiveLine = $derived(task?.terminalActiveLine ?? '');
+  let displayActiveLine = $derived(liveActiveLine || activeLine);
+
+  let totalLineCount = $derived(mergedCommittedLines.length + (displayActiveLine ? 1 : 0));
+
+  function mergeCommitted(persisted, live) {
+    if (persisted.length === 0) return live;
+    if (live.length === 0) return persisted;
+
+    const maxOverlap = Math.min(persisted.length, live.length);
+    for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+      const pSuffix = persisted.slice(persisted.length - overlap);
+      const lPrefix = live.slice(0, overlap);
+      if (pSuffix.length === lPrefix.length && pSuffix.every((v, i) => v === lPrefix[i])) {
+        return [...persisted, ...live.slice(overlap)];
+      }
+    }
+
+    return [...persisted, ...live];
+  }
+
+  async function loadTerminalState(taskId) {
     cliOutputLoading = true;
     cliOutputError = '';
     try {
-      const page = await invoke('get_cli_output_tail', {
+      const state = await invoke('get_cli_terminal_state', {
         taskId,
         limit: CLI_OUTPUT_PAGE_SIZE,
       });
-      cliOutputLines = page.lines ?? [];
-      cliOutputOffset = page.offset ?? 0;
-      cliOutputTotal = page.total ?? cliOutputLines.length;
-      cliOutputHasMoreBefore = page.hasMoreBefore ?? false;
+      committedLines = state.committedLines ?? [];
+      activeLine = state.activeLine ?? '';
+      cliOutputOffset = state.offset ?? 0;
+      cliOutputTotal = state.total ?? committedLines.length;
+      cliOutputHasMoreBefore = state.hasMoreBefore ?? false;
       loadedTaskId = taskId;
     } catch (err) {
       cliOutputError = String(err);
-      cliOutputLines = [];
+      committedLines = [];
+      activeLine = '';
       cliOutputOffset = 0;
-      cliOutputTotal = cliTailLines.length;
+      cliOutputTotal = 0;
       cliOutputHasMoreBefore = false;
     } finally {
       cliOutputLoading = false;
@@ -80,7 +105,7 @@
         offset: nextOffset,
         limit: nextLimit,
       });
-      cliOutputLines = prependCliOutputPage(cliOutputLines, page);
+      committedLines = prependCliOutputPage(committedLines, page);
       cliOutputOffset = page.offset ?? nextOffset;
       cliOutputTotal = page.total ?? cliOutputTotal;
       cliOutputHasMoreBefore = page.hasMoreBefore ?? false;
@@ -105,17 +130,18 @@
 
   $effect(() => {
     if (!task?.id || task.id === loadedTaskId) return;
-    cliOutputLines = [];
+    committedLines = [];
+    activeLine = '';
     cliOutputOffset = 0;
     cliOutputTotal = 0;
     cliOutputHasMoreBefore = false;
     cliOutputError = '';
     autoStickToBottom = true;
-    loadCliOutputTail(task.id);
+    loadTerminalState(task.id);
   });
 
   $effect(() => {
-    const lineCount = cliLines.length;
+    const _trigger = totalLineCount;
     if (!cliPanel || !autoStickToBottom) return;
 
     tick().then(() => {
@@ -150,7 +176,7 @@
 
   <div class="cli-console-subbar">
     <span>当前只显示一个 CLI 终端面板</span>
-    <span>{cliOutputTotal || cliLines.length} 行</span>
+    <span>{cliOutputTotal || mergedCommittedLines.length} 行</span>
   </div>
 
   {#if cliOutputHasMoreBefore}
@@ -165,10 +191,13 @@
     {#if cliOutputError}
       <div class="cli-line cli-error">CLI 实况加载失败：{cliOutputError}</div>
     {/if}
-    {#if cliLines.length > 0}
-      {#each cliLines as line}
+    {#if mergedCommittedLines.length > 0 || displayActiveLine}
+      {#each mergedCommittedLines as line}
         <div class="cli-line">{line}</div>
       {/each}
+      {#if displayActiveLine}
+        <div class="cli-line cli-active-line">{displayActiveLine}</div>
+      {/if}
     {:else if cliOutputLoading}
       <div class="cli-line cli-empty">CLI 实况加载中...</div>
     {:else}
@@ -316,6 +345,15 @@
   .cli-line::before {
     content: '› ';
     color: rgba(250, 204, 21, 0.55);
+  }
+
+  .cli-active-line {
+    color: #facc15;
+  }
+
+  .cli-active-line::before {
+    content: '▸ ';
+    color: rgba(250, 204, 21, 0.85);
   }
 
   .cli-empty {

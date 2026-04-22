@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildTerminalView,
   closeCliConsole,
   createCliConsoleState,
   findCliConsoleTask,
@@ -37,4 +38,30 @@ test('findCliConsoleTask resolves a task from active and historical lists', () =
   });
 
   assert.deepEqual(task, { id: 'task-2' });
+});
+
+test('buildTerminalView separates committed lines from active line', () => {
+  const view = buildTerminalView({
+    terminalCommittedLines: ['Starting download', 'Connecting...'],
+    terminalActiveLine: 'Progress: 50/100 (50.00%)',
+  });
+
+  assert.deepEqual(view.committedLines, ['Starting download', 'Connecting...']);
+  assert.equal(view.activeLine, 'Progress: 50/100 (50.00%)');
+});
+
+test('buildTerminalView returns empty state for null task', () => {
+  const view = buildTerminalView(null);
+
+  assert.deepEqual(view.committedLines, []);
+  assert.equal(view.activeLine, '');
+});
+
+test('buildTerminalView handles task with no active line', () => {
+  const view = buildTerminalView({
+    terminalCommittedLines: ['line-1', 'line-2'],
+  });
+
+  assert.deepEqual(view.committedLines, ['line-1', 'line-2']);
+  assert.equal(view.activeLine, '');
 });

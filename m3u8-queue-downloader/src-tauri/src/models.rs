@@ -149,3 +149,13 @@ pub struct CliOutputPage {
     pub has_more_before: bool,
     pub has_more_after: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliTerminalState {
+    pub committed_lines: Vec<String>,
+    pub active_line: String,
+    pub offset: usize,
+    pub total: usize,
+    pub has_more_before: bool,
+}

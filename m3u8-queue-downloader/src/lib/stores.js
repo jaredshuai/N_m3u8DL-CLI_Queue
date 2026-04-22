@@ -7,7 +7,6 @@ import {
   prependHistoryTask,
   removeHistoryTask,
 } from './history.js';
-import { appendLogLine } from './logs.js';
 import { buildProgressPatch, normalizeTaskProgress } from './progress.js';
 import {
   createSessionProgressState,
@@ -196,10 +195,24 @@ export async function setupListeners() {
   });
 
   const u3 = await listen('task-log', (event) => {
+    // Legacy event kept for compatibility with backend/storage, but the
+    // terminal panel no longer renders from task.logLines.
+  });
+
+  const u3b = await listen('task-terminal-committed-line', (event) => {
     const d = event.payload;
     tasks.update((currentTasks) => currentTasks.map(t =>
       t.id === d.id
-        ? { ...t, logLines: appendLogLine(t.logLines, d.line) }
+        ? { ...t, terminalCommittedLines: [...(t.terminalCommittedLines ?? []), d.line] }
+        : t
+    ));
+  });
+
+  const u3c = await listen('task-terminal-active-line', (event) => {
+    const d = event.payload;
+    tasks.update((currentTasks) => currentTasks.map(t =>
+      t.id === d.id
+        ? { ...t, terminalActiveLine: d.activeLine ?? '' }
         : t
     ));
   });
@@ -234,7 +247,7 @@ export async function setupListeners() {
     });
   });
 
-  unlisteners = [u1, u2, u3, u4, u5, u6, u7];
+  unlisteners = [u1, u2, u3, u3b, u3c, u4, u5, u6, u7];
 }
 
 export function teardownListeners() {

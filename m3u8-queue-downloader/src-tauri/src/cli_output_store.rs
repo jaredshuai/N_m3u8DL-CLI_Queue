@@ -1,4 +1,5 @@
 use crate::models::CliOutputPage;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -9,6 +10,7 @@ const DEFAULT_PAGE_LIMIT: usize = 200;
 pub struct CliOutputStore {
     base_path: PathBuf,
     append_lock: Arc<Mutex<()>>,
+    active_lines: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl CliOutputStore {
@@ -16,6 +18,7 @@ impl CliOutputStore {
         Self {
             base_path,
             append_lock: Arc::new(Mutex::new(())),
+            active_lines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -81,6 +84,22 @@ impl CliOutputStore {
         })
     }
 
+    pub fn set_active_line(&self, task_id: &str, line: String) {
+        if let Ok(mut map) = self.active_lines.lock() {
+            map.insert(task_id.to_string(), line);
+        }
+    }
+
+    pub fn clear_active_line(&self, task_id: &str) {
+        if let Ok(mut map) = self.active_lines.lock() {
+            map.remove(task_id);
+        }
+    }
+
+    pub fn get_active_line(&self, task_id: &str) -> Option<String> {
+        self.active_lines.lock().ok()?.get(task_id).cloned()
+    }
+
     fn task_path(&self, task_id: &str) -> PathBuf {
         let safe_id: String = task_id
             .chars()
@@ -136,6 +155,27 @@ mod tests {
         assert!(!page.has_more_after);
 
         fs::remove_dir_all(path).expect("cleanup output dir");
+    }
+
+    #[test]
+    fn active_line_is_stored_in_memory_only() {
+        let path = temp_output_path();
+        let store = CliOutputStore::new(path.clone());
+
+        store.set_active_line("task-1", "Progress: 50%".to_string());
+        assert_eq!(
+            store.get_active_line("task-1").as_deref(),
+            Some("Progress: 50%")
+        );
+
+        // Active line is NOT in the persisted file
+        let page = store.tail("task-1", 100).expect("tail page");
+        assert_eq!(page.total, 0);
+
+        store.clear_active_line("task-1");
+        assert_eq!(store.get_active_line("task-1"), None);
+
+        let _ = fs::remove_dir_all(path);
     }
 
     #[test]
