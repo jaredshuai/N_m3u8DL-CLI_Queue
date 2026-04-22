@@ -7,7 +7,7 @@
     prependCliOutputPage,
   } from './cli-output.js';
   import { displayProgressPercent } from './progress.js';
-  import { trackSessionTask } from './stores.js';
+  import { clearHistoryTask, trackSessionTask } from './stores.js';
 
   let { task, draggable = false, historical = false } = $props();
 
@@ -64,6 +64,15 @@
       trackSessionTask(retriedTask.id);
     } catch (err) {
       console.error('Failed to retry task:', err);
+    }
+  }
+
+  async function handleClearHistory() {
+    const status = task.status === 'failed' ? 'failed' : 'completed';
+    try {
+      await clearHistoryTask(status, task.id);
+    } catch (err) {
+      console.error('Failed to clear history task:', err);
     }
   }
 
@@ -186,9 +195,15 @@
           <button class="action-btn danger" onclick={handleRemove} title="删除">✕</button>
         {:else if statusKey === 'fail'}
           <button class="action-btn accent" onclick={handleRetry} title="重试">🔄</button>
-          {#if !historical}
-            <button class="action-btn danger" onclick={handleRemove} title="删除">✕</button>
-          {/if}
+          <button
+            class="action-btn danger"
+            onclick={historical ? handleClearHistory : handleRemove}
+            title={historical ? '清除记录' : '删除'}
+          >
+            ✕
+          </button>
+        {:else if historical}
+          <button class="action-btn danger" onclick={handleClearHistory} title="清除记录">✕</button>
         {/if}
       </div>
     </div>

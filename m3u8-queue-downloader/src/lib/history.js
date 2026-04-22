@@ -31,3 +31,18 @@ export function prependHistoryTask(currentState, task) {
     hasMore: current.hasMore || (!alreadyVisible && current.tasks.length >= visibleCount),
   };
 }
+
+export function removeHistoryTask(currentState, taskId) {
+  const current = currentState ?? createHistoryState();
+  const existed = current.tasks.some((task) => task.id === taskId);
+
+  if (!existed) {
+    return current;
+  }
+
+  return {
+    ...current,
+    tasks: current.tasks.filter((task) => task.id !== taskId),
+    nextOffset: Math.max(0, current.nextOffset - 1),
+  };
+}

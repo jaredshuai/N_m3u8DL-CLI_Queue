@@ -5,6 +5,7 @@ import {
   DEFAULT_HISTORY_PAGE_SIZE,
   mergeHistoryPage,
   prependHistoryTask,
+  removeHistoryTask,
 } from './history.js';
 import { appendLogLine } from './logs.js';
 import { buildProgressPatch, normalizeTaskProgress } from './progress.js';
@@ -92,6 +93,17 @@ export async function loadInitialHistory() {
 
 export function trackSessionTask(taskId) {
   sessionProgress.update((state) => trackSessionTaskState(state, taskId));
+}
+
+export async function clearHistoryTask(status, taskId) {
+  try {
+    await invoke('remove_history_task', { status, taskId });
+    const store = historyStore(status);
+    store.update((state) => removeHistoryTask(state, taskId));
+  } catch (err) {
+    console.error(`Failed to remove ${status} history task:`, err);
+    throw err;
+  }
 }
 
 let shutdownTimer = null;

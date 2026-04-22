@@ -5,6 +5,7 @@ import {
   DEFAULT_HISTORY_PAGE_SIZE,
   mergeHistoryPage,
   prependHistoryTask,
+  removeHistoryTask,
 } from './history.js';
 
 test('mergeHistoryPage replaces tasks on reset', () => {
@@ -79,5 +80,17 @@ test('prependHistoryTask updates nextOffset until the visible window is full', (
   state = prependHistoryTask(state, { id: 'task-21' });
   assert.equal(state.tasks.length, 20);
   assert.equal(state.nextOffset, 20);
+  assert.equal(state.hasMore, true);
+});
+
+test('removeHistoryTask removes a visible task and decrements nextOffset', () => {
+  const state = removeHistoryTask({
+    tasks: [{ id: 'c' }, { id: 'b' }, { id: 'a' }],
+    hasMore: true,
+    nextOffset: 3,
+  }, 'b');
+
+  assert.deepEqual(state.tasks.map((task) => task.id), ['c', 'a']);
+  assert.equal(state.nextOffset, 2);
   assert.equal(state.hasMore, true);
 });

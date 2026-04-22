@@ -137,6 +137,37 @@ impl HistoryStore {
         Ok(None)
     }
 
+    pub fn remove_task(&self, status: HistoryStatus, task_id: &str) -> Result<bool, String> {
+        let _guard = self.append_lock.lock().map_err(|e| e.to_string())?;
+        let mut index = self.load_reconciled_index(status)?;
+        let status_dir = self.status_dir(status);
+
+        for chunk in &index.chunks {
+            let chunk_path = status_dir.join(&chunk.file);
+            let mut tasks = load_chunk(&chunk_path)?;
+            let original_len = tasks.len();
+            tasks.retain(|task| task.id != task_id);
+
+            if tasks.len() == original_len {
+                continue;
+            }
+
+            if tasks.is_empty() {
+                if chunk_path.exists() {
+                    fs::remove_file(&chunk_path).map_err(|e| e.to_string())?;
+                }
+            } else {
+                save_chunk_atomic(&chunk_path, &tasks)?;
+            }
+
+            index = self.reconcile_index_with_disk(status, index)?;
+            self.save_index_atomic(status, &index)?;
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
     fn status_dir(&self, status: HistoryStatus) -> PathBuf {
         self.base_path.join(status.as_str())
     }
@@ -439,6 +470,35 @@ mod tests {
             .get_page(HistoryStatus::Completed, 0, 40)
             .expect("read history page");
         assert_eq!(page.tasks.len(), 40);
+
+        fs::remove_dir_all(path).expect("cleanup history dir");
+    }
+
+    #[test]
+    fn remove_task_deletes_record_and_updates_index() {
+        let path = temp_history_path();
+        let store = HistoryStore::new(path.clone());
+
+        for index in 0..3 {
+            let task = build_task(index, TaskStatus::Failed);
+            store.append(&task).expect("append history task");
+        }
+
+        let removed = store
+            .remove_task(HistoryStatus::Failed, "task-1")
+            .expect("remove history task");
+        assert!(removed);
+
+        let found = store
+            .find_task(HistoryStatus::Failed, "task-1")
+            .expect("find removed task");
+        assert!(found.is_none());
+
+        let page = store
+            .get_page(HistoryStatus::Failed, 0, 20)
+            .expect("read history page");
+        assert_eq!(page.tasks.len(), 2);
+        assert_eq!(page.next_offset, 2);
 
         fs::remove_dir_all(path).expect("cleanup history dir");
     }

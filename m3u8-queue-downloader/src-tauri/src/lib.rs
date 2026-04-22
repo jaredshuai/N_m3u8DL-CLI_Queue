@@ -136,6 +136,19 @@ async fn remove_task(
 }
 
 #[tauri::command]
+async fn remove_history_task(
+    state: tauri::State<'_, AppState>,
+    status: HistoryStatus,
+    task_id: String,
+) -> Result<(), String> {
+    if state.history_store.remove_task(status, &task_id)? {
+        return Ok(());
+    }
+
+    Err(format!("History task {task_id} not found"))
+}
+
+#[tauri::command]
 async fn retry_task(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
@@ -716,6 +729,7 @@ pub fn run() {
             get_cli_output_page,
             add_task,
             remove_task,
+            remove_history_task,
             retry_task,
             reorder_tasks,
             start_queue,
