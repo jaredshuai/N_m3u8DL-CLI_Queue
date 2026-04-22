@@ -194,18 +194,19 @@ export async function setupListeners() {
     await loadQueueState();
   });
 
-  const u3 = await listen('task-log', (event) => {
-    // Legacy event kept for compatibility with backend/storage, but the
-    // terminal panel no longer renders from task.logLines.
-  });
-
   const u3b = await listen('task-terminal-committed-line', (event) => {
     const d = event.payload;
-    tasks.update((currentTasks) => currentTasks.map(t =>
-      t.id === d.id
-        ? { ...t, terminalCommittedLines: [...(t.terminalCommittedLines ?? []), d.line] }
-        : t
-    ));
+    tasks.update((currentTasks) => currentTasks.map(t => {
+      if (t.id !== d.id) return t;
+      const lines = [...(t.terminalCommittedLines ?? []), d.line];
+      const MAX_TERMINAL_LINES = 2000;
+      return {
+        ...t,
+        terminalCommittedLines: lines.length > MAX_TERMINAL_LINES
+          ? lines.slice(lines.length - MAX_TERMINAL_LINES)
+          : lines,
+      };
+    }));
   });
 
   const u3c = await listen('task-terminal-active-line', (event) => {
@@ -247,7 +248,7 @@ export async function setupListeners() {
     });
   });
 
-  unlisteners = [u1, u2, u3, u3b, u3c, u4, u5, u6, u7];
+  unlisteners = [u1, u2, u3b, u3c, u4, u5, u6, u7];
 }
 
 export function teardownListeners() {

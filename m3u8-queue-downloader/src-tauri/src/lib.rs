@@ -732,10 +732,8 @@ pub fn run() {
                 });
             });
 
-            let qm_log = Arc::clone(&queue_manager);
             let cos_log = Arc::clone(&cli_output_store);
             app.listen("task-log", move |event: tauri::Event| {
-                let qm = Arc::clone(&qm_log);
                 let cos = Arc::clone(&cos_log);
                 let payload = event.payload().to_string();
                 tauri::async_runtime::spawn(async move {
@@ -745,7 +743,6 @@ pub fn run() {
                         if let Err(err) = cos.append_line(&task_id, &line) {
                             eprintln!("Failed to persist CLI live output: {}", err);
                         }
-                        qm.append_log(&task_id, line).await;
                     }
                 });
             });
