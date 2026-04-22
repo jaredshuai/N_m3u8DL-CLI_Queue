@@ -70,6 +70,11 @@ impl Default for ShutdownManager {
     }
 }
 
+#[cfg(test)]
+pub fn shutdown_seconds() -> u64 {
+    SHUTDOWN_SECONDS
+}
+
 #[cfg(target_os = "windows")]
 fn schedule_shutdown(seconds: u64) -> Result<(), String> {
     let status = Command::new("shutdown")
@@ -115,4 +120,29 @@ fn cancel_shutdown() -> Result<(), String> {
 #[cfg(not(target_os = "windows"))]
 fn cancel_shutdown() -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShutdownManager;
+
+    #[test]
+    fn failed_run_blocks_countdown_until_reset() {
+        let manager = ShutdownManager::new();
+        manager.mark_run_failure();
+        assert!(!manager.should_start_countdown());
+
+        manager.reset_run_failure();
+        assert!(manager.should_start_countdown());
+    }
+
+    #[test]
+    fn cancel_blocks_restart_until_reenabled() {
+        let manager = ShutdownManager::new();
+        manager.cancel_countdown().expect("cancel countdown");
+        assert!(!manager.should_start_countdown());
+
+        manager.clear_cancellation_after_reenable();
+        assert!(manager.should_start_countdown());
+    }
 }
