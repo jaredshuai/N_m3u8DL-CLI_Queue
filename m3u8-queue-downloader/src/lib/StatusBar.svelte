@@ -1,5 +1,5 @@
 <script>
-  import { sessionCompletedCount, tasks } from './stores.js';
+  import { failedHistory, sessionCompletedCount, tasks } from './stores.js';
 
   let waitingCount = $derived(
     $tasks.filter(t => t.status === 'waiting').length
@@ -7,9 +7,7 @@
   let downloadingCount = $derived(
     $tasks.filter(t => t.status === 'downloading').length
   );
-  let failedCount = $derived(
-    $tasks.filter(t => t.status === 'failed').length
-  );
+  let failedCount = $derived($failedHistory.tasks.length);
 
   let currentLabel = $derived(
     downloadingCount > 0 ? `下载中 (${downloadingCount})` : '空闲'

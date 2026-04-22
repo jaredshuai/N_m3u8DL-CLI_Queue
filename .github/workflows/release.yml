@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: 'Create the GitHub Release as a draft'
+        required: true
+        type: boolean
+        default: true
+      prerelease:
+        description: 'Mark the GitHub Release as a prerelease'
+        required: true
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'app-v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows desktop package
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: npm
+          cache-dependency-path: m3u8-queue-downloader/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: m3u8-queue-downloader/src-tauri -> target
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Install frontend dependencies
+        working-directory: m3u8-queue-downloader
+        run: npm ci
+
+      - name: Run frontend unit tests
+        working-directory: m3u8-queue-downloader
+        run: npm test
+
+      - name: Run Rust tests
+        working-directory: m3u8-queue-downloader
+        run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Build bundled legacy CLI
+        shell: pwsh
+        run: |
+          nuget restore N_m3u8DL-CLI.sln
+          msbuild N_m3u8DL-CLI.sln /p:Configuration=Release /p:DebugSymbols=false /p:DebugType=None
+          New-Item -ItemType Directory -Force m3u8-queue-downloader/src-tauri/resources | Out-Null
+          Copy-Item N_m3u8DL-CLI/bin/Release/N_m3u8DL-CLI.exe m3u8-queue-downloader/src-tauri/resources/N_m3u8DL-CLI_v3.0.2.exe -Force
+
+      - name: Upload bundled CLI build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: N_m3u8DL-CLI_bundled
+          path: m3u8-queue-downloader/src-tauri/resources/N_m3u8DL-CLI_v3.0.2.exe
+          if-no-files-found: error
+
+      - name: Build and publish Tauri release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: m3u8-queue-downloader
+          tagName: app-v__VERSION__
+          releaseName: 'm3u8 Queue Downloader v__VERSION__'
+          releaseBody: |
+            Windows 桌面 GUI 发版包。
+
+            包含：
+            - Tauri + Svelte 桌面程序安装包
+            - 内置 N_m3u8DL-CLI 可执行文件
+            - 队列、托盘、CLI实况、自动关机等 GUI 功能
+          releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || contains(github.ref_name, '-') }}

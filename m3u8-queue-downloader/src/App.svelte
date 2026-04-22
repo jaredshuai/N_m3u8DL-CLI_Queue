@@ -2,55 +2,61 @@
   import { onMount } from 'svelte';
   import { dndzone } from 'svelte-dnd-action';
   import InputBar from './lib/InputBar.svelte';
+  import SettingsPanel from './lib/SettingsPanel.svelte';
   import TaskCard from './lib/TaskCard.svelte';
+  import TitleBar from './lib/TitleBar.svelte';
   import StatusBar from './lib/StatusBar.svelte';
   import {
     completedHistory,
     failedHistory,
+    cancelAutoShutdown,
+    loadAppSettings,
     loadHistoryPage,
     loadInitialHistory,
     loadQueueState,
     setupListeners,
+    shutdownNotice,
     tasks,
     teardownListeners,
   } from './lib/stores.js';
   import { invoke } from '@tauri-apps/api/core';
 
-  // DND: only Waiting tasks are draggable
-  // We split tasks into waiting list (dnd-enabled) and others (static)
   let waitingTasks = $derived($tasks.filter(t => t.status === 'waiting'));
   let activeTasks = $derived($tasks.filter(t => t.status === 'downloading'));
   let completedTasks = $derived($completedHistory.tasks);
   let failedTasks = $derived($failedHistory.tasks);
   let completedHasMore = $derived($completedHistory.hasMore);
   let failedHasMore = $derived($failedHistory.hasMore);
-
-  // DND state - local copy of waiting items for the dnd zone
+  let showSettings = $state(false);
   let dndItems = $state([]);
 
-  // DND options
   const dndOptions = {
     flipDurationMs: 150,
     dragDisabled: false,
-    dropFromOthersDisabled: false,
+    dropFromOthersDisabled: true,
     centreDraggedOnCursor: true,
   };
 
+  function toggleSettings() {
+    showSettings = !showSettings;
+  }
+
+  async function handleCancelShutdown() {
+    await cancelAutoShutdown();
+  }
+
   function handleDndConsider(e) {
-    // Items are being dragged within the zone - update local order
     dndItems = e.detail.items;
   }
 
   async function handleDndFinalize(e) {
     dndItems = e.detail.items;
-    // Extract new order of task IDs and notify backend
     const newOrder = dndItems.map(item => item.id);
     try {
       await invoke('reorder_tasks', { taskIds: newOrder });
       await loadQueueState();
     } catch (err) {
       console.error('Failed to reorder tasks:', err);
-      // Reload to revert visual order
       await loadQueueState();
     }
   }
@@ -65,6 +71,7 @@
 
   onMount(async () => {
     await loadQueueState();
+    await loadAppSettings();
     await setupListeners();
     await loadInitialHistory();
 
@@ -79,19 +86,35 @@
 </script>
 
 <main class="app">
-  <!-- Fixed header with blur -->
+  <TitleBar onToggleSettings={toggleSettings} settingsOpen={showSettings} />
+
+  {#if showSettings}
+    <SettingsPanel />
+  {/if}
+
   <header class="app-header">
-    <div class="header-title">
-      <span class="header-icon">⬇</span>
-      <h1>m3u8 Queue Downloader</h1>
-    </div>
     <InputBar />
   </header>
 
-  <!-- Scrollable task list -->
+  {#if $shutdownNotice.active || $shutdownNotice.error}
+    <section class:error={$shutdownNotice.error} class="shutdown-banner" role="alert">
+      {#if $shutdownNotice.active}
+        <div>
+          <strong>System countdown</strong>
+          <span>The queue has completed. Pending system action in {$shutdownNotice.secondsRemaining} seconds.</span>
+        </div>
+        <button onclick={handleCancelShutdown}>Cancel</button>
+      {:else}
+        <div>
+          <strong>System action failed</strong>
+          <span>{$shutdownNotice.error}</span>
+        </div>
+      {/if}
+    </section>
+  {/if}
+
   <section class="task-list">
     {#if hasVisibleItems}
-      <!-- Active (downloading) tasks -->
       {#if activeTasks.length > 0}
         <div class="section-label">下载中</div>
         {#each activeTasks as task (task.id)}
@@ -101,7 +124,6 @@
         {/each}
       {/if}
 
-      <!-- Waiting tasks with drag-and-drop -->
       {#if waitingTasks.length > 0}
         <div class="section-label">等待中</div>
         <div
@@ -118,7 +140,6 @@
         </div>
       {/if}
 
-      <!-- Failed tasks -->
       {#if failedTasks.length > 0}
         <div class="section-label">失败</div>
         {#each failedTasks as task (task.id)}
@@ -133,7 +154,6 @@
         {/if}
       {/if}
 
-      <!-- Completed tasks -->
       {#if completedTasks.length > 0}
         <div class="section-label">已完成</div>
         {#each completedTasks as task (task.id)}
@@ -155,7 +175,6 @@
     {/if}
   </section>
 
-  <!-- Bottom status bar -->
   <StatusBar />
 </main>
 
@@ -175,28 +194,61 @@
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--color-border);
-    padding: 12px 16px 12px;
+    padding-bottom: 12px;
     z-index: 10;
   }
 
-  .header-title {
+  .shutdown-banner {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 4px;
+    justify-content: space-between;
+    gap: 14px;
+    flex-shrink: 0;
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(234, 179, 8, 0.35);
+    background: rgba(234, 179, 8, 0.11);
   }
 
-  .header-icon {
-    font-size: 18px;
-    color: var(--color-accent);
+  .shutdown-banner.error {
+    border-bottom-color: rgba(248, 113, 113, 0.35);
+    background: rgba(248, 113, 113, 0.08);
   }
 
-  .header-title h1 {
-    font-size: 16px;
+  .shutdown-banner div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .shutdown-banner strong {
+    color: var(--color-accent-bright);
+    font-size: 13px;
+  }
+
+  .shutdown-banner.error strong {
+    color: var(--color-status-fail);
+  }
+
+  .shutdown-banner span {
+    color: var(--color-text-secondary);
+    font-size: 12px;
+  }
+
+  .shutdown-banner button {
+    flex-shrink: 0;
+    padding: 7px 12px;
+    border: 1px solid rgba(234, 179, 8, 0.45);
+    border-radius: var(--radius-sm);
+    background: rgba(234, 179, 8, 0.12);
+    color: var(--color-accent-bright);
+    font-family: var(--font-stack);
     font-weight: 700;
-    color: var(--color-text-main);
-    margin: 0;
-    letter-spacing: -0.3px;
+    cursor: pointer;
+  }
+
+  .shutdown-banner button:hover {
+    background: rgba(234, 179, 8, 0.18);
   }
 
   .task-list {
@@ -223,10 +275,6 @@
   .dnd-zone {
     display: flex;
     flex-direction: column;
-  }
-
-  .dnd-item {
-    /* DnD wrapper - no extra spacing, TaskCard handles its own margin */
   }
 
   .empty-state {

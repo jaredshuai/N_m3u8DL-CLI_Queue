@@ -1,4 +1,7 @@
-import { invoke } from '@tauri-apps/api/core';
+async function defaultInvoke(command, args) {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke(command, args);
+}
 
 export function getQueueControlState({ tasks, queueRunning, busy }) {
   const hasTasks = (tasks ?? []).length > 0;
@@ -12,7 +15,7 @@ export function getQueueControlState({ tasks, queueRunning, busy }) {
   };
 }
 
-export async function toggleQueue(queueRunning, invokeFn = invoke) {
+export async function toggleQueue(queueRunning, invokeFn = defaultInvoke) {
   await invokeFn(queueRunning ? 'pause_queue' : 'start_queue');
 }
 
@@ -21,7 +24,7 @@ export async function runQueueToggle({
   queueRunning,
   setBusy,
   reloadQueueState,
-  invokeFn = invoke,
+  invokeFn = defaultInvoke,
   onError = console.error,
 }) {
   if (disabled) return;
