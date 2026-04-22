@@ -70,7 +70,15 @@ impl CliOutputStore {
         let lines = self.read_all_lines(task_id)?;
         let total = lines.len();
         let start = total.saturating_sub(limit);
-        self.page(task_id, start, limit)
+
+        Ok(CliOutputPage {
+            lines: lines[start..total].to_vec(),
+            offset: start,
+            total,
+            next_offset: total,
+            has_more_before: start > 0,
+            has_more_after: false,
+        })
     }
 
     fn task_path(&self, task_id: &str) -> PathBuf {

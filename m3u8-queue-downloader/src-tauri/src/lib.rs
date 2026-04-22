@@ -229,8 +229,7 @@ async fn pause_queue(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    pause_current_task(&state.queue_manager, &state.task_runner).await?;
-    state.queue_manager.set_running(false).await;
+    pause_queue_internal(&state.queue_manager, &state.task_runner).await?;
     let _ = app_handle.emit("queue-state-changed", ());
     Ok(())
 }
@@ -275,6 +274,20 @@ fn cancel_auto_shutdown(
 ) -> Result<(), String> {
     state.shutdown_manager.cancel_countdown()?;
     let _ = app_handle.emit("shutdown-countdown-cancelled", ());
+    Ok(())
+}
+
+async fn pause_queue_internal(
+    queue_manager: &Arc<QueueManager>,
+    task_runner: &Arc<TaskRunner>,
+) -> Result<(), String> {
+    queue_manager.set_running(false).await;
+
+    if let Err(err) = pause_current_task(queue_manager, task_runner).await {
+        queue_manager.set_running(true).await;
+        return Err(err);
+    }
+
     Ok(())
 }
 
@@ -522,11 +535,10 @@ fn pause_queue_from_handle(app_handle: tauri::AppHandle) {
     let task_runner = Arc::clone(&state.task_runner);
 
     tauri::async_runtime::spawn(async move {
-        if let Err(err) = pause_current_task(&queue_manager, &task_runner).await {
+        if let Err(err) = pause_queue_internal(&queue_manager, &task_runner).await {
             eprintln!("Failed to pause queue from tray: {}", err);
             return;
         }
-        queue_manager.set_running(false).await;
         let _ = app_handle.emit("queue-state-changed", ());
     });
 }

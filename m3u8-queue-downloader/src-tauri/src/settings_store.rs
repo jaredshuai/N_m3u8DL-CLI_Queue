@@ -1,4 +1,5 @@
 use crate::models::AppSettings;
+use crate::persistence::write_atomic;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -47,5 +48,34 @@ fn save_settings(settings: &AppSettings, path: &Path) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())
+    write_atomic(path, json.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::CloseButtonBehavior;
+    use uuid::Uuid;
+
+    #[test]
+    fn settings_round_trip() {
+        let path = std::env::temp_dir().join(format!("settings-{}.json", Uuid::new_v4()));
+        let store = SettingsStore::new(path.clone());
+
+        assert_eq!(store.get().close_button_behavior, CloseButtonBehavior::CloseToTray);
+        assert!(!store.get().auto_action_on_complete);
+
+        store
+            .update(AppSettings {
+                close_button_behavior: CloseButtonBehavior::Exit,
+                auto_action_on_complete: true,
+            })
+            .expect("save settings");
+
+        let reloaded = SettingsStore::new(path.clone());
+        assert_eq!(reloaded.get().close_button_behavior, CloseButtonBehavior::Exit);
+        assert!(reloaded.get().auto_action_on_complete);
+
+        let _ = std::fs::remove_file(path);
+    }
 }
