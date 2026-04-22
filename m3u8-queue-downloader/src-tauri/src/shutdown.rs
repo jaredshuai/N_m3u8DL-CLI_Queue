@@ -1,6 +1,6 @@
-use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::process::Command;
 use std::sync::Mutex;
 
 const SHUTDOWN_SECONDS: u64 = 60;

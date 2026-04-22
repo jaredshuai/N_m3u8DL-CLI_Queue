@@ -10,7 +10,10 @@ pub struct SettingsStore {
 impl SettingsStore {
     pub fn new(path: PathBuf) -> Self {
         let state = load_settings(&path).unwrap_or_default();
-        Self { path, state: Mutex::new(state) }
+        Self {
+            path,
+            state: Mutex::new(state),
+        }
     }
 
     pub fn default_path() -> PathBuf {
@@ -32,7 +35,9 @@ impl SettingsStore {
 }
 
 fn load_settings(path: &Path) -> Option<AppSettings> {
-    if !path.exists() { return None; }
+    if !path.exists() {
+        return None;
+    }
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
 }

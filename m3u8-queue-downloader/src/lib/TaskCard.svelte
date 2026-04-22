@@ -1,6 +1,11 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
   import { tick } from 'svelte';
+  import {
+    CLI_OUTPUT_PAGE_SIZE,
+    mergeCliOutputLines,
+    prependCliOutputPage,
+  } from './cli-output.js';
   import { displayProgressPercent } from './progress.js';
   import { trackSessionTask } from './stores.js';
 
@@ -8,6 +13,12 @@
 
   let showCliLive = $state(false);
   let cliLivePanel = $state(null);
+  let cliOutputLines = $state([]);
+  let cliOutputOffset = $state(0);
+  let cliOutputTotal = $state(0);
+  let cliOutputHasMoreBefore = $state(false);
+  let cliOutputLoading = $state(false);
+  let cliOutputError = $state('');
 
   let statusKey = $derived(
     task.status === 'downloading' ? 'down' :
@@ -36,7 +47,8 @@
 
   let progressPct = $derived(displayProgressPercent(task.progress));
   let canShowCliLive = $derived(statusKey === 'down' || statusKey === 'done' || statusKey === 'fail');
-  let cliLiveLines = $derived(task.logLines ?? []);
+  let cliTailLines = $derived(task.logLines ?? []);
+  let cliLiveLines = $derived(mergeCliOutputLines(cliOutputLines, cliTailLines));
 
   async function handleRemove() {
     try {
@@ -55,8 +67,59 @@
     }
   }
 
-  function toggleCliLive() {
+  async function loadCliOutputTail() {
+    cliOutputLoading = true;
+    cliOutputError = '';
+    try {
+      const page = await invoke('get_cli_output_tail', {
+        taskId: task.id,
+        limit: CLI_OUTPUT_PAGE_SIZE,
+      });
+      cliOutputLines = page.lines ?? [];
+      cliOutputOffset = page.offset ?? 0;
+      cliOutputTotal = page.total ?? cliOutputLines.length;
+      cliOutputHasMoreBefore = page.hasMoreBefore ?? false;
+    } catch (err) {
+      cliOutputError = String(err);
+      cliOutputLines = [];
+      cliOutputOffset = 0;
+      cliOutputTotal = cliTailLines.length;
+      cliOutputHasMoreBefore = false;
+    } finally {
+      cliOutputLoading = false;
+    }
+  }
+
+  async function loadEarlierCliOutput() {
+    if (cliOutputLoading || !cliOutputHasMoreBefore) return;
+
+    cliOutputLoading = true;
+    cliOutputError = '';
+    const nextLimit = Math.min(CLI_OUTPUT_PAGE_SIZE, cliOutputOffset);
+    const nextOffset = Math.max(0, cliOutputOffset - nextLimit);
+
+    try {
+      const page = await invoke('get_cli_output_page', {
+        taskId: task.id,
+        offset: nextOffset,
+        limit: nextLimit,
+      });
+      cliOutputLines = prependCliOutputPage(cliOutputLines, page);
+      cliOutputOffset = page.offset ?? nextOffset;
+      cliOutputTotal = page.total ?? cliOutputTotal;
+      cliOutputHasMoreBefore = page.hasMoreBefore ?? false;
+    } catch (err) {
+      cliOutputError = String(err);
+    } finally {
+      cliOutputLoading = false;
+    }
+  }
+
+  async function toggleCliLive() {
     showCliLive = !showCliLive;
+    if (showCliLive) {
+      await loadCliOutputTail();
+    }
   }
 
   $effect(() => {
@@ -135,12 +198,22 @@
     <div class="cli-live-area fade-in" bind:this={cliLivePanel}>
       <div class="cli-live-header">
         <strong>CLI实况</strong>
-        <span>{cliLiveLines.length} 行，自动滚动到最新输出</span>
+        <span>{cliOutputTotal || cliLiveLines.length} 行，自动滚动到最新输出</span>
       </div>
+      {#if cliOutputHasMoreBefore}
+        <button class="cli-load-earlier" onclick={loadEarlierCliOutput} disabled={cliOutputLoading}>
+          {cliOutputLoading ? '加载中...' : '加载更早CLI实况'}
+        </button>
+      {/if}
+      {#if cliOutputError}
+        <div class="cli-live-line cli-live-error">CLI实况加载失败：{cliOutputError}</div>
+      {/if}
       {#if cliLiveLines.length > 0}
         {#each cliLiveLines as line}
           <div class="cli-live-line">{line}</div>
         {/each}
+      {:else if cliOutputLoading}
+        <div class="cli-live-line cli-live-empty">CLI实况加载中...</div>
       {:else}
         <div class="cli-live-line cli-live-empty">暂无CLI实况</div>
       {/if}
@@ -391,6 +464,22 @@
     font-size: 11px;
   }
 
+  .cli-load-earlier {
+    margin: 0 12px 8px;
+    padding: 6px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--color-text-main);
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .cli-load-earlier:disabled {
+    cursor: default;
+    opacity: 0.65;
+  }
+
   .cli-live-line {
     color: var(--color-text-secondary);
     white-space: pre-wrap;
@@ -401,6 +490,11 @@
   .cli-live-empty {
     color: var(--color-text-disabled);
     font-style: italic;
+    padding-top: 10px;
+  }
+
+  .cli-live-error {
+    color: var(--color-status-fail);
     padding-top: 10px;
   }
 </style>

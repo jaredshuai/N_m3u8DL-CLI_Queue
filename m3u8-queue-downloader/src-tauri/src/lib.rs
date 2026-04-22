@@ -1,3 +1,4 @@
+mod cli_output_store;
 mod history_store;
 mod models;
 mod persistence;
@@ -8,15 +9,19 @@ mod task_runner;
 #[cfg(test)]
 mod test_support;
 
+use cli_output_store::CliOutputStore;
 use history_store::HistoryStore;
-use models::{AddTaskPayload, AppSettings, CloseButtonBehavior, HistoryPage, HistoryStatus, QueueState, Task};
+use models::{
+    AddTaskPayload, AppSettings, CliOutputPage, CloseButtonBehavior, HistoryPage, HistoryStatus,
+    QueueState, Task,
+};
 use queue_manager::QueueManager;
 use settings_store::SettingsStore;
 use shutdown::ShutdownManager;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-use task_runner::{StopTaskError, TaskRunner};
+use task_runner::{StopTaskError, StopTaskResult, TaskRunner};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Listener, Manager, WindowEvent};
@@ -24,6 +29,7 @@ use tauri::{Emitter, Listener, Manager, WindowEvent};
 const DOWNLOAD_DIR: &str = r"D:\Videos";
 
 pub struct AppState {
+    cli_output_store: Arc<CliOutputStore>,
     history_store: Arc<HistoryStore>,
     queue_manager: Arc<QueueManager>,
     settings_store: Arc<SettingsStore>,
@@ -73,6 +79,25 @@ async fn get_history_page(
 }
 
 #[tauri::command]
+fn get_cli_output_tail(
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+    limit: usize,
+) -> Result<CliOutputPage, String> {
+    state.cli_output_store.tail(&task_id, limit)
+}
+
+#[tauri::command]
+fn get_cli_output_page(
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+    offset: usize,
+    limit: usize,
+) -> Result<CliOutputPage, String> {
+    state.cli_output_store.page(&task_id, offset, limit)
+}
+
+#[tauri::command]
 async fn add_task(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
@@ -80,7 +105,11 @@ async fn add_task(
     save_name: Option<String>,
     headers: Option<String>,
 ) -> Result<Task, String> {
-    let payload = AddTaskPayload { url, save_name, headers };
+    let payload = AddTaskPayload {
+        url,
+        save_name,
+        headers,
+    };
     let (task, should_schedule) = state.queue_manager.add_task(payload).await;
     if should_schedule {
         try_schedule_next(
@@ -119,7 +148,10 @@ async fn retry_task(
                 .history_store
                 .find_task(HistoryStatus::Failed, &task_id)?
                 .ok_or(active_error)?;
-            let (task, should_schedule) = state.queue_manager.add_history_retry_task(&history_task).await;
+            let (task, should_schedule) = state
+                .queue_manager
+                .add_history_retry_task(&history_task)
+                .await;
             if should_schedule {
                 try_schedule_next(
                     &state.queue_manager,
@@ -239,10 +271,14 @@ async fn pause_current_task(
 ) -> Result<(), String> {
     if let Some(task_id) = queue_manager.current_task_id().await {
         match task_runner.stop_task(&task_id).await {
-            Ok(()) | Err(StopTaskError::NoRunningProcess(_)) => {}
-            Err(err) => return Err(err.to_string()),
+            Ok(StopTaskResult::Stopped) => queue_manager.on_task_paused(&task_id).await,
+            Ok(StopTaskResult::AlreadyExited) => {
+                queue_manager
+                    .release_current_task_if_matches(&task_id)
+                    .await;
+            }
+            Err(StopTaskError::KillFailed(err)) => return Err(err),
         }
-        queue_manager.on_task_paused(&task_id).await;
     }
     Ok(())
 }
@@ -302,7 +338,10 @@ async fn handle_task_completed(
     task_id: String,
     output_path: String,
 ) {
-    if let Some(task) = queue_manager.on_task_completed(&task_id, &output_path).await {
+    if let Some(task) = queue_manager
+        .on_task_completed(&task_id, &output_path)
+        .await
+    {
         if let Err(err) = history_store.append(&task) {
             eprintln!("Failed to append completed task to history: {}", err);
         } else {
@@ -317,12 +356,9 @@ async fn handle_task_completed(
     try_schedule_next(&queue_manager, &history_store, &task_runner, &app_handle).await;
     if queue_manager.finish_run_if_idle().await {
         let _ = app_handle.emit("queue-state-changed", ());
-        if let Ok(Some(seconds)) = maybe_start_shutdown_countdown(
-            &queue_manager,
-            &shutdown_manager,
-            &settings_store.get(),
-        )
-        .await
+        if let Ok(Some(seconds)) =
+            maybe_start_shutdown_countdown(&queue_manager, &shutdown_manager, &settings_store.get())
+                .await
         {
             let payload = serde_json::json!({ "seconds": seconds });
             let _ = app_handle.emit("shutdown-countdown-started", payload);
@@ -356,12 +392,9 @@ async fn handle_task_failed(
     try_schedule_next(&queue_manager, &history_store, &task_runner, &app_handle).await;
     if queue_manager.finish_run_if_idle().await {
         let _ = app_handle.emit("queue-state-changed", ());
-        if let Ok(Some(seconds)) = maybe_start_shutdown_countdown(
-            &queue_manager,
-            &shutdown_manager,
-            &settings_store.get(),
-        )
-        .await
+        if let Ok(Some(seconds)) =
+            maybe_start_shutdown_countdown(&queue_manager, &shutdown_manager, &settings_store.get())
+                .await
         {
             let payload = serde_json::json!({ "seconds": seconds });
             let _ = app_handle.emit("shutdown-countdown-started", payload);
@@ -486,10 +519,22 @@ fn pause_queue_from_handle(app_handle: tauri::AppHandle) {
 }
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show-main-window", "Show main window", true, None::<&str>)?;
+    let show = MenuItem::with_id(
+        app,
+        "show-main-window",
+        "Show main window",
+        true,
+        None::<&str>,
+    )?;
     let start = MenuItem::with_id(app, "start-queue", "Start queue", true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause-queue", "Pause queue", true, None::<&str>)?;
-    let open_dir = MenuItem::with_id(app, "open-download-dir", "Open download directory", true, None::<&str>)?;
+    let open_dir = MenuItem::with_id(
+        app,
+        "open-download-dir",
+        "Open download directory",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &start, &pause, &open_dir, &quit])?;
 
@@ -532,6 +577,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 }
 
 pub fn run() {
+    let cli_output_path = CliOutputStore::default_path();
     let history_path = HistoryStore::default_path();
     let persistence_path = persistence::Persistence::default_path();
     let settings_path = SettingsStore::default_path();
@@ -556,11 +602,13 @@ pub fn run() {
 
             let queue_manager = Arc::new(QueueManager::new(persistence_path));
             let task_runner = Arc::new(TaskRunner::new());
+            let cli_output_store = Arc::new(CliOutputStore::new(cli_output_path));
             let history_store = Arc::new(HistoryStore::new(history_path));
             let settings_store = Arc::new(SettingsStore::new(settings_path));
             let shutdown_manager = Arc::new(ShutdownManager::new());
 
             let state = AppState {
+                cli_output_store: Arc::clone(&cli_output_store),
                 history_store: Arc::clone(&history_store),
                 queue_manager: Arc::clone(&queue_manager),
                 settings_store: Arc::clone(&settings_store),
@@ -639,19 +687,25 @@ pub fn run() {
                             .as_str()
                             .map(str::to_string)
                             .filter(|value| !value.is_empty());
-                        qm.update_task_progress(&task_id, progress, speed, threads).await;
+                        qm.update_task_progress(&task_id, progress, speed, threads)
+                            .await;
                     }
                 });
             });
 
             let qm_log = Arc::clone(&queue_manager);
+            let cos_log = Arc::clone(&cli_output_store);
             app.listen("task-log", move |event: tauri::Event| {
                 let qm = Arc::clone(&qm_log);
+                let cos = Arc::clone(&cos_log);
                 let payload = event.payload().to_string();
                 tauri::async_runtime::spawn(async move {
                     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&payload) {
                         let task_id = data["id"].as_str().unwrap_or("").to_string();
                         let line = data["line"].as_str().unwrap_or("").to_string();
+                        if let Err(err) = cos.append_line(&task_id, &line) {
+                            eprintln!("Failed to persist CLI live output: {}", err);
+                        }
                         qm.append_log(&task_id, line).await;
                     }
                 });
@@ -664,6 +718,8 @@ pub fn run() {
             get_app_settings,
             update_app_settings,
             get_history_page,
+            get_cli_output_tail,
+            get_cli_output_page,
             add_task,
             remove_task,
             retry_task,
@@ -711,13 +767,9 @@ mod tests {
         queue_manager.set_running(true).await;
         queue_manager.schedule_next().await.expect("scheduled task");
 
-        let started = maybe_start_shutdown_countdown(
-            &queue_manager,
-            &shutdown_manager,
-            &settings,
-        )
-        .await
-        .expect("countdown check succeeds");
+        let started = maybe_start_shutdown_countdown(&queue_manager, &shutdown_manager, &settings)
+            .await
+            .expect("countdown check succeeds");
         assert!(started.is_none());
 
         let completed_task = queue_manager
@@ -728,13 +780,9 @@ mod tests {
             .append(&completed_task)
             .expect("append completed task");
 
-        let started = maybe_start_shutdown_countdown(
-            &queue_manager,
-            &shutdown_manager,
-            &settings,
-        )
-        .await
-        .expect("countdown check succeeds");
+        let started = maybe_start_shutdown_countdown(&queue_manager, &shutdown_manager, &settings)
+            .await
+            .expect("countdown check succeeds");
 
         assert_eq!(started, Some(crate::shutdown::shutdown_seconds()));
         std::fs::remove_dir_all(history_path).expect("cleanup history");
@@ -765,7 +813,7 @@ mod tests {
             .find(|t| t.id == task.id)
             .expect("task exists");
 
-        assert_eq!(paused_task.status, models::TaskStatus::Waiting);
+        assert_eq!(paused_task.status, models::TaskStatus::Downloading);
         assert!(state.current_task_id.is_none());
     }
 }

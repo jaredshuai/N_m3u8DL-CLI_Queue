@@ -40,7 +40,10 @@ impl QueueManager {
                     self.persist(&state);
                     Ok(())
                 } else {
-                    Err(format!("Cannot remove task {} with status {:?}", id, t.status))
+                    Err(format!(
+                        "Cannot remove task {} with status {:?}",
+                        id, t.status
+                    ))
                 }
             }
             None => Err(format!("Task {} not found", id)),
@@ -63,7 +66,10 @@ impl QueueManager {
                     self.persist(&state);
                     Ok(task)
                 } else {
-                    Err(format!("Can only retry Failed tasks, current status: {:?}", t.status))
+                    Err(format!(
+                        "Can only retry Failed tasks, current status: {:?}",
+                        t.status
+                    ))
                 }
             }
             None => Err(format!("Task {} not found", id)),
@@ -164,14 +170,24 @@ impl QueueManager {
     pub async fn on_task_paused(&self, id: &str) {
         let mut state = self.state.lock().await;
         if let Some(t) = state.tasks.iter_mut().find(|t| t.id == id) {
-            t.status = TaskStatus::Waiting;
-            t.progress = 0.0;
-            t.speed = String::new();
-            t.threads = String::new();
-            t.log_lines.clear();
+            if t.status == TaskStatus::Downloading {
+                t.status = TaskStatus::Waiting;
+                t.progress = 0.0;
+                t.speed = String::new();
+                t.threads = String::new();
+                t.log_lines.clear();
+            }
         }
         state.current_task_id = None;
         self.persist(&state);
+    }
+
+    pub async fn release_current_task_if_matches(&self, id: &str) {
+        let mut state = self.state.lock().await;
+        if state.current_task_id.as_deref() == Some(id) {
+            state.current_task_id = None;
+            self.persist(&state);
+        }
     }
 
     pub async fn on_task_failed(&self, id: &str, error_message: &str) -> Option<Task> {
@@ -278,10 +294,9 @@ mod tests {
 
     #[tokio::test]
     async fn add_task_keeps_paused_queue_paused() {
-        let manager = QueueManager::new(std::env::temp_dir().join(format!(
-            "queue-state-{}.json",
-            uuid::Uuid::new_v4()
-        )));
+        let manager = QueueManager::new(
+            std::env::temp_dir().join(format!("queue-state-{}.json", uuid::Uuid::new_v4())),
+        );
         manager.set_running(false).await;
         let payload = AddTaskPayload {
             url: "https://example.com/paused.m3u8".to_string(),
@@ -298,10 +313,9 @@ mod tests {
 
     #[tokio::test]
     async fn add_task_requests_schedule_when_queue_is_running_and_idle() {
-        let manager = QueueManager::new(std::env::temp_dir().join(format!(
-            "queue-state-{}.json",
-            uuid::Uuid::new_v4()
-        )));
+        let manager = QueueManager::new(
+            std::env::temp_dir().join(format!("queue-state-{}.json", uuid::Uuid::new_v4())),
+        );
         manager.set_running(true).await;
         let payload = AddTaskPayload {
             url: "https://example.com/running.m3u8".to_string(),
@@ -318,10 +332,9 @@ mod tests {
 
     #[tokio::test]
     async fn append_log_keeps_latest_500_lines() {
-        let manager = QueueManager::new(std::env::temp_dir().join(format!(
-            "queue-state-{}.json",
-            uuid::Uuid::new_v4()
-        )));
+        let manager = QueueManager::new(
+            std::env::temp_dir().join(format!("queue-state-{}.json", uuid::Uuid::new_v4())),
+        );
         let payload = AddTaskPayload {
             url: "https://example.com/test.m3u8".to_string(),
             save_name: None,

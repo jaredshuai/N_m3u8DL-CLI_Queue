@@ -2,19 +2,18 @@ use crate::models::Task;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tauri::{path::BaseDirectory, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 
 #[derive(Clone)]
 struct RunningTask {
     pid: u32,
-    stopped: Arc<AtomicBool>,
+    stop_state: Arc<AtomicU8>,
 }
 
 pub struct TaskRunner {
@@ -25,18 +24,30 @@ pub struct TaskRunner {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopTaskError {
-    NoRunningProcess(String),
     KillFailed(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopTaskResult {
+    Stopped,
+    AlreadyExited,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KillProcessResult {
+    Killed,
+    AlreadyExited,
+}
+
 const MAX_CLI_SEARCH_DEPTH: usize = 8;
+const STOP_NONE: u8 = 0;
+const STOP_REQUESTED: u8 = 1;
+const STOP_CONFIRMED: u8 = 2;
+const STOP_REQUEST_GRACE_MS: u64 = 500;
 
 impl fmt::Display for StopTaskError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StopTaskError::NoRunningProcess(task_id) => {
-                write!(f, "No running process for task {task_id}")
-            }
             StopTaskError::KillFailed(message) => f.write_str(message),
         }
     }
@@ -103,9 +114,9 @@ impl TaskRunner {
         let pid = child
             .id()
             .ok_or_else(|| "Failed to get CLI process ID".to_string())?;
-        let stopped = Arc::new(AtomicBool::new(false));
+        let stop_state = Arc::new(AtomicU8::new(STOP_NONE));
 
-        self.register_running_task(task_id.clone(), pid, Arc::clone(&stopped))
+        self.register_running_task(task_id.clone(), pid, Arc::clone(&stop_state))
             .await;
 
         let task_id_stdout = task_id.clone();
@@ -129,20 +140,40 @@ impl TaskRunner {
             }
         });
 
-        self.spawn_wait_task(task_id, child, stopped, save_name, app_handle_complete);
+        self.spawn_wait_task(task_id, child, stop_state, save_name, app_handle_complete);
         Ok(())
     }
 
-    pub async fn stop_task(&self, task_id: &str) -> Result<(), StopTaskError> {
+    pub async fn stop_task(&self, task_id: &str) -> Result<StopTaskResult, StopTaskError> {
         let running_task = {
             let processes = self.running_processes.lock().await;
             processes.get(task_id).cloned()
-        }
-        .ok_or_else(|| StopTaskError::NoRunningProcess(task_id.to_string()))?;
+        };
 
-        kill_process(running_task.pid).await.map_err(StopTaskError::KillFailed)?;
-        running_task.stopped.store(true, Ordering::SeqCst);
-        Ok(())
+        let Some(running_task) = running_task else {
+            return Ok(StopTaskResult::AlreadyExited);
+        };
+
+        running_task
+            .stop_state
+            .store(STOP_REQUESTED, Ordering::SeqCst);
+
+        match kill_process(running_task.pid).await {
+            Ok(KillProcessResult::Killed) => {
+                running_task
+                    .stop_state
+                    .store(STOP_CONFIRMED, Ordering::SeqCst);
+                Ok(StopTaskResult::Stopped)
+            }
+            Ok(KillProcessResult::AlreadyExited) => {
+                running_task.stop_state.store(STOP_NONE, Ordering::SeqCst);
+                Ok(StopTaskResult::AlreadyExited)
+            }
+            Err(err) => {
+                running_task.stop_state.store(STOP_NONE, Ordering::SeqCst);
+                Err(StopTaskError::KillFailed(err))
+            }
+        }
     }
 
     #[cfg(test)]
@@ -151,16 +182,16 @@ impl TaskRunner {
         processes.contains_key(task_id)
     }
 
-    async fn register_running_task(&self, task_id: String, pid: u32, stopped: Arc<AtomicBool>) {
+    async fn register_running_task(&self, task_id: String, pid: u32, stop_state: Arc<AtomicU8>) {
         let mut processes = self.running_processes.lock().await;
-        processes.insert(task_id, RunningTask { pid, stopped });
+        processes.insert(task_id, RunningTask { pid, stop_state });
     }
 
     fn spawn_wait_task(
         &self,
         task_id: String,
         mut child: Child,
-        stopped: Arc<AtomicBool>,
+        stop_state: Arc<AtomicU8>,
         save_name: Option<String>,
         app_handle: tauri::AppHandle,
     ) {
@@ -170,7 +201,7 @@ impl TaskRunner {
             let result = child.wait().await;
             cleanup_running_task(&running_processes, &task_id).await;
 
-            if stopped.load(Ordering::SeqCst) {
+            if wait_for_confirmed_stop(&stop_state).await {
                 return;
             }
 
@@ -178,20 +209,11 @@ impl TaskRunner {
                 Ok(exit_status) => {
                     if exit_status.success() {
                         let output_path = find_output_file(&save_name);
-
-                        if let Some(path) = output_path {
-                            let payload = serde_json::json!({
-                                "id": task_id,
-                                "outputPath": path,
-                            });
-                            let _ = app_handle.emit("task-completed", payload);
-                        } else {
-                            let payload = serde_json::json!({
-                                "id": task_id,
-                                "outputPath": "",
-                            });
-                            let _ = app_handle.emit("task-completed", payload);
-                        }
+                        let payload = serde_json::json!({
+                            "id": task_id,
+                            "outputPath": output_path.unwrap_or_default(),
+                        });
+                        let _ = app_handle.emit("task-completed", payload);
                     } else {
                         let error_msg = format!(
                             "Process exited with code: {}",
@@ -219,9 +241,9 @@ impl TaskRunner {
     #[cfg(test)]
     pub(crate) async fn insert_running_task_for_test(&self, task_id: String, child: Child) {
         let pid = child.id().expect("test child pid");
-        let stopped = Arc::new(AtomicBool::new(false));
+        let stop_state = Arc::new(AtomicU8::new(STOP_NONE));
 
-        self.register_running_task(task_id.clone(), pid, stopped)
+        self.register_running_task(task_id.clone(), pid, Arc::clone(&stop_state))
             .await;
 
         let mut pending = self.pending_test_children.lock().await;
@@ -234,9 +256,9 @@ impl TaskRunner {
             let mut pending = self.pending_test_children.lock().await;
             pending.remove(task_id).expect("pending test child")
         };
-        let stopped = {
+        let stop_state = {
             let processes = self.running_processes.lock().await;
-            Arc::clone(&processes.get(task_id).expect("running task").stopped)
+            Arc::clone(&processes.get(task_id).expect("running task").stop_state)
         };
         let running_processes = Arc::clone(&self.running_processes);
         let task_id = task_id.to_string();
@@ -245,7 +267,7 @@ impl TaskRunner {
             let mut child = child;
             let _ = child.wait().await;
             cleanup_running_task(&running_processes, &task_id).await;
-            let _ = stopped;
+            let _ = wait_for_confirmed_stop(&stop_state).await;
         });
     }
 
@@ -264,8 +286,7 @@ impl TaskRunner {
 
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
-                if let Some(path) = find_cli_in_ancestors(exe_dir, cli_name, MAX_CLI_SEARCH_DEPTH)
-                {
+                if let Some(path) = find_cli_in_ancestors(exe_dir, cli_name, MAX_CLI_SEARCH_DEPTH) {
                     return Ok(path);
                 }
             }
@@ -306,6 +327,20 @@ impl Default for TaskRunner {
     }
 }
 
+async fn wait_for_confirmed_stop(stop_state: &Arc<AtomicU8>) -> bool {
+    let mut waited = 0;
+    loop {
+        match stop_state.load(Ordering::SeqCst) {
+            STOP_CONFIRMED => return true,
+            STOP_REQUESTED if waited < STOP_REQUEST_GRACE_MS => {
+                sleep(Duration::from_millis(10)).await;
+                waited += 10;
+            }
+            _ => return false,
+        }
+    }
+}
+
 async fn read_cli_stdout<R>(mut stdout: R, task_id: String, app_handle: tauri::AppHandle)
 where
     R: AsyncRead + Unpin,
@@ -336,7 +371,11 @@ where
 fn take_cli_segment(input: &str) -> Option<(String, String)> {
     let split_at = input.find(|ch| ch == '\r' || ch == '\n')?;
     let segment = input[..split_at].trim().to_string();
-    let rest_start = split_at + input[split_at..].chars().next()?.len_utf8();
+    let delimiter_len = input[split_at..].chars().next()?.len_utf8();
+    let mut rest_start = split_at + delimiter_len;
+    if input[split_at..].starts_with("\r\n") {
+        rest_start = split_at + 2;
+    }
     let rest = input[rest_start..].to_string();
     Some((segment, rest))
 }
@@ -368,35 +407,37 @@ fn emit_cli_segment(segment: &str, task_id: &str, app_handle: &tauri::AppHandle)
 }
 
 fn parse_progress(line: &str) -> Option<f32> {
-    let re = regex_lazy();
-    if let Some(caps) = re.captures(line) {
+    if let Some(caps) = regex_progress_percent().captures(line) {
         if let Some(m) = caps.get(1) {
-            if let Ok(pct) = m.as_str().parse::<f32>() {
+            let normalized = m.as_str().replace(',', ".");
+            if let Ok(pct) = normalized.parse::<f32>() {
                 return Some((pct / 100.0).clamp(0.0, 1.0));
             }
+        }
+    }
+
+    if let Some(caps) = regex_progress_count().captures(line) {
+        let current = caps.get(1)?.as_str().parse::<f32>().ok()?;
+        let total = caps.get(2)?.as_str().parse::<f32>().ok()?;
+        if total > 0.0 {
+            return Some((current / total).clamp(0.0, 1.0));
         }
     }
     None
 }
 
 fn parse_speed(line: &str) -> Option<String> {
-    let patterns = [regex_speed_lazy()];
-
-    for re in &patterns {
-        if let Some(caps) = re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                return Some(m.as_str().to_string());
-            }
+    if let Some(caps) = regex_speed_lazy().captures(line) {
+        if let Some(m) = caps.get(1) {
+            return Some(m.as_str().trim().to_string());
         }
     }
-
     None
 }
 
 fn parse_threads(line: &str) -> Option<String> {
-    let re = regex_threads_lazy();
-    if let Some(caps) = re.captures(line) {
-        if let Some(m) = caps.get(0) {
+    if let Some(caps) = regex_threads_lazy().captures(line) {
+        if let Some(m) = caps.get(1).or_else(|| caps.get(2)) {
             return Some(m.as_str().to_string());
         }
     }
@@ -485,24 +526,38 @@ fn find_output_file(save_name: &Option<String>) -> Option<String> {
     None
 }
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use std::sync::OnceLock;
 
-static PROGRESS_RE: OnceLock<Regex> = OnceLock::new();
+static PROGRESS_PERCENT_RE: OnceLock<Regex> = OnceLock::new();
+static PROGRESS_COUNT_RE: OnceLock<Regex> = OnceLock::new();
 static SPEED_RE: OnceLock<Regex> = OnceLock::new();
 static THREADS_RE: OnceLock<Regex> = OnceLock::new();
 
-fn regex_lazy() -> &'static Regex {
-    PROGRESS_RE.get_or_init(|| Regex::new(r"(\d+\.?\d*)%").unwrap())
+fn regex_progress_percent() -> &'static Regex {
+    PROGRESS_PERCENT_RE.get_or_init(|| Regex::new(r"([0-9]+(?:[\.,][0-9]+)?)%").unwrap())
+}
+
+fn regex_progress_count() -> &'static Regex {
+    PROGRESS_COUNT_RE.get_or_init(|| Regex::new(r"Progress:\s*(\d+)\s*/\s*(\d+)").unwrap())
 }
 
 fn regex_speed_lazy() -> &'static Regex {
-    SPEED_RE
-        .get_or_init(|| Regex::new(r"(\d+\.?\d*\s*(?:[KMGT]i?B|B)/s|\d+\.?\d*\s*(?:[KMGT]i?B|B)/秒)").unwrap())
+    SPEED_RE.get_or_init(|| {
+        RegexBuilder::new(r"([0-9]+(?:[\.,][0-9]+)?\s*(?:[KMGT]i?B|KB|MB|GB|TB|B)/(?:s|秒))")
+            .case_insensitive(true)
+            .build()
+            .unwrap()
+    })
 }
 
 fn regex_threads_lazy() -> &'static Regex {
-    THREADS_RE.get_or_init(|| Regex::new(r"\d+\s*(?:线程|threads?)").unwrap())
+    THREADS_RE.get_or_init(|| {
+        RegexBuilder::new(r"(?:threads?|线程(?:数)?)[\s:=：]*(\d+)|([0-9]+)[\s]*(?:threads?|线程)")
+            .case_insensitive(true)
+            .build()
+            .unwrap()
+    })
 }
 
 async fn cleanup_running_task(
@@ -514,49 +569,74 @@ async fn cleanup_running_task(
 }
 
 #[cfg(target_os = "windows")]
-async fn kill_process(pid: u32) -> Result<(), String> {
+async fn kill_process(pid: u32) -> Result<KillProcessResult, String> {
     let mut cmd = tokio::process::Command::new("taskkill");
-    cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
-    let status = cmd
-        .status()
+    let output = cmd
+        .output()
         .await
         .map_err(|e| format!("Failed to launch taskkill: {}", e))?;
 
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "taskkill exited with code {}",
-            status.code().unwrap_or(-1)
-        ))
+    if output.status.success() {
+        return Ok(KillProcessResult::Killed);
     }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    let combined = format!("{stdout}\n{stderr}");
+    if combined.contains("not found")
+        || combined.contains("no running instance")
+        || combined.contains("没有找到")
+        || combined.contains("找不到")
+    {
+        return Ok(KillProcessResult::AlreadyExited);
+    }
+
+    Err(format!(
+        "taskkill exited with code {}: {}",
+        output.status.code().unwrap_or(-1),
+        combined.trim()
+    ))
 }
 
 #[cfg(not(target_os = "windows"))]
-async fn kill_process(pid: u32) -> Result<(), String> {
-    let status = tokio::process::Command::new("kill")
+async fn kill_process(pid: u32) -> Result<KillProcessResult, String> {
+    let output = tokio::process::Command::new("kill")
         .args(["-TERM", &pid.to_string()])
-        .status()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
         .await
         .map_err(|e| format!("Failed to launch kill: {}", e))?;
 
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "kill exited with code {}",
-            status.code().unwrap_or(-1)
-        ))
+    if output.status.success() {
+        return Ok(KillProcessResult::Killed);
     }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    if stderr.contains("no such process") {
+        return Ok(KillProcessResult::AlreadyExited);
+    }
+
+    Err(format!(
+        "kill exited with code {}: {}",
+        output.status.code().unwrap_or(-1),
+        stderr.trim()
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{find_cli_in_ancestors, parse_progress, parse_speed, take_cli_segment, TaskRunner};
+    use super::{
+        find_cli_in_ancestors, parse_progress, parse_speed, parse_threads, take_cli_segment,
+        TaskRunner,
+    };
     use crate::test_support::spawn_sleeping_child;
     use std::fs;
     use tokio::time::{sleep, Duration};
@@ -573,7 +653,25 @@ mod tests {
 
     #[test]
     fn parse_speed_reads_cli_speed_units() {
-        assert_eq!(parse_speed("(1.5 MB/s @ 00:01:00)").as_deref(), Some("1.5 MB/s"));
+        assert_eq!(
+            parse_speed("(1.5 MB/s @ 00:01:00)").as_deref(),
+            Some("1.5 MB/s")
+        );
+    }
+
+    #[test]
+    fn parse_progress_accepts_comma_decimal_and_count_fallback() {
+        assert_eq!(
+            parse_progress("Progress: 1/4 (25,00%) -- 1MB/4MB"),
+            Some(0.25)
+        );
+        assert_eq!(parse_progress("Progress: 2/8 -- 1MB/4MB"), Some(0.25));
+    }
+
+    #[test]
+    fn parse_threads_reads_common_cli_formats() {
+        assert_eq!(parse_threads("Threads: 16").as_deref(), Some("16"));
+        assert_eq!(parse_threads("16 threads active").as_deref(), Some("16"));
     }
 
     #[test]
@@ -581,6 +679,16 @@ mod tests {
         let (segment, rest) = take_cli_segment("Progress: 1/2 (50.00%)\rnext").expect("segment");
         assert_eq!(segment, "Progress: 1/2 (50.00%)");
         assert_eq!(rest, "next");
+    }
+
+    #[tokio::test]
+    async fn stop_task_is_idempotent_after_process_already_exited() {
+        let runner = TaskRunner::new();
+
+        runner
+            .stop_task("missing-task")
+            .await
+            .expect("stop on missing process should not error");
     }
 
     #[tokio::test]
@@ -623,16 +731,8 @@ mod tests {
         fs::create_dir_all(&nested).expect("create nested dirs");
         fs::write(&cli_path, b"").expect("create fake cli");
 
-        let found = find_cli_in_ancestors(
-            &nested,
-            "N_m3u8DL-CLI_v3.0.2.exe",
-            4,
-        );
-        let missed = find_cli_in_ancestors(
-            &nested,
-            "N_m3u8DL-CLI_v3.0.2.exe",
-            3,
-        );
+        let found = find_cli_in_ancestors(&nested, "N_m3u8DL-CLI_v3.0.2.exe", 4);
+        let missed = find_cli_in_ancestors(&nested, "N_m3u8DL-CLI_v3.0.2.exe", 3);
 
         assert_eq!(found, Some(cli_path));
         assert_eq!(missed, None);

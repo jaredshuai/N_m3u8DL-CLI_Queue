@@ -138,3 +138,14 @@ pub struct HistoryPage {
     pub has_more: bool,
     pub next_offset: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliOutputPage {
+    pub lines: Vec<String>,
+    pub offset: usize,
+    pub total: usize,
+    pub next_offset: usize,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
+}
