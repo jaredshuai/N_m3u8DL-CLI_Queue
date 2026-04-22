@@ -2,10 +2,12 @@ use crate::models::Task;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::Emitter;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tauri::{path::BaseDirectory, Emitter, Manager};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::Mutex;
 
@@ -15,9 +17,7 @@ struct RunningTask {
     stopped: Arc<AtomicBool>,
 }
 
-/// Manages the execution of CLI download processes
 pub struct TaskRunner {
-    /// Map from task ID to running process metadata
     running_processes: Arc<Mutex<HashMap<String, RunningTask>>>,
     #[cfg(test)]
     pending_test_children: Arc<Mutex<HashMap<String, Child>>>,
@@ -51,21 +51,14 @@ impl TaskRunner {
         }
     }
 
-    /// Spawn a CLI process for the given task
     pub async fn start_task(&self, task: Task, app_handle: tauri::AppHandle) -> Result<(), String> {
-        let cli_path = self.find_cli_exe()?;
+        let cli_path = self.find_cli_exe(&app_handle)?;
 
-        // Build command arguments
         let mut args: Vec<String> = Vec::new();
-
-        // URL
         args.push(task.url.clone());
-
-        // workDir
         args.push("--workDir".to_string());
         args.push(r"D:\Videos".to_string());
 
-        // saveName
         if let Some(ref save_name) = task.save_name {
             if !save_name.is_empty() {
                 args.push("--saveName".to_string());
@@ -73,7 +66,6 @@ impl TaskRunner {
             }
         }
 
-        // headers
         if let Some(ref headers) = task.headers {
             if !headers.is_empty() {
                 args.push("--headers".to_string());
@@ -81,7 +73,6 @@ impl TaskRunner {
             }
         }
 
-        // enableDelAfterDone
         args.push("--enableDelAfterDone".to_string());
 
         let mut cmd = tokio::process::Command::new(&cli_path);
@@ -89,9 +80,8 @@ impl TaskRunner {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        // Hide the console window on Windows
         #[cfg(target_os = "windows")]
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        cmd.creation_flags(0x08000000);
 
         let mut child = cmd
             .spawn()
@@ -118,44 +108,12 @@ impl TaskRunner {
         self.register_running_task(task_id.clone(), pid, Arc::clone(&stopped))
             .await;
 
-        // Spawn task to read stdout and parse progress
         let task_id_stdout = task_id.clone();
         let app_handle_stdout = app_handle_progress.clone();
         tokio::spawn(async move {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-
-            while let Ok(Some(line)) = lines.next_line().await {
-                let line_to_log = line.clone();
-
-                // Parse progress percentage
-                let progress = parse_progress(&line);
-
-                // Parse speed
-                let speed = parse_speed(&line);
-
-                // Parse threads info
-                let threads = parse_threads(&line);
-
-                // Emit task-progress event
-                let payload = serde_json::json!({
-                    "id": task_id_stdout,
-                    "progress": progress,
-                    "speed": speed,
-                    "threads": threads,
-                });
-                let _ = app_handle_stdout.emit("task-progress", payload);
-
-                // Append log line via event
-                let log_payload = serde_json::json!({
-                    "id": task_id_stdout,
-                    "line": line_to_log,
-                });
-                let _ = app_handle_stdout.emit("task-log", log_payload);
-            }
+            read_cli_stdout(stdout, task_id_stdout, app_handle_stdout).await;
         });
 
-        // Spawn task to read stderr
         let task_id_stderr = task_id.clone();
         let app_handle_stderr = app_handle_progress.clone();
         tokio::spawn(async move {
@@ -171,13 +129,10 @@ impl TaskRunner {
             }
         });
 
-        // Spawn task to wait for process completion
         self.spawn_wait_task(task_id, child, stopped, save_name, app_handle_complete);
-
         Ok(())
     }
 
-    /// Stop (kill) a running task's process
     pub async fn stop_task(&self, task_id: &str) -> Result<(), StopTaskError> {
         let running_task = {
             let processes = self.running_processes.lock().await;
@@ -190,7 +145,6 @@ impl TaskRunner {
         Ok(())
     }
 
-    /// Check if a specific task is running
     #[cfg(test)]
     pub async fn is_task_running(&self, task_id: &str) -> bool {
         let processes = self.running_processes.lock().await;
@@ -223,7 +177,6 @@ impl TaskRunner {
             match result {
                 Ok(exit_status) => {
                     if exit_status.success() {
-                        // Try to find the output file
                         let output_path = find_output_file(&save_name);
 
                         if let Some(path) = output_path {
@@ -233,8 +186,6 @@ impl TaskRunner {
                             });
                             let _ = app_handle.emit("task-completed", payload);
                         } else {
-                            // CLI succeeded but we couldn't find the file
-                            // Still mark as completed, just without outputPath
                             let payload = serde_json::json!({
                                 "id": task_id,
                                 "outputPath": "",
@@ -298,14 +249,19 @@ impl TaskRunner {
         });
     }
 
-    /// Find the N_m3u8DL-CLI executable by searching:
-    /// 1. Same directory as the app executable
-    /// 2. Walk up parent directories (for dev mode where exe is in target/debug/)
-    /// 3. Current working directory
-    fn find_cli_exe(&self) -> Result<PathBuf, String> {
+    fn find_cli_exe(&self, app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
         let cli_name = "N_m3u8DL-CLI_v3.0.2.exe";
+        let bundled_resource_name = format!("resources/{cli_name}");
 
-        // 1. Check exe directory and its ancestors
+        if let Ok(candidate) = app_handle
+            .path()
+            .resolve(&bundled_resource_name, BaseDirectory::Resource)
+        {
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
                 if let Some(path) = find_cli_in_ancestors(exe_dir, cli_name, MAX_CLI_SEARCH_DEPTH)
@@ -315,7 +271,6 @@ impl TaskRunner {
             }
         }
 
-        // 2. Check current working directory
         if let Ok(cwd) = std::env::current_dir() {
             let candidate = cwd.join(cli_name);
             if candidate.exists() {
@@ -323,7 +278,10 @@ impl TaskRunner {
             }
         }
 
-        Err(format!("{} not found in any searched directory", cli_name))
+        Err(format!(
+            "{} not found in bundled resources or any searched directory",
+            cli_name
+        ))
     }
 }
 
@@ -348,50 +306,103 @@ impl Default for TaskRunner {
     }
 }
 
-/// Parse progress percentage from CLI output line
-fn parse_progress(line: &str) -> f32 {
-    // Match patterns like "45.2%" or "100%"
+async fn read_cli_stdout<R>(mut stdout: R, task_id: String, app_handle: tauri::AppHandle)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut buffer = [0_u8; 4096];
+    let mut pending = String::new();
+
+    loop {
+        match stdout.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(n) => {
+                pending.push_str(&String::from_utf8_lossy(&buffer[..n]));
+                while let Some((segment, rest)) = take_cli_segment(&pending) {
+                    pending = rest;
+                    emit_cli_segment(&segment, &task_id, &app_handle);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    let trailing = pending.trim();
+    if !trailing.is_empty() {
+        emit_cli_segment(trailing, &task_id, &app_handle);
+    }
+}
+
+fn take_cli_segment(input: &str) -> Option<(String, String)> {
+    let split_at = input.find(|ch| ch == '\r' || ch == '\n')?;
+    let segment = input[..split_at].trim().to_string();
+    let rest_start = split_at + input[split_at..].chars().next()?.len_utf8();
+    let rest = input[rest_start..].to_string();
+    Some((segment, rest))
+}
+
+fn emit_cli_segment(segment: &str, task_id: &str, app_handle: &tauri::AppHandle) {
+    if segment.is_empty() {
+        return;
+    }
+
+    let progress = parse_progress(segment);
+    let speed = parse_speed(segment);
+    let threads = parse_threads(segment);
+
+    if progress.is_some() || speed.is_some() || threads.is_some() {
+        let payload = serde_json::json!({
+            "id": task_id,
+            "progress": progress,
+            "speed": speed,
+            "threads": threads,
+        });
+        let _ = app_handle.emit("task-progress", payload);
+    }
+
+    let log_payload = serde_json::json!({
+        "id": task_id,
+        "line": segment,
+    });
+    let _ = app_handle.emit("task-log", log_payload);
+}
+
+fn parse_progress(line: &str) -> Option<f32> {
     let re = regex_lazy();
     if let Some(caps) = re.captures(line) {
         if let Some(m) = caps.get(1) {
             if let Ok(pct) = m.as_str().parse::<f32>() {
-                return pct / 100.0;
+                return Some((pct / 100.0).clamp(0.0, 1.0));
             }
         }
     }
-    -1.0 // indicates no progress info in this line
+    None
 }
 
-/// Parse download speed from CLI output line
-fn parse_speed(line: &str) -> String {
-    // Match patterns like "1.5 MB/s", "500 KB/s", "2.3GB/s", etc.
-    // Also handle Chinese output: "1.5 MB/秒"
+fn parse_speed(line: &str) -> Option<String> {
     let patterns = [regex_speed_lazy()];
 
     for re in &patterns {
         if let Some(caps) = re.captures(line) {
             if let Some(m) = caps.get(1) {
-                return m.as_str().to_string();
+                return Some(m.as_str().to_string());
             }
         }
     }
 
-    String::new()
+    None
 }
 
-/// Parse thread count from CLI output
-fn parse_threads(line: &str) -> String {
-    // Look for thread info pattern
+fn parse_threads(line: &str) -> Option<String> {
     let re = regex_threads_lazy();
     if let Some(caps) = re.captures(line) {
         if let Some(m) = caps.get(0) {
-            return m.as_str().to_string();
+            return Some(m.as_str().to_string());
         }
     }
-    String::new()
+    None
 }
 
-/// Find the output file after download completes
 fn find_output_file(save_name: &Option<String>) -> Option<String> {
     let output_dir = PathBuf::from(r"D:\Videos");
 
@@ -401,18 +412,15 @@ fn find_output_file(save_name: &Option<String>) -> Option<String> {
 
     let extensions = ["mp4", "mkv", "ts", "flv", "mpg", "mpeg"];
 
-    // If save_name is specified, look for files starting with that name
     if let Some(ref name) = save_name {
         if !name.is_empty() {
             for ext in &extensions {
-                // Exact match
                 let exact = output_dir.join(format!("{}.{}", name, ext));
                 if exact.exists() {
                     return exact.to_str().map(|s| s.to_string());
                 }
             }
 
-            // Prefix match (CLI sometimes appends suffixes)
             if let Ok(entries) = std::fs::read_dir(&output_dir) {
                 let mut matching: Vec<_> = entries
                     .filter_map(|e| e.ok())
@@ -426,7 +434,6 @@ fn find_output_file(save_name: &Option<String>) -> Option<String> {
                     })
                     .collect();
 
-                // Sort by modification time, most recent first
                 matching.sort_by(|a, b| {
                     let a_time = a.metadata().ok().and_then(|m| m.modified().ok());
                     let b_time = b.metadata().ok().and_then(|m| m.modified().ok());
@@ -440,7 +447,6 @@ fn find_output_file(save_name: &Option<String>) -> Option<String> {
         }
     }
 
-    // Fallback: look for recently modified files (within last 60 seconds)
     if let Ok(entries) = std::fs::read_dir(&output_dir) {
         let now = std::time::SystemTime::now();
         let mut recent: Vec<_> = entries
@@ -492,7 +498,7 @@ fn regex_lazy() -> &'static Regex {
 
 fn regex_speed_lazy() -> &'static Regex {
     SPEED_RE
-        .get_or_init(|| Regex::new(r"(\d+\.?\d*\s*[KMGT]?B/s|\d+\.?\d*\s*[KMGT]?B/秒)").unwrap())
+        .get_or_init(|| Regex::new(r"(\d+\.?\d*\s*(?:[KMGT]i?B|B)/s|\d+\.?\d*\s*(?:[KMGT]i?B|B)/秒)").unwrap())
 }
 
 fn regex_threads_lazy() -> &'static Regex {
@@ -550,11 +556,32 @@ async fn kill_process(pid: u32) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_cli_in_ancestors, TaskRunner};
+    use super::{find_cli_in_ancestors, parse_progress, parse_speed, take_cli_segment, TaskRunner};
     use crate::test_support::spawn_sleeping_child;
     use std::fs;
     use tokio::time::{sleep, Duration};
     use uuid::Uuid;
+
+    #[test]
+    fn parse_progress_reads_cli_percent_as_ratio() {
+        assert_eq!(
+            parse_progress("Progress: 10/40 (25.00%) -- 1.0MB/4.0MB"),
+            Some(0.25)
+        );
+        assert_eq!(parse_progress("speed only 1.5 MB/s"), None);
+    }
+
+    #[test]
+    fn parse_speed_reads_cli_speed_units() {
+        assert_eq!(parse_speed("(1.5 MB/s @ 00:01:00)").as_deref(), Some("1.5 MB/s"));
+    }
+
+    #[test]
+    fn take_cli_segment_splits_on_carriage_return() {
+        let (segment, rest) = take_cli_segment("Progress: 1/2 (50.00%)\rnext").expect("segment");
+        assert_eq!(segment, "Progress: 1/2 (50.00%)");
+        assert_eq!(rest, "next");
+    }
 
     #[tokio::test]
     async fn running_task_remains_registered_until_process_exits() {
