@@ -1,5 +1,5 @@
 use crate::models::Task;
-use encoding_rs::{Decoder, Encoding, GB18030};
+use encoding_rs::{Encoding, GB18030};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -343,14 +343,13 @@ where
     R: AsyncRead + Unpin,
 {
     let mut buffer = [0_u8; 4096];
-    let mut pending = String::new();
-    let mut decoder = new_cli_output_decoder();
+    let mut pending = Vec::new();
 
     loop {
         match stream.read(&mut buffer).await {
             Ok(0) => break,
             Ok(n) => {
-                pending.push_str(&decode_cli_chunk(&mut decoder, &buffer[..n], false));
+                pending.extend_from_slice(&buffer[..n]);
                 while let Some((segment, rest)) = take_cli_segment(&pending) {
                     pending = rest;
                     emit_cli_segment(&segment, &task_id, &app_handle, log_prefix);
@@ -360,23 +359,23 @@ where
         }
     }
 
-    pending.push_str(&decode_cli_chunk(&mut decoder, &[], true));
-
-    let trailing = pending.trim();
-    if !trailing.is_empty() {
-        emit_cli_segment(trailing, &task_id, &app_handle, log_prefix);
+    if !pending.is_empty() {
+        let trailing = decode_cli_bytes_lossy(&pending).trim().to_string();
+        if !trailing.is_empty() {
+            emit_cli_segment(&trailing, &task_id, &app_handle, log_prefix);
+        }
     }
 }
 
-fn take_cli_segment(input: &str) -> Option<(String, String)> {
-    let split_at = input.find(|ch| ch == '\r' || ch == '\n')?;
-    let segment = input[..split_at].trim().to_string();
-    let delimiter_len = input[split_at..].chars().next()?.len_utf8();
-    let mut rest_start = split_at + delimiter_len;
-    if input[split_at..].starts_with("\r\n") {
+fn take_cli_segment(input: &[u8]) -> Option<(String, Vec<u8>)> {
+    let split_at = input.iter().position(|byte| *byte == b'\r' || *byte == b'\n')?;
+    let mut rest_start = split_at + 1;
+    if input.get(split_at) == Some(&b'\r') && input.get(split_at + 1) == Some(&b'\n') {
         rest_start = split_at + 2;
     }
-    let rest = input[rest_start..].to_string();
+
+    let segment = decode_cli_bytes_lossy(&input[..split_at]).trim().to_string();
+    let rest = input[rest_start..].to_vec();
     Some((segment, rest))
 }
 
@@ -419,11 +418,15 @@ fn emit_cli_segment(
     let _ = app_handle.emit("task-log", log_payload);
 }
 
-fn new_cli_output_decoder() -> Decoder {
-    cli_output_encoding().new_decoder()
+fn decode_cli_bytes_lossy(bytes: &[u8]) -> String {
+    if let Ok(decoded) = std::str::from_utf8(bytes) {
+        return decoded.to_string();
+    }
+
+    cli_output_fallback_encoding().decode(bytes).0.into_owned()
 }
 
-fn cli_output_encoding() -> &'static Encoding {
+fn cli_output_fallback_encoding() -> &'static Encoding {
     #[cfg(target_os = "windows")]
     {
         GB18030
@@ -433,16 +436,6 @@ fn cli_output_encoding() -> &'static Encoding {
     {
         encoding_rs::UTF_8
     }
-}
-
-fn decode_cli_chunk(decoder: &mut Decoder, bytes: &[u8], last: bool) -> String {
-    let mut decoded = String::new();
-    let _ = decoder.decode_to_string(bytes, &mut decoded, last);
-    decoded
-}
-
-fn decode_cli_bytes_lossy(bytes: &[u8]) -> String {
-    cli_output_encoding().decode(bytes).0.into_owned()
 }
 
 fn parse_progress(line: &str) -> Option<f32> {
@@ -723,14 +716,21 @@ mod tests {
 
     #[test]
     fn take_cli_segment_splits_on_carriage_return() {
-        let (segment, rest) = take_cli_segment("Progress: 1/2 (50.00%)\rnext").expect("segment");
+        let (segment, rest) = take_cli_segment(b"Progress: 1/2 (50.00%)\rnext").expect("segment");
         assert_eq!(segment, "Progress: 1/2 (50.00%)");
-        assert_eq!(rest, "next");
+        assert_eq!(rest, b"next".to_vec());
     }
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn decode_cli_bytes_lossy_reads_gb18030_output() {
+    fn decode_cli_bytes_lossy_prefers_utf8_when_valid() {
+        let bytes = "文件名称：测试".as_bytes();
+        assert_eq!(decode_cli_bytes_lossy(bytes), "文件名称：测试");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn decode_cli_bytes_lossy_falls_back_for_non_utf8_bytes() {
         let (encoded, _, _) = encoding_rs::GB18030.encode("文件名称：测试");
         assert_eq!(decode_cli_bytes_lossy(&encoded), "文件名称：测试");
     }
