@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { loadQueueState, tasks, queueRunning, trackSessionTask } from './stores.js';
   import { getQueueControlState, runQueueToggle } from './queue-controls.js';
+  import { findDuplicateWarnings } from './duplicate-warnings.js';
 
   let url = $state('');
   let saveName = $state('');
@@ -9,6 +10,12 @@
   let showAdvanced = $state(false);
   let adding = $state(false);
   let queueBusy = $state(false);
+
+  let duplicateWarnings = $derived(findDuplicateWarnings({
+    tasks: $tasks,
+    url,
+    saveName,
+  }));
 
   let queueControl = $derived(getQueueControlState({
     tasks: $tasks,
@@ -31,7 +38,6 @@
       url = '';
       saveName = '';
       await loadQueueState();
-      // Keep headers for batch downloads
     } catch (err) {
       console.error('Failed to add task:', err);
     } finally {
@@ -86,6 +92,16 @@
       {queueBusy ? '处理中...' : queueControl.label}
     </button>
   </div>
+
+  {#if duplicateWarnings.length > 0}
+    <div class="duplicate-warning" role="alert" aria-live="polite">
+      <span class="warning-icon">⚠</span>
+      <div class="warning-copy">
+        <strong>可能重复</strong>
+        <span>{duplicateWarnings.map((warning) => warning.message).join('；')}</span>
+      </div>
+    </div>
+  {/if}
 
   <button class="advanced-toggle" onclick={toggleAdvanced}>
     {showAdvanced ? '▾ 高级选项' : '▸ 高级选项'}
@@ -264,5 +280,37 @@
 
   .field-input:focus {
     border-color: var(--color-accent);
+  }
+
+  .duplicate-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid rgba(234, 179, 8, 0.45);
+    border-radius: var(--radius-sm);
+    background: rgba(234, 179, 8, 0.1);
+    color: var(--color-accent-bright);
+    font-size: 12px;
+  }
+
+  .warning-icon {
+    line-height: 1.5;
+  }
+
+  .warning-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .warning-copy strong {
+    color: var(--color-accent-bright);
+    font-size: 12px;
+  }
+
+  .warning-copy span {
+    color: var(--color-text-secondary);
   }
 </style>
