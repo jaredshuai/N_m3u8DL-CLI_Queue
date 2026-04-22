@@ -258,4 +258,12 @@ paket-files/
 
 # Python Tools for Visual Studio (PTVS)
 __pycache__/
+
+# Tauri / Vite local build outputs
+m3u8-queue-downloader/dist/
+m3u8-queue-downloader/src-tauri/target/
+
+# Local packaging resources injected before build
+m3u8-queue-downloader/src-tauri/resources/*
+!m3u8-queue-downloader/src-tauri/resources/.gitkeep
 *.pyc
