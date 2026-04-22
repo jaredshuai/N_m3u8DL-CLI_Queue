@@ -16,11 +16,28 @@
         "width": 800,
         "height": 600,
         "resizable": true,
-        "decorations": true
+        "decorations": false,
+        "minWidth": 720,
+        "minHeight": 520
       }
     ],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https://asset.localhost"
     }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/*"
+    ],
+    "publisher": "jaredshuai",
+    "shortDescription": "m3u8 queue downloader GUI",
+    "longDescription": "A Windows desktop GUI queue manager for N_m3u8DL-CLI."
   }
 }
