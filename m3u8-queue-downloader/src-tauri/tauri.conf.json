@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "m3u8 Queue Downloader",
+        "title": "m3u8 队列下载器",
         "width": 800,
         "height": 600,
         "resizable": true,
