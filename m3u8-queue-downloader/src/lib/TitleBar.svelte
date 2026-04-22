@@ -1,7 +1,18 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
 
   let { onToggleSettings, settingsOpen = false } = $props();
+
+  async function startDragging(event) {
+    if (event.button !== 0) return;
+
+    try {
+      await getCurrentWindow().startDragging();
+    } catch (err) {
+      console.error('Failed to start dragging window:', err);
+    }
+  }
 
   async function minimize() {
     try {
@@ -28,11 +39,16 @@
   }
 </script>
 
-<header class="title-bar" data-tauri-drag-region>
-  <div class="title-area" data-tauri-drag-region>
+<header class="title-bar">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="title-area"
+    data-tauri-drag-region
+    onmousedown={startDragging}
+  >
     <span class="app-mark">⬇</span>
     <div class="title-text" data-tauri-drag-region>
-      <strong data-tauri-drag-region>m3u8 Queue Downloader</strong>
+      <strong data-tauri-drag-region>m3u8 队列下载器</strong>
       <span data-tauri-drag-region>桌面队列工具</span>
     </div>
   </div>
@@ -70,6 +86,7 @@
     display: flex;
     align-items: center;
     gap: 9px;
+    flex: 1;
     min-width: 0;
     color: var(--color-text-main);
   }

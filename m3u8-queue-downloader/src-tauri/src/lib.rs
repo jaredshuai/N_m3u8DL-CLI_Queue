@@ -519,30 +519,24 @@ fn pause_queue_from_handle(app_handle: tauri::AppHandle) {
 }
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(
-        app,
-        "show-main-window",
-        "Show main window",
-        true,
-        None::<&str>,
-    )?;
-    let start = MenuItem::with_id(app, "start-queue", "Start queue", true, None::<&str>)?;
-    let pause = MenuItem::with_id(app, "pause-queue", "Pause queue", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show-main-window", "显示主窗口", true, None::<&str>)?;
+    let start = MenuItem::with_id(app, "start-queue", "开始队列", true, None::<&str>)?;
+    let pause = MenuItem::with_id(app, "pause-queue", "暂停队列", true, None::<&str>)?;
     let open_dir = MenuItem::with_id(
         app,
         "open-download-dir",
-        "Open download directory",
+        "打开下载目录",
         true,
         None::<&str>,
     )?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &start, &pause, &open_dir, &quit])?;
 
     let icon = app.default_window_icon().cloned();
     let mut tray_builder = TrayIconBuilder::new()
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("m3u8 Queue Downloader")
+        .tooltip("m3u8 队列下载器")
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "show-main-window" => {
                 let _ = show_main_window(app);

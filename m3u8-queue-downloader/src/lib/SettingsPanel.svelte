@@ -22,21 +22,21 @@
   }
 </script>
 
-<section class="settings-panel fade-in" aria-label="Settings">
+<section class="settings-panel fade-in" aria-label="设置">
   <div class="settings-header">
     <div>
-      <h2>Settings</h2>
-      <p>Window, tray, and completion behavior.</p>
+      <h2>设置</h2>
+      <p>窗口、托盘与完成后动作</p>
     </div>
     {#if saving}
-      <span class="saving">Saving...</span>
+      <span class="saving">保存中...</span>
     {/if}
   </div>
 
   <label class="setting-row" for="close-behavior">
     <div class="setting-copy">
-      <strong>Default close button behavior</strong>
-      <span>Hide to tray keeps the queue alive; exit closes the app process.</span>
+      <strong>关闭按钮默认行为</strong>
+      <span>关闭到托盘会保留队列与托盘菜单；直接退出会结束程序。</span>
     </div>
     <select
       id="close-behavior"
@@ -44,15 +44,15 @@
       onchange={(event) => updateSetting({ closeButtonBehavior: event.currentTarget.value })}
       disabled={saving}
     >
-      <option value="closeToTray">Close to tray</option>
-      <option value="exit">Exit app</option>
+      <option value="closeToTray">关闭到托盘</option>
+      <option value="exit">直接退出程序</option>
     </select>
   </label>
 
   <label class="setting-row checkbox-row">
     <div class="setting-copy">
-      <strong>Auto action after all tasks complete</strong>
-      <span>Only triggers when there are no waiting/downloading tasks and the run has no failures.</span>
+      <strong>所有任务完成后自动关闭电脑</strong>
+      <span>仅在没有等待/下载中的任务且本轮没有失败任务时触发。</span>
     </div>
     <input
       type="checkbox"

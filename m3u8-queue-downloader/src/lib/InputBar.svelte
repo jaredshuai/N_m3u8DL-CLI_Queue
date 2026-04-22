@@ -121,7 +121,7 @@
           />
         </div>
         <div class="field">
-          <label class="field-label" for="headers-input">Headers</label>
+          <label class="field-label" for="headers-input">请求头</label>
           <input
             id="headers-input"
             type="text"

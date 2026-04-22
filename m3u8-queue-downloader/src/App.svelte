@@ -100,13 +100,13 @@
     <section class:error={$shutdownNotice.error} class="shutdown-banner" role="alert">
       {#if $shutdownNotice.active}
         <div>
-          <strong>System countdown</strong>
-          <span>The queue has completed. Pending system action in {$shutdownNotice.secondsRemaining} seconds.</span>
+          <strong>系统倒计时</strong>
+          <span>队列已全部完成，系统操作将在 {$shutdownNotice.secondsRemaining} 秒后执行。</span>
         </div>
-        <button onclick={handleCancelShutdown}>Cancel</button>
+        <button onclick={handleCancelShutdown}>取消</button>
       {:else}
         <div>
-          <strong>System action failed</strong>
+          <strong>系统操作失败</strong>
           <span>{$shutdownNotice.error}</span>
         </div>
       {/if}

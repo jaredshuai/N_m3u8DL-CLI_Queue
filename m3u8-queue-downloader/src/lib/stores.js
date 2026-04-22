@@ -218,7 +218,7 @@ export async function setupListeners() {
     shutdownNotice.set({
       active: false,
       secondsRemaining: 0,
-      error: event.payload?.message ?? 'Auto shutdown failed to start',
+      error: event.payload?.message ?? '自动关机启动失败',
     });
   });
 
