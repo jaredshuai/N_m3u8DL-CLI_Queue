@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use uuid::Uuid;
 
-/// Status of a download task
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskStatus {
@@ -37,7 +36,37 @@ impl HistoryStatus {
     }
 }
 
-/// A single download task in the queue
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CloseButtonBehavior {
+    CloseToTray,
+    Exit,
+}
+
+impl Default for CloseButtonBehavior {
+    fn default() -> Self {
+        Self::CloseToTray
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    #[serde(default)]
+    pub close_button_behavior: CloseButtonBehavior,
+    #[serde(default, rename = "autoShutdownOnComplete")]
+    pub auto_action_on_complete: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            close_button_behavior: CloseButtonBehavior::CloseToTray,
+            auto_action_on_complete: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -76,7 +105,6 @@ impl Task {
     }
 }
 
-/// Overall state of the download queue
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueState {
@@ -95,7 +123,6 @@ impl Default for QueueState {
     }
 }
 
-/// Payload for adding a new task from the frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddTaskPayload {
