@@ -2,10 +2,17 @@
   import { onMount } from 'svelte';
   import { dndzone } from 'svelte-dnd-action';
   import InputBar from './lib/InputBar.svelte';
+  import CliConsolePanel from './lib/CliConsolePanel.svelte';
   import SettingsPanel from './lib/SettingsPanel.svelte';
   import TaskCard from './lib/TaskCard.svelte';
   import TitleBar from './lib/TitleBar.svelte';
   import StatusBar from './lib/StatusBar.svelte';
+  import {
+    closeCliConsole,
+    createCliConsoleState,
+    findCliConsoleTask,
+    openCliConsole,
+  } from './lib/cli-console.js';
   import {
     completedHistory,
     failedHistory,
@@ -29,6 +36,7 @@
   let failedHasMore = $derived($failedHistory.hasMore);
   let showSettings = $state(false);
   let dndItems = $state([]);
+  let cliConsole = $state(createCliConsoleState());
 
   const dndOptions = {
     flipDurationMs: 150,
@@ -43,6 +51,14 @@
 
   async function handleCancelShutdown() {
     await cancelAutoShutdown();
+  }
+
+  function handleOpenCliConsole(task) {
+    cliConsole = openCliConsole(cliConsole, task.id);
+  }
+
+  function handleCloseCliConsole() {
+    cliConsole = closeCliConsole(cliConsole);
   }
 
   function handleDndConsider(e) {
@@ -64,6 +80,11 @@
   let hasVisibleItems = $derived(
     $tasks.length > 0 || completedTasks.length > 0 || failedTasks.length > 0
   );
+  let cliConsoleTask = $derived(findCliConsoleTask(cliConsole, {
+    tasks: $tasks,
+    completedTasks,
+    failedTasks,
+  }));
 
   async function handleLoadMore(status) {
     await loadHistoryPage(status);
@@ -82,6 +103,12 @@
 
   $effect(() => {
     dndItems = waitingTasks.map((task) => ({ ...task, id: task.id }));
+  });
+
+  $effect(() => {
+    if (cliConsole.open && !cliConsoleTask) {
+      cliConsole = closeCliConsole(cliConsole);
+    }
   });
 </script>
 
@@ -119,7 +146,12 @@
         <div class="section-label">下载中</div>
         {#each activeTasks as task (task.id)}
           <div class="fade-in">
-            <TaskCard {task} draggable={false} />
+            <TaskCard
+              {task}
+              draggable={false}
+              onOpenCliConsole={handleOpenCliConsole}
+              cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
+            />
           </div>
         {/each}
       {/if}
@@ -134,7 +166,12 @@
         >
           {#each dndItems as task (task.id)}
             <div class="dnd-item">
-              <TaskCard {task} draggable={true} />
+              <TaskCard
+                {task}
+                draggable={true}
+                onOpenCliConsole={handleOpenCliConsole}
+                cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
+              />
             </div>
           {/each}
         </div>
@@ -144,7 +181,13 @@
         <div class="section-label">失败</div>
         {#each failedTasks as task (task.id)}
           <div class="fade-in">
-            <TaskCard {task} draggable={false} historical={true} />
+            <TaskCard
+              {task}
+              draggable={false}
+              historical={true}
+              onOpenCliConsole={handleOpenCliConsole}
+              cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
+            />
           </div>
         {/each}
         {#if failedHasMore}
@@ -158,7 +201,13 @@
         <div class="section-label">已完成</div>
         {#each completedTasks as task (task.id)}
           <div class="fade-in">
-            <TaskCard {task} draggable={false} historical={true} />
+            <TaskCard
+              {task}
+              draggable={false}
+              historical={true}
+              onOpenCliConsole={handleOpenCliConsole}
+              cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
+            />
           </div>
         {/each}
         {#if completedHasMore}
@@ -174,6 +223,10 @@
       </div>
     {/if}
   </section>
+
+  {#if cliConsole.open && cliConsoleTask}
+    <CliConsolePanel task={cliConsoleTask} onClose={handleCloseCliConsole} />
+  {/if}
 
   <StatusBar />
 </main>
@@ -253,6 +306,7 @@
 
   .task-list {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: 12px 16px;
   }

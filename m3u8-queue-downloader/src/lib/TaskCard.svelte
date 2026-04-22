@@ -1,24 +1,9 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
-  import { tick } from 'svelte';
-  import {
-    CLI_OUTPUT_PAGE_SIZE,
-    mergeCliOutputLines,
-    prependCliOutputPage,
-  } from './cli-output.js';
   import { displayProgressPercent } from './progress.js';
   import { clearHistoryTask, trackSessionTask } from './stores.js';
 
-  let { task, draggable = false, historical = false } = $props();
-
-  let showCliLive = $state(false);
-  let cliLivePanel = $state(null);
-  let cliOutputLines = $state([]);
-  let cliOutputOffset = $state(0);
-  let cliOutputTotal = $state(0);
-  let cliOutputHasMoreBefore = $state(false);
-  let cliOutputLoading = $state(false);
-  let cliOutputError = $state('');
+  let { task, draggable = false, historical = false, onOpenCliConsole = null, cliConsoleActive = false } = $props();
 
   let statusKey = $derived(
     task.status === 'downloading' ? 'down' :
@@ -47,8 +32,6 @@
 
   let progressPct = $derived(displayProgressPercent(task.progress));
   let canShowCliLive = $derived(statusKey === 'down' || statusKey === 'done' || statusKey === 'fail');
-  let cliTailLines = $derived(task.logLines ?? []);
-  let cliLiveLines = $derived(mergeCliOutputLines(cliOutputLines, cliTailLines));
 
   async function handleRemove() {
     try {
@@ -76,71 +59,9 @@
     }
   }
 
-  async function loadCliOutputTail() {
-    cliOutputLoading = true;
-    cliOutputError = '';
-    try {
-      const page = await invoke('get_cli_output_tail', {
-        taskId: task.id,
-        limit: CLI_OUTPUT_PAGE_SIZE,
-      });
-      cliOutputLines = page.lines ?? [];
-      cliOutputOffset = page.offset ?? 0;
-      cliOutputTotal = page.total ?? cliOutputLines.length;
-      cliOutputHasMoreBefore = page.hasMoreBefore ?? false;
-    } catch (err) {
-      cliOutputError = String(err);
-      cliOutputLines = [];
-      cliOutputOffset = 0;
-      cliOutputTotal = cliTailLines.length;
-      cliOutputHasMoreBefore = false;
-    } finally {
-      cliOutputLoading = false;
-    }
+  function handleOpenCliConsole() {
+    onOpenCliConsole?.(task);
   }
-
-  async function loadEarlierCliOutput() {
-    if (cliOutputLoading || !cliOutputHasMoreBefore) return;
-
-    cliOutputLoading = true;
-    cliOutputError = '';
-    const nextLimit = Math.min(CLI_OUTPUT_PAGE_SIZE, cliOutputOffset);
-    const nextOffset = Math.max(0, cliOutputOffset - nextLimit);
-
-    try {
-      const page = await invoke('get_cli_output_page', {
-        taskId: task.id,
-        offset: nextOffset,
-        limit: nextLimit,
-      });
-      cliOutputLines = prependCliOutputPage(cliOutputLines, page);
-      cliOutputOffset = page.offset ?? nextOffset;
-      cliOutputTotal = page.total ?? cliOutputTotal;
-      cliOutputHasMoreBefore = page.hasMoreBefore ?? false;
-    } catch (err) {
-      cliOutputError = String(err);
-    } finally {
-      cliOutputLoading = false;
-    }
-  }
-
-  async function toggleCliLive() {
-    showCliLive = !showCliLive;
-    if (showCliLive) {
-      await loadCliOutputTail();
-    }
-  }
-
-  $effect(() => {
-    const lineCount = cliLiveLines.length;
-    if (!showCliLive || !cliLivePanel) return;
-
-    tick().then(() => {
-      if (cliLivePanel) {
-        cliLivePanel.scrollTop = cliLivePanel.scrollHeight;
-      }
-    });
-  });
 </script>
 
 <div
@@ -187,8 +108,8 @@
 
       <div class="task-actions">
         {#if canShowCliLive}
-          <button class="action-btn text" onclick={toggleCliLive} title="查看CLI实况">
-            {showCliLive ? '收起CLI实况' : '查看CLI实况'}
+          <button class="action-btn text" onclick={handleOpenCliConsole} title="打开 CLI 终端面板">
+            {cliConsoleActive ? '正在查看 CLI 终端' : '打开 CLI 终端'}
           </button>
         {/if}
         {#if statusKey === 'wait'}
@@ -208,32 +129,6 @@
       </div>
     </div>
   </div>
-
-  {#if showCliLive && canShowCliLive}
-    <div class="cli-live-area fade-in" bind:this={cliLivePanel}>
-      <div class="cli-live-header">
-        <strong>CLI实况</strong>
-        <span>{cliOutputTotal || cliLiveLines.length} 行，自动滚动到最新输出</span>
-      </div>
-      {#if cliOutputHasMoreBefore}
-        <button class="cli-load-earlier" onclick={loadEarlierCliOutput} disabled={cliOutputLoading}>
-          {cliOutputLoading ? '加载中...' : '加载更早CLI实况'}
-        </button>
-      {/if}
-      {#if cliOutputError}
-        <div class="cli-live-line cli-live-error">CLI实况加载失败：{cliOutputError}</div>
-      {/if}
-      {#if cliLiveLines.length > 0}
-        {#each cliLiveLines as line}
-          <div class="cli-live-line">{line}</div>
-        {/each}
-      {:else if cliOutputLoading}
-        <div class="cli-live-line cli-live-empty">CLI实况加载中...</div>
-      {:else}
-        <div class="cli-live-line cli-live-empty">暂无CLI实况</div>
-      {/if}
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -439,77 +334,5 @@
 
   .task-card.completed:hover {
     opacity: 0.9;
-  }
-
-  .cli-live-area {
-    margin-top: 12px;
-    padding: 0 0 10px;
-    background: #080a0f;
-    border: 1px solid rgba(255,255,255,0.06);
-    border-radius: var(--radius-sm);
-    max-height: min(56vh, 520px);
-    min-height: 220px;
-    overflow-y: auto;
-    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
-    font-size: 11.5px;
-    line-height: 1.62;
-  }
-
-  .cli-live-header {
-    position: sticky;
-    top: 0;
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 12px;
-    margin-bottom: 4px;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    background: rgba(8, 10, 15, 0.96);
-    font-family: var(--font-stack);
-    z-index: 1;
-  }
-
-  .cli-live-header strong {
-    color: var(--color-accent-bright);
-    font-size: 12px;
-  }
-
-  .cli-live-header span {
-    color: var(--color-text-disabled);
-    font-size: 11px;
-  }
-
-  .cli-load-earlier {
-    margin: 0 12px 8px;
-    padding: 6px 10px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: var(--radius-sm);
-    background: rgba(255, 255, 255, 0.03);
-    color: var(--color-text-main);
-    font-size: 12px;
-    cursor: pointer;
-  }
-
-  .cli-load-earlier:disabled {
-    cursor: default;
-    opacity: 0.65;
-  }
-
-  .cli-live-line {
-    color: var(--color-text-secondary);
-    white-space: pre-wrap;
-    word-break: break-word;
-    padding: 0 12px;
-  }
-
-  .cli-live-empty {
-    color: var(--color-text-disabled);
-    font-style: italic;
-    padding-top: 10px;
-  }
-
-  .cli-live-error {
-    color: var(--color-status-fail);
-    padding-top: 10px;
   }
 </style>
