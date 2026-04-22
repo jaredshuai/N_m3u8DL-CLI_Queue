@@ -1,11 +1,12 @@
 use crate::models::Task;
+use encoding_rs::{Decoder, Encoding, GB18030};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tauri::{path::BaseDirectory, Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
@@ -122,22 +123,13 @@ impl TaskRunner {
         let task_id_stdout = task_id.clone();
         let app_handle_stdout = app_handle_progress.clone();
         tokio::spawn(async move {
-            read_cli_stdout(stdout, task_id_stdout, app_handle_stdout).await;
+            read_cli_stream(stdout, task_id_stdout, app_handle_stdout, None).await;
         });
 
         let task_id_stderr = task_id.clone();
         let app_handle_stderr = app_handle_progress.clone();
         tokio::spawn(async move {
-            let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
-
-            while let Ok(Some(line)) = lines.next_line().await {
-                let log_payload = serde_json::json!({
-                    "id": task_id_stderr,
-                    "line": format!("[stderr] {}", line),
-                });
-                let _ = app_handle_stderr.emit("task-log", log_payload);
-            }
+            read_cli_stream(stderr, task_id_stderr, app_handle_stderr, Some("[stderr] ")).await;
         });
 
         self.spawn_wait_task(task_id, child, stop_state, save_name, app_handle_complete);
@@ -341,30 +333,38 @@ async fn wait_for_confirmed_stop(stop_state: &Arc<AtomicU8>) -> bool {
     }
 }
 
-async fn read_cli_stdout<R>(mut stdout: R, task_id: String, app_handle: tauri::AppHandle)
+async fn read_cli_stream<R>(
+    mut stream: R,
+    task_id: String,
+    app_handle: tauri::AppHandle,
+    log_prefix: Option<&'static str>,
+)
 where
     R: AsyncRead + Unpin,
 {
     let mut buffer = [0_u8; 4096];
     let mut pending = String::new();
+    let mut decoder = new_cli_output_decoder();
 
     loop {
-        match stdout.read(&mut buffer).await {
+        match stream.read(&mut buffer).await {
             Ok(0) => break,
             Ok(n) => {
-                pending.push_str(&String::from_utf8_lossy(&buffer[..n]));
+                pending.push_str(&decode_cli_chunk(&mut decoder, &buffer[..n], false));
                 while let Some((segment, rest)) = take_cli_segment(&pending) {
                     pending = rest;
-                    emit_cli_segment(&segment, &task_id, &app_handle);
+                    emit_cli_segment(&segment, &task_id, &app_handle, log_prefix);
                 }
             }
             Err(_) => break,
         }
     }
 
+    pending.push_str(&decode_cli_chunk(&mut decoder, &[], true));
+
     let trailing = pending.trim();
     if !trailing.is_empty() {
-        emit_cli_segment(trailing, &task_id, &app_handle);
+        emit_cli_segment(trailing, &task_id, &app_handle, log_prefix);
     }
 }
 
@@ -380,30 +380,69 @@ fn take_cli_segment(input: &str) -> Option<(String, String)> {
     Some((segment, rest))
 }
 
-fn emit_cli_segment(segment: &str, task_id: &str, app_handle: &tauri::AppHandle) {
+fn emit_cli_segment(
+    segment: &str,
+    task_id: &str,
+    app_handle: &tauri::AppHandle,
+    log_prefix: Option<&str>,
+) {
     if segment.is_empty() {
         return;
     }
 
-    let progress = parse_progress(segment);
-    let speed = parse_speed(segment);
-    let threads = parse_threads(segment);
+    if log_prefix.is_none() {
+        let progress = parse_progress(segment);
+        let speed = parse_speed(segment);
+        let threads = parse_threads(segment);
 
-    if progress.is_some() || speed.is_some() || threads.is_some() {
-        let payload = serde_json::json!({
-            "id": task_id,
-            "progress": progress,
-            "speed": speed,
-            "threads": threads,
-        });
-        let _ = app_handle.emit("task-progress", payload);
+        if progress.is_some() || speed.is_some() || threads.is_some() {
+            let payload = serde_json::json!({
+                "id": task_id,
+                "progress": progress,
+                "speed": speed,
+                "threads": threads,
+            });
+            let _ = app_handle.emit("task-progress", payload);
+        }
     }
+
+    let line = if let Some(prefix) = log_prefix {
+        format!("{prefix}{segment}")
+    } else {
+        segment.to_string()
+    };
 
     let log_payload = serde_json::json!({
         "id": task_id,
-        "line": segment,
+        "line": line,
     });
     let _ = app_handle.emit("task-log", log_payload);
+}
+
+fn new_cli_output_decoder() -> Decoder {
+    cli_output_encoding().new_decoder()
+}
+
+fn cli_output_encoding() -> &'static Encoding {
+    #[cfg(target_os = "windows")]
+    {
+        GB18030
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        encoding_rs::UTF_8
+    }
+}
+
+fn decode_cli_chunk(decoder: &mut Decoder, bytes: &[u8], last: bool) -> String {
+    let mut decoded = String::new();
+    let _ = decoder.decode_to_string(bytes, &mut decoded, last);
+    decoded
+}
+
+fn decode_cli_bytes_lossy(bytes: &[u8]) -> String {
+    cli_output_encoding().decode(bytes).0.into_owned()
 }
 
 fn parse_progress(line: &str) -> Option<f32> {
@@ -587,8 +626,8 @@ async fn kill_process(pid: u32) -> Result<KillProcessResult, String> {
         return Ok(KillProcessResult::Killed);
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    let stdout = decode_cli_bytes_lossy(&output.stdout).to_lowercase();
+    let stderr = decode_cli_bytes_lossy(&output.stderr).to_lowercase();
     let combined = format!("{stdout}\n{stderr}");
     if combined.contains("not found")
         || combined.contains("no running instance")
@@ -619,7 +658,7 @@ async fn kill_process(pid: u32) -> Result<KillProcessResult, String> {
         return Ok(KillProcessResult::Killed);
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    let stderr = decode_cli_bytes_lossy(&output.stderr).to_lowercase();
     if stderr.contains("no such process") {
         return Ok(KillProcessResult::AlreadyExited);
     }
@@ -634,8 +673,8 @@ async fn kill_process(pid: u32) -> Result<KillProcessResult, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        find_cli_in_ancestors, parse_progress, parse_speed, parse_threads, take_cli_segment,
-        TaskRunner,
+        decode_cli_bytes_lossy, find_cli_in_ancestors, parse_progress, parse_speed,
+        parse_threads, take_cli_segment, TaskRunner,
     };
     use crate::test_support::spawn_sleeping_child;
     use std::fs;
@@ -687,6 +726,13 @@ mod tests {
         let (segment, rest) = take_cli_segment("Progress: 1/2 (50.00%)\rnext").expect("segment");
         assert_eq!(segment, "Progress: 1/2 (50.00%)");
         assert_eq!(rest, "next");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn decode_cli_bytes_lossy_reads_gb18030_output() {
+        let (encoded, _, _) = encoding_rs::GB18030.encode("文件名称：测试");
+        assert_eq!(decode_cli_bytes_lossy(&encoded), "文件名称：测试");
     }
 
     #[tokio::test]

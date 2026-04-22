@@ -22,6 +22,7 @@ tokio = { version = "1", features = ["full"] }
 tauri-plugin-opener = "2"
 dirs = "6"
 regex = "1"
+encoding_rs = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
