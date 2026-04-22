@@ -660,6 +660,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_progress_reads_real_cli_progress_reporter_line() {
+        let line =
+            "12:34:56.789 Progress: 10/40 (25.00%) -- 1.00MB/4.00MB (512.5KB/s @ 00:00:06)";
+        assert_eq!(parse_progress(line), Some(0.25));
+        assert_eq!(parse_speed(line).as_deref(), Some("512.5KB/s"));
+    }
+
+    #[test]
     fn parse_progress_accepts_comma_decimal_and_count_fallback() {
         assert_eq!(
             parse_progress("Progress: 1/4 (25,00%) -- 1MB/4MB"),

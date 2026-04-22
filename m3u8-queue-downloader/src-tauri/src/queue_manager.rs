@@ -357,4 +357,53 @@ mod tests {
         assert_eq!(task.log_lines.front().map(String::as_str), Some("line-25"));
         assert_eq!(task.log_lines.back().map(String::as_str), Some("line-524"));
     }
+
+    #[tokio::test]
+    async fn reorder_waiting_tasks_persists_across_reload() {
+        let path = std::env::temp_dir().join(format!("queue-state-{}.json", uuid::Uuid::new_v4()));
+        let manager = QueueManager::new(path.clone());
+
+        let (first, _) = manager
+            .add_task(AddTaskPayload {
+                url: "https://example.com/1.m3u8".to_string(),
+                save_name: Some("first".to_string()),
+                headers: None,
+            })
+            .await;
+        let (second, _) = manager
+            .add_task(AddTaskPayload {
+                url: "https://example.com/2.m3u8".to_string(),
+                save_name: Some("second".to_string()),
+                headers: None,
+            })
+            .await;
+        let (third, _) = manager
+            .add_task(AddTaskPayload {
+                url: "https://example.com/3.m3u8".to_string(),
+                save_name: Some("third".to_string()),
+                headers: None,
+            })
+            .await;
+
+        manager.set_running(true).await;
+        manager.schedule_next().await.expect("schedule first task");
+        manager
+            .reorder_tasks(vec![third.id.clone(), second.id.clone()])
+            .await
+            .expect("reorder waiting tasks");
+
+        let state = manager.get_state().await;
+        let ids: Vec<_> = state.tasks.iter().map(|task| task.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![first.id.as_str(), third.id.as_str(), second.id.as_str()]
+        );
+
+        let reloaded = QueueManager::new(path.clone());
+        let reloaded_state = reloaded.get_state().await;
+        let reloaded_ids: Vec<_> = reloaded_state.tasks.iter().map(|task| task.id.as_str()).collect();
+        assert_eq!(reloaded_ids, ids);
+
+        std::fs::remove_file(path).expect("cleanup queue state");
+    }
 }

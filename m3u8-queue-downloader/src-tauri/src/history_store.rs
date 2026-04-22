@@ -317,6 +317,7 @@ mod tests {
     use crate::models::TaskStatus;
     use chrono::Utc;
     use std::collections::VecDeque;
+    use std::thread;
     use uuid::Uuid;
 
     fn temp_history_path() -> PathBuf {
@@ -412,6 +413,32 @@ mod tests {
             path.join("completed").join("000002.json").exists(),
             "append should reconcile the stale index before deciding the chunk target"
         );
+
+        fs::remove_dir_all(path).expect("cleanup history dir");
+    }
+
+    #[test]
+    fn append_is_serialized_inside_process() {
+        let path = temp_history_path();
+        let store = HistoryStore::new(path.clone());
+        let mut handles = Vec::new();
+
+        for index in 0..40 {
+            let store = store.clone();
+            handles.push(thread::spawn(move || {
+                let task = build_task(index, TaskStatus::Completed);
+                store.append(&task).expect("append history task");
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("join append thread");
+        }
+
+        let page = store
+            .get_page(HistoryStatus::Completed, 0, 40)
+            .expect("read history page");
+        assert_eq!(page.tasks.len(), 40);
 
         fs::remove_dir_all(path).expect("cleanup history dir");
     }

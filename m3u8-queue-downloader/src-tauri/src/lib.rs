@@ -734,6 +734,7 @@ pub fn run() {
 mod tests {
     use super::*;
     use crate::shutdown::ShutdownManager;
+    use crate::test_support::spawn_sleeping_child;
     use std::path::PathBuf;
     use uuid::Uuid;
 
@@ -809,5 +810,73 @@ mod tests {
 
         assert_eq!(paused_task.status, models::TaskStatus::Downloading);
         assert!(state.current_task_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn pause_current_task_resets_state_after_successful_stop() {
+        let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
+        let task_runner = Arc::new(TaskRunner::new());
+        let payload = AddTaskPayload {
+            url: "https://example.com/test.m3u8".to_string(),
+            save_name: None,
+            headers: None,
+        };
+        let (task, _) = queue_manager.add_task(payload).await;
+        let child = spawn_sleeping_child().await;
+
+        queue_manager.set_running(true).await;
+        queue_manager.schedule_next().await.expect("scheduled task");
+        task_runner
+            .insert_running_task_for_test(task.id.clone(), child)
+            .await;
+        task_runner.begin_wait_for_test(&task.id).await;
+
+        pause_current_task(&queue_manager, &task_runner)
+            .await
+            .expect("pause succeeds");
+
+        let state = queue_manager.get_state().await;
+        let paused_task = state
+            .tasks
+            .iter()
+            .find(|t| t.id == task.id)
+            .expect("task exists");
+
+        assert_eq!(paused_task.status, models::TaskStatus::Waiting);
+        assert!(state.current_task_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_start_failure_persists_terminal_task_to_history() {
+        let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
+        let history_path = std::env::temp_dir().join(format!("history-{}", Uuid::new_v4()));
+        let history_store = Arc::new(HistoryStore::new(history_path.clone()));
+        let payload = AddTaskPayload {
+            url: "https://example.com/test.m3u8".to_string(),
+            save_name: None,
+            headers: None,
+        };
+        let (task, _) = queue_manager.add_task(payload).await;
+
+        queue_manager.set_running(true).await;
+        queue_manager.schedule_next().await.expect("scheduled task");
+        queue_manager.on_task_failed(&task.id, "first").await;
+        queue_manager.schedule_next().await.expect("rescheduled task");
+        queue_manager.on_task_failed(&task.id, "second").await;
+        queue_manager.schedule_next().await.expect("rescheduled task");
+
+        handle_start_failure(&queue_manager, &history_store, &task.id, "third")
+            .await
+            .expect("persist terminal failure");
+
+        let state = queue_manager.get_state().await;
+        assert!(state.tasks.is_empty());
+        let page = history_store
+            .get_page(HistoryStatus::Failed, 0, 20)
+            .expect("history page");
+        assert_eq!(page.tasks.len(), 1);
+        assert_eq!(page.tasks[0].id, task.id);
+
+        std::fs::remove_dir_all(history_path).expect("cleanup history");
     }
 }
