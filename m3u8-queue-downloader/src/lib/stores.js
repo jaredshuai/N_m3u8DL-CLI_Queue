@@ -7,6 +7,7 @@ import {
   prependHistoryTask,
 } from './history.js';
 import { appendLogLine } from './logs.js';
+import { buildProgressPatch, normalizeTaskProgress } from './progress.js';
 import {
   createSessionProgressState,
   recordHistoricalSessionTask,
@@ -14,37 +15,26 @@ import {
 } from './session-progress.js';
 import { derived, get, writable } from 'svelte/store';
 
-/**
- * Task object shape:
- * {
- *   id: string,
- *   url: string,
- *   save_name: string | null,
- *   headers: string | null,
- *   status: "waiting" | "downloading" | "completed" | "failed",
- *   progress: number,       // 0-100
- *   speed: string | null,   // e.g. "2.5 MB/s"
- *   threads: string | null, // e.g. "8/16"
- *   log: string[],          // CLI output lines
- *   output_path: string | null,
- *   error_message: string | null,
- * }
- */
-
 export const tasks = writable([]);
 export const queueRunning = writable(false);
 export const completedHistory = writable(createHistoryState());
 export const failedHistory = writable(createHistoryState());
 export const sessionProgress = writable(createSessionProgressState());
+export const appSettings = writable({
+  closeButtonBehavior: 'closeToTray',
+  autoShutdownOnComplete: false,
+});
+export const shutdownNotice = writable({
+  active: false,
+  secondsRemaining: 0,
+  error: null,
+});
 export const sessionCompletedCount = derived(
   sessionProgress,
   ($sessionProgress) => $sessionProgress.completedCount,
 );
 
-/** Unsubscriber functions for event listeners */
 let unlisteners = [];
-
-/** Pending progress updates batched by task ID */
 let pendingProgress = {};
 let progressTimer = null;
 
@@ -58,15 +48,10 @@ function flushProgress() {
   }));
 }
 
-/** Load full queue state from backend */
 export async function loadQueueState() {
   try {
     const state = await invoke('get_queue_state');
-    // Backend progress is 0.0~1.0, frontend expects 0~100
-    const normalized = (state.tasks ?? []).map(t => ({
-      ...t,
-      progress: (t.progress != null && t.progress >= 0) ? t.progress * 100 : 0,
-    }));
+    const normalized = (state.tasks ?? []).map(normalizeTaskProgress);
     tasks.set(normalized);
     queueRunning.set(state.isRunning ?? false);
   } catch (err) {
@@ -79,10 +64,7 @@ function historyStore(status) {
 }
 
 function normalizeTask(task) {
-  return {
-    ...task,
-    progress: (task.progress != null && task.progress >= 0) ? task.progress * 100 : 0,
-  };
+  return normalizeTaskProgress(task);
 }
 
 export async function loadHistoryPage(status, { reset = false, limit = DEFAULT_HISTORY_PAGE_SIZE } = {}) {
@@ -112,17 +94,85 @@ export function trackSessionTask(taskId) {
   sessionProgress.update((state) => trackSessionTaskState(state, taskId));
 }
 
-/** Set up all Tauri event listeners */
+let shutdownTimer = null;
+
+function clearShutdownTimer() {
+  if (shutdownTimer) {
+    clearInterval(shutdownTimer);
+    shutdownTimer = null;
+  }
+}
+
+function startShutdownCountdown(seconds) {
+  clearShutdownTimer();
+  shutdownNotice.set({
+    active: true,
+    secondsRemaining: seconds,
+    error: null,
+  });
+
+  shutdownTimer = setInterval(() => {
+    shutdownNotice.update((notice) => {
+      const nextSeconds = Math.max(0, notice.secondsRemaining - 1);
+      if (nextSeconds === 0) {
+        clearShutdownTimer();
+      }
+      return {
+        ...notice,
+        secondsRemaining: nextSeconds,
+      };
+    });
+  }, 1000);
+}
+
+export async function loadAppSettings() {
+  try {
+    const settings = await invoke('get_app_settings');
+    appSettings.set(settings);
+  } catch (err) {
+    console.error('Failed to load app settings:', err);
+  }
+}
+
+export async function saveAppSettings(settings) {
+  try {
+    const updated = await invoke('update_app_settings', { settings });
+    appSettings.set(updated);
+    return updated;
+  } catch (err) {
+    console.error('Failed to save app settings:', err);
+    throw err;
+  }
+}
+
+export async function cancelAutoShutdown() {
+  try {
+    await invoke('cancel_auto_shutdown');
+    clearShutdownTimer();
+    shutdownNotice.set({
+      active: false,
+      secondsRemaining: 0,
+      error: null,
+    });
+  } catch (err) {
+    shutdownNotice.set({
+      active: false,
+      secondsRemaining: 0,
+      error: String(err),
+    });
+  }
+}
+
 export async function setupListeners() {
   const u1 = await listen('task-progress', (event) => {
     const d = event.payload;
-    const progress = (d.progress != null && d.progress >= 0) ? d.progress * 100 : null;
+    const patch = buildProgressPatch(d);
+    if (Object.keys(patch).length === 0) return;
+
     const prev = pendingProgress[d.id] || {};
     pendingProgress[d.id] = {
       ...prev,
-      ...(progress != null ? { progress } : {}),
-      ...(d.speed ? { speed: d.speed } : {}),
-      ...(d.threads ? { threads: d.threads } : {}),
+      ...patch,
     };
     if (!progressTimer) {
       progressTimer = setTimeout(flushProgress, 200);
@@ -149,10 +199,32 @@ export async function setupListeners() {
     sessionProgress.update((state) => recordHistoricalSessionTask(state, d.task));
   });
 
-  unlisteners = [u1, u2, u3, u4];
+  const u5 = await listen('shutdown-countdown-started', (event) => {
+    const seconds = Number(event.payload?.seconds ?? 60);
+    startShutdownCountdown(seconds);
+  });
+
+  const u6 = await listen('shutdown-countdown-cancelled', () => {
+    clearShutdownTimer();
+    shutdownNotice.set({
+      active: false,
+      secondsRemaining: 0,
+      error: null,
+    });
+  });
+
+  const u7 = await listen('shutdown-error', (event) => {
+    clearShutdownTimer();
+    shutdownNotice.set({
+      active: false,
+      secondsRemaining: 0,
+      error: event.payload?.message ?? 'Auto shutdown failed to start',
+    });
+  });
+
+  unlisteners = [u1, u2, u3, u4, u5, u6, u7];
 }
 
-/** Clean up listeners (for teardown) */
 export function teardownListeners() {
   for (const u of unlisteners) u();
   unlisteners = [];
@@ -161,4 +233,5 @@ export function teardownListeners() {
     progressTimer = null;
     pendingProgress = {};
   }
+  clearShutdownTimer();
 }
