@@ -38,6 +38,23 @@ let unlisteners = [];
 let pendingProgress = {};
 let progressTimer = null;
 
+function updateTaskList(list, taskId, updater) {
+  return list.map((task) => (task.id === taskId ? updater(task) : task));
+}
+
+function updateHistoryStore(store, taskId, updater) {
+  store.update((state) => ({
+    ...state,
+    tasks: updateTaskList(state.tasks, taskId, updater),
+  }));
+}
+
+function updateTaskEverywhere(taskId, updater) {
+  tasks.update((currentTasks) => updateTaskList(currentTasks, taskId, updater));
+  updateHistoryStore(completedHistory, taskId, updater);
+  updateHistoryStore(failedHistory, taskId, updater);
+}
+
 function flushProgress() {
   const batch = pendingProgress;
   pendingProgress = {};
@@ -196,32 +213,35 @@ export async function setupListeners() {
 
   const u3b = await listen('task-terminal-committed-line', (event) => {
     const d = event.payload;
-    tasks.update((currentTasks) => currentTasks.map(t => {
-      if (t.id !== d.id) return t;
-      const lines = [...(t.terminalCommittedLines ?? []), d.line];
+    updateTaskEverywhere(d.id, (task) => {
+      const lines = [...(task.terminalCommittedLines ?? []), d.line];
       const MAX_TERMINAL_LINES = 2000;
       return {
-        ...t,
+        ...task,
         terminalCommittedLines: lines.length > MAX_TERMINAL_LINES
           ? lines.slice(lines.length - MAX_TERMINAL_LINES)
           : lines,
+        terminalActiveLine: task.terminalActiveLine ?? '',
       };
-    }));
+    });
   });
 
   const u3c = await listen('task-terminal-active-line', (event) => {
     const d = event.payload;
-    tasks.update((currentTasks) => currentTasks.map(t =>
-      t.id === d.id
-        ? { ...t, terminalActiveLine: d.activeLine ?? '' }
-        : t
-    ));
+    updateTaskEverywhere(d.id, (task) => ({
+      ...task,
+      terminalActiveLine: d.activeLine ?? '',
+    }));
   });
 
   const u4 = await listen('history-task-added', (event) => {
     const d = event.payload;
     const store = historyStore(d.status);
-    store.update((state) => prependHistoryTask(state, normalizeTask(d.task)));
+    store.update((state) => prependHistoryTask(state, {
+      ...normalizeTask(d.task),
+      terminalActiveLine: '',
+      terminalCommittedLines: [],
+    }));
     sessionProgress.update((state) => recordHistoricalSessionTask(state, d.task));
   });
 

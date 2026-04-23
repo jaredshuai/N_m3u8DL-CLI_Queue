@@ -5,9 +5,10 @@
     CLI_OUTPUT_PAGE_SIZE,
     prependCliOutputPage,
   } from './cli-output.js';
+  import { resolveTerminalActiveLine, shouldReloadTerminalState } from './cli-console.js';
   import { displayProgressPercent } from './progress.js';
 
-  let { task, onClose } = $props();
+  let { task, onClose, overlay = false } = $props();
 
   let cliPanel = $state(null);
   let committedLines = $state([]);
@@ -19,6 +20,7 @@
   let cliOutputError = $state('');
   let autoStickToBottom = $state(true);
   let loadedTaskId = $state(null);
+  let loadedTaskStatus = $state(null);
 
   let statusKey = $derived(
     task?.status === 'downloading' ? 'down' :
@@ -44,10 +46,13 @@
   let liveCommittedLines = $derived(task?.terminalCommittedLines ?? []);
   let mergedCommittedLines = $derived(mergeCommitted(committedLines, liveCommittedLines));
 
-  let liveActiveLine = $derived(task?.terminalActiveLine ?? '');
-  let displayActiveLine = $derived(liveActiveLine || activeLine);
+  let liveActiveLine = $derived(resolveTerminalActiveLine(task, activeLine));
+  let displayActiveLine = $derived(liveActiveLine);
 
   let totalLineCount = $derived(mergedCommittedLines.length + (displayActiveLine ? 1 : 0));
+  let displayLineCount = $derived(
+    Math.max(cliOutputTotal ?? 0, mergedCommittedLines.length) + (displayActiveLine ? 1 : 0)
+  );
 
   function mergeCommitted(persisted, live) {
     if (persisted.length === 0) return live;
@@ -65,7 +70,7 @@
     return [...persisted, ...live];
   }
 
-  async function loadTerminalState(taskId) {
+  async function loadTerminalState(taskId, taskStatus) {
     cliOutputLoading = true;
     cliOutputError = '';
     try {
@@ -79,6 +84,7 @@
       cliOutputTotal = state.total ?? committedLines.length;
       cliOutputHasMoreBefore = state.hasMoreBefore ?? false;
       loadedTaskId = taskId;
+      loadedTaskStatus = taskStatus ?? null;
     } catch (err) {
       cliOutputError = String(err);
       committedLines = [];
@@ -86,6 +92,7 @@
       cliOutputOffset = 0;
       cliOutputTotal = 0;
       cliOutputHasMoreBefore = false;
+      loadedTaskStatus = taskStatus ?? null;
     } finally {
       cliOutputLoading = false;
     }
@@ -129,7 +136,7 @@
   }
 
   $effect(() => {
-    if (!task?.id || task.id === loadedTaskId) return;
+    if (!shouldReloadTerminalState(task, loadedTaskId, loadedTaskStatus)) return;
     committedLines = [];
     activeLine = '';
     cliOutputOffset = 0;
@@ -137,7 +144,7 @@
     cliOutputHasMoreBefore = false;
     cliOutputError = '';
     autoStickToBottom = true;
-    loadTerminalState(task.id);
+    loadTerminalState(task.id, task.status);
   });
 
   $effect(() => {
@@ -152,39 +159,38 @@
   });
 </script>
 
-<section class="cli-console-shell">
+<section class:overlay class="cli-console-shell">
   <div class="cli-console-header">
     <div class="cli-console-title">
       <strong>{displayTitle}</strong>
       <span>{task?.url}</span>
     </div>
-    <div class="cli-console-controls">
-      <div class="cli-console-meta">
-        <span class="meta-badge {statusKey}">{statusLabel}</span>
-        {#if task?.status === 'downloading'}
-          <span class="meta-pill">{progressPct}%</span>
-          {#if task?.speed}
-            <span class="meta-pill">{task.speed}</span>
-          {/if}
-          {#if task?.threads}
-            <span class="meta-pill">线程 {task.threads}</span>
-          {/if}
-        {/if}
-      </div>
-      <div class="cli-console-actions-row">
-        <button class="meta-btn" onclick={scrollToBottom}>回到底部</button>
-        <button class="meta-btn close" onclick={onClose}>关闭</button>
-      </div>
+    <div class="cli-console-actions-row">
+      <button class="meta-btn" onclick={scrollToBottom}>回到底部</button>
+      <button class="meta-btn close" onclick={onClose}>关闭</button>
     </div>
   </div>
 
-  <div class="cli-console-subbar">
-    <span>当前只显示一个 CLI 终端面板</span>
-    <span>{cliOutputTotal || mergedCommittedLines.length} 行</span>
+  <div class="cli-console-statusbar">
+    <div class="cli-console-meta">
+      <span class="meta-badge {statusKey}">{statusLabel}</span>
+      {#if task?.status === 'downloading'}
+        <span class="meta-pill meta-progress">{progressPct}%</span>
+        {#if task?.speed}
+          <span class="meta-pill meta-metric">{task.speed}</span>
+        {/if}
+        {#if task?.threads}
+          <span class="meta-pill meta-metric">线程 {task.threads}</span>
+        {/if}
+      {/if}
+    </div>
+    <div class="cli-console-summary">
+      <span class="meta-pill subtle">{displayLineCount} 行</span>
+    </div>
   </div>
 
   {#if cliOutputHasMoreBefore}
-    <div class="cli-console-actions">
+    <div class="cli-console-load-row">
       <button class="meta-btn" onclick={loadEarlierCliOutput} disabled={cliOutputLoading}>
         {cliOutputLoading ? '加载中...' : '加载更早输出'}
       </button>
@@ -212,6 +218,8 @@
 
 <style>
   .cli-console-shell {
+    display: flex;
+    flex-direction: column;
     flex-shrink: 0;
     height: 320px;
     margin: 0 16px 12px;
@@ -224,12 +232,22 @@
     overflow: hidden;
   }
 
+  .cli-console-shell.overlay {
+    height: 100%;
+    margin: 0;
+    border-radius: 18px;
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow:
+      0 22px 52px rgba(0, 0, 0, 0.42),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
   .cli-console-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
     gap: 16px;
-    padding: 12px 14px 10px;
+    padding: 12px 14px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     background: rgba(255, 255, 255, 0.02);
   }
@@ -258,30 +276,38 @@
     text-overflow: ellipsis;
   }
 
-  .cli-console-controls {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 8px;
-    flex-shrink: 0;
-    min-width: 0;
+  .cli-console-statusbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 14px;
+    font-size: 11px;
+    color: var(--color-text-disabled);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    background: rgba(255, 255, 255, 0.015);
   }
 
   .cli-console-meta {
     display: flex;
     align-items: center;
     gap: 8px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    max-width: 100%;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .cli-console-meta::-webkit-scrollbar {
+    display: none;
   }
 
   .cli-console-actions-row {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
     gap: 8px;
     flex-wrap: nowrap;
+    flex-shrink: 0;
   }
 
   .meta-badge,
@@ -293,6 +319,8 @@
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.03);
     color: var(--color-text-secondary);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
   }
 
   .meta-badge.down {
@@ -311,40 +339,47 @@
     color: var(--color-status-wait);
   }
 
+  .meta-progress {
+    min-width: 56px;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .meta-metric {
+    min-width: 88px;
+  }
+
+  .subtle {
+    color: var(--color-text-disabled);
+    background: rgba(255, 255, 255, 0.015);
+  }
+
+  .cli-console-summary {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-shrink: 0;
+  }
+
   .meta-btn {
     padding: 6px 10px;
+    min-width: 78px;
     border-radius: var(--radius-sm);
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.03);
     color: var(--color-text-main);
     font-size: 12px;
     cursor: pointer;
+    white-space: nowrap;
   }
 
   .meta-btn.close {
     color: var(--color-status-fail);
   }
 
-  @media (max-width: 900px) {
-    .cli-console-header {
-      flex-direction: column;
-      align-items: stretch;
-    }
-
-    .cli-console-controls {
-      align-items: stretch;
-    }
-
-    .cli-console-meta,
-    .cli-console-actions-row {
-      justify-content: flex-start;
-    }
-  }
-
-  .cli-console-subbar,
-  .cli-console-actions {
+  .cli-console-load-row {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 12px;
     padding: 8px 14px;
     font-size: 11px;
@@ -352,12 +387,9 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   }
 
-  .cli-console-actions {
-    justify-content: flex-start;
-  }
-
   .cli-console-body {
-    height: calc(320px - 94px);
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: 10px 0 14px;
     font-family: 'Cascadia Code', 'SF Mono', Consolas, monospace;
@@ -402,5 +434,37 @@
 
   .cli-error {
     color: var(--color-status-fail);
+  }
+
+  @media (max-width: 900px) {
+    .cli-console-header,
+    .cli-console-statusbar {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .cli-console-header {
+      gap: 10px;
+    }
+
+    .cli-console-actions-row {
+      gap: 6px;
+    }
+
+    .meta-btn {
+      min-width: 70px;
+      padding: 6px 8px;
+    }
+
+    .cli-console-statusbar {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+    }
+
+    .cli-console-summary {
+      justify-content: flex-start;
+    }
   }
 </style>

@@ -115,118 +115,122 @@
 <main class="app">
   <TitleBar onToggleSettings={toggleSettings} settingsOpen={showSettings} />
 
-  {#if showSettings}
-    <SettingsPanel />
-  {/if}
+  <section class="app-shell">
+    {#if showSettings}
+      <SettingsPanel />
+    {/if}
 
-  <header class="app-header">
-    <InputBar />
-  </header>
+    <header class="app-header">
+      <InputBar />
+    </header>
 
-  {#if $shutdownNotice.active || $shutdownNotice.error}
-    <section class:error={$shutdownNotice.error} class="shutdown-banner" role="alert">
-      {#if $shutdownNotice.active}
-        <div>
-          <strong>系统倒计时</strong>
-          <span>队列已全部完成，系统操作将在 {$shutdownNotice.secondsRemaining} 秒后执行。</span>
-        </div>
-        <button onclick={handleCancelShutdown}>取消</button>
-      {:else}
-        <div>
-          <strong>系统操作失败</strong>
-          <span>{$shutdownNotice.error}</span>
-        </div>
-      {/if}
-    </section>
-  {/if}
-
-  <section class="task-list">
-    {#if hasVisibleItems}
-      {#if activeTasks.length > 0}
-        <div class="section-label">下载中</div>
-        {#each activeTasks as task (task.id)}
-          <div class="fade-in">
-            <TaskCard
-              {task}
-              draggable={false}
-              onOpenCliConsole={handleOpenCliConsole}
-              cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
-            />
+    {#if $shutdownNotice.active || $shutdownNotice.error}
+      <section class:error={$shutdownNotice.error} class="shutdown-banner" role="alert">
+        {#if $shutdownNotice.active}
+          <div>
+            <strong>系统倒计时</strong>
+            <span>队列已全部完成，系统操作将在 {$shutdownNotice.secondsRemaining} 秒后执行。</span>
           </div>
-        {/each}
-      {/if}
+          <button onclick={handleCancelShutdown}>取消</button>
+        {:else}
+          <div>
+            <strong>系统操作失败</strong>
+            <span>{$shutdownNotice.error}</span>
+          </div>
+        {/if}
+      </section>
+    {/if}
 
-      {#if waitingTasks.length > 0}
-        <div class="section-label">等待中</div>
-        <div
-          class="dnd-zone"
-          use:dndzone={{ items: dndItems, ...dndOptions }}
-          onconsider={handleDndConsider}
-          onfinalize={handleDndFinalize}
-        >
-          {#each dndItems as task (task.id)}
-            <div class="dnd-item">
+    <section class="task-list" aria-hidden={cliConsole.open && cliConsoleTask ? 'true' : undefined}>
+      {#if hasVisibleItems}
+        {#if activeTasks.length > 0}
+          <div class="section-label">下载中</div>
+          {#each activeTasks as task (task.id)}
+            <div class="fade-in">
               <TaskCard
                 {task}
-                draggable={true}
+                draggable={false}
                 onOpenCliConsole={handleOpenCliConsole}
                 cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
               />
             </div>
           {/each}
+        {/if}
+
+        {#if waitingTasks.length > 0}
+          <div class="section-label">等待中</div>
+          <div
+            class="dnd-zone"
+            use:dndzone={{ items: dndItems, ...dndOptions }}
+            onconsider={handleDndConsider}
+            onfinalize={handleDndFinalize}
+          >
+            {#each dndItems as task (task.id)}
+              <div class="dnd-item">
+                <TaskCard
+                  {task}
+                  draggable={true}
+                  onOpenCliConsole={handleOpenCliConsole}
+                  cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
+                />
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if failedTasks.length > 0}
+          <div class="section-label">失败</div>
+          {#each failedTasks as task (task.id)}
+            <div class="fade-in">
+              <TaskCard
+                {task}
+                draggable={false}
+                historical={true}
+                onOpenCliConsole={handleOpenCliConsole}
+                cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
+              />
+            </div>
+          {/each}
+          {#if failedHasMore}
+            <button class="load-more-btn" onclick={() => handleLoadMore('failed')}>
+              加载更多失败记录
+            </button>
+          {/if}
+        {/if}
+
+        {#if completedTasks.length > 0}
+          <div class="section-label">已完成</div>
+          {#each completedTasks as task (task.id)}
+            <div class="fade-in">
+              <TaskCard
+                {task}
+                draggable={false}
+                historical={true}
+                onOpenCliConsole={handleOpenCliConsole}
+                cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
+              />
+            </div>
+          {/each}
+          {#if completedHasMore}
+            <button class="load-more-btn" onclick={() => handleLoadMore('completed')}>
+              加载更多已完成记录
+            </button>
+          {/if}
+        {/if}
+      {:else}
+        <div class="empty-state">
+          <div class="empty-icon">📋</div>
+          <p>队列为空，粘贴 m3u8 链接即可开始下载</p>
         </div>
       {/if}
+    </section>
 
-      {#if failedTasks.length > 0}
-        <div class="section-label">失败</div>
-        {#each failedTasks as task (task.id)}
-          <div class="fade-in">
-            <TaskCard
-              {task}
-              draggable={false}
-              historical={true}
-              onOpenCliConsole={handleOpenCliConsole}
-              cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
-            />
-          </div>
-        {/each}
-        {#if failedHasMore}
-          <button class="load-more-btn" onclick={() => handleLoadMore('failed')}>
-            加载更多失败记录
-          </button>
-        {/if}
-      {/if}
-
-      {#if completedTasks.length > 0}
-        <div class="section-label">已完成</div>
-        {#each completedTasks as task (task.id)}
-          <div class="fade-in">
-            <TaskCard
-              {task}
-              draggable={false}
-              historical={true}
-              onOpenCliConsole={handleOpenCliConsole}
-              cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
-            />
-          </div>
-        {/each}
-        {#if completedHasMore}
-          <button class="load-more-btn" onclick={() => handleLoadMore('completed')}>
-            加载更多已完成记录
-          </button>
-        {/if}
-      {/if}
-    {:else}
-      <div class="empty-state">
-        <div class="empty-icon">📋</div>
-        <p>队列为空，粘贴 m3u8 链接即可开始下载</p>
+    {#if cliConsole.open && cliConsoleTask}
+      <div class="cli-console-overlay">
+        <CliConsolePanel task={cliConsoleTask} onClose={handleCloseCliConsole} overlay={true} />
       </div>
     {/if}
   </section>
-
-  {#if cliConsole.open && cliConsoleTask}
-    <CliConsolePanel task={cliConsoleTask} onClose={handleCloseCliConsole} />
-  {/if}
 
   <StatusBar />
 </main>
@@ -239,6 +243,14 @@
     background: var(--color-bg-main);
     color: var(--color-text-main);
     overflow: hidden;
+  }
+
+  .app-shell {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
   }
 
   .app-header {
@@ -311,6 +323,18 @@
     padding: 12px 16px;
   }
 
+  .cli-console-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    padding: 14px 16px 16px;
+    background:
+      linear-gradient(180deg, rgba(7, 9, 13, 0.82), rgba(4, 6, 10, 0.9)),
+      radial-gradient(circle at top right, rgba(250, 204, 21, 0.06), transparent 30%);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
   .section-label {
     font-size: 11px;
     font-weight: 700;
@@ -369,5 +393,11 @@
     border-color: var(--color-accent);
     color: var(--color-accent);
     background: var(--color-accent-glow);
+  }
+
+  @media (max-width: 640px) {
+    .cli-console-overlay {
+      padding: 10px 10px 12px;
+    }
   }
 </style>

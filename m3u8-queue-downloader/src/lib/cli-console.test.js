@@ -6,6 +6,8 @@ import {
   createCliConsoleState,
   findCliConsoleTask,
   openCliConsole,
+  resolveTerminalActiveLine,
+  shouldReloadTerminalState,
 } from './cli-console.js';
 
 test('openCliConsole opens the panel for a task id', () => {
@@ -64,4 +66,43 @@ test('buildTerminalView handles task with no active line', () => {
 
   assert.deepEqual(view.committedLines, ['line-1', 'line-2']);
   assert.equal(view.activeLine, '');
+});
+
+test('resolveTerminalActiveLine prefers explicit empty live value over persisted fallback', () => {
+  const activeLine = resolveTerminalActiveLine(
+    { id: 'task-1', terminalActiveLine: '' },
+    'Progress: 126/1095 (11.51%)'
+  );
+
+  assert.equal(activeLine, '');
+});
+
+test('resolveTerminalActiveLine falls back only when live field is absent', () => {
+  const activeLine = resolveTerminalActiveLine(
+    { id: 'task-1' },
+    'Progress: 126/1095 (11.51%)'
+  );
+
+  assert.equal(activeLine, 'Progress: 126/1095 (11.51%)');
+});
+
+test('shouldReloadTerminalState reloads when task id changes', () => {
+  assert.equal(
+    shouldReloadTerminalState({ id: 'task-2', status: 'downloading' }, 'task-1', 'downloading'),
+    true
+  );
+});
+
+test('shouldReloadTerminalState reloads when same task changes status', () => {
+  assert.equal(
+    shouldReloadTerminalState({ id: 'task-1', status: 'completed' }, 'task-1', 'downloading'),
+    true
+  );
+});
+
+test('shouldReloadTerminalState skips reload when task id and status are unchanged', () => {
+  assert.equal(
+    shouldReloadTerminalState({ id: 'task-1', status: 'downloading' }, 'task-1', 'downloading'),
+    false
+  );
 });

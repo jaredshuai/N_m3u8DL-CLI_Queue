@@ -376,6 +376,7 @@ async fn handle_start_failure(
 
 async fn handle_task_completed(
     history_store: Arc<HistoryStore>,
+    cli_output_store: Arc<CliOutputStore>,
     queue_manager: Arc<QueueManager>,
     settings_store: Arc<SettingsStore>,
     shutdown_manager: Arc<ShutdownManager>,
@@ -384,6 +385,7 @@ async fn handle_task_completed(
     task_id: String,
     output_path: String,
 ) {
+    cli_output_store.clear_active_line(&task_id);
     if let Some(task) = queue_manager
         .on_task_completed(&task_id, &output_path)
         .await
@@ -414,6 +416,7 @@ async fn handle_task_completed(
 
 async fn handle_task_failed(
     history_store: Arc<HistoryStore>,
+    cli_output_store: Arc<CliOutputStore>,
     queue_manager: Arc<QueueManager>,
     settings_store: Arc<SettingsStore>,
     shutdown_manager: Arc<ShutdownManager>,
@@ -422,6 +425,7 @@ async fn handle_task_failed(
     task_id: String,
     error_message: String,
 ) {
+    cli_output_store.clear_active_line(&task_id);
     if let Some(task) = queue_manager.on_task_failed(&task_id, &error_message).await {
         shutdown_manager.mark_run_failure();
         if let Err(err) = history_store.append(&task) {
@@ -659,6 +663,7 @@ pub fn run() {
             setup_tray(app)?;
 
             let hs_completed = Arc::clone(&history_store);
+            let cos_completed = Arc::clone(&cli_output_store);
             let qm_completed = Arc::clone(&queue_manager);
             let ss_completed = Arc::clone(&settings_store);
             let sm_completed = Arc::clone(&shutdown_manager);
@@ -666,6 +671,7 @@ pub fn run() {
             let ah_completed = app_handle.clone();
             app.listen("task-completed", move |event: tauri::Event| {
                 let hs = Arc::clone(&hs_completed);
+                let cos = Arc::clone(&cos_completed);
                 let qm = Arc::clone(&qm_completed);
                 let ss = Arc::clone(&ss_completed);
                 let sm = Arc::clone(&sm_completed);
@@ -676,12 +682,14 @@ pub fn run() {
                     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&payload) {
                         let task_id = data["id"].as_str().unwrap_or("").to_string();
                         let output_path = data["outputPath"].as_str().unwrap_or("").to_string();
-                        handle_task_completed(hs, qm, ss, sm, tr, ah, task_id, output_path).await;
+                        handle_task_completed(hs, cos, qm, ss, sm, tr, ah, task_id, output_path)
+                            .await;
                     }
                 });
             });
 
             let hs_failed = Arc::clone(&history_store);
+            let cos_failed = Arc::clone(&cli_output_store);
             let qm_failed = Arc::clone(&queue_manager);
             let ss_failed = Arc::clone(&settings_store);
             let sm_failed = Arc::clone(&shutdown_manager);
@@ -689,6 +697,7 @@ pub fn run() {
             let ah_failed = app_handle.clone();
             app.listen("task-failed", move |event: tauri::Event| {
                 let hs = Arc::clone(&hs_failed);
+                let cos = Arc::clone(&cos_failed);
                 let qm = Arc::clone(&qm_failed);
                 let ss = Arc::clone(&ss_failed);
                 let sm = Arc::clone(&sm_failed);
@@ -702,7 +711,8 @@ pub fn run() {
                             .as_str()
                             .unwrap_or("Unknown error")
                             .to_string();
-                        handle_task_failed(hs, qm, ss, sm, tr, ah, task_id, error_message).await;
+                        handle_task_failed(hs, cos, qm, ss, sm, tr, ah, task_id, error_message)
+                            .await;
                     }
                 });
             });

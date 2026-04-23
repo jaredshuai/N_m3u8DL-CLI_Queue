@@ -21,6 +21,25 @@ export function closeCliConsole(currentState) {
   };
 }
 
+export function shouldReloadTerminalState(task, loadedTaskId, loadedTaskStatus) {
+  if (!task?.id) {
+    return false;
+  }
+
+  if (task.id !== loadedTaskId) {
+    return true;
+  }
+
+  return task.status !== loadedTaskStatus;
+}
+
+export function resolveTerminalActiveLine(task, persistedActiveLine = '') {
+  if (task && Object.prototype.hasOwnProperty.call(task, 'terminalActiveLine')) {
+    return task.terminalActiveLine ?? '';
+  }
+  return persistedActiveLine ?? '';
+}
+
 export function findCliConsoleTask(currentState, taskGroups = {}) {
   const taskId = currentState?.taskId;
   if (!currentState?.open || !taskId) {
@@ -44,6 +63,6 @@ export function buildTerminalView(task) {
   const committed = Array.isArray(task?.terminalCommittedLines)
     ? [...task.terminalCommittedLines]
     : [];
-  const activeLine = task?.terminalActiveLine ?? '';
+  const activeLine = resolveTerminalActiveLine(task);
   return { committedLines: committed, activeLine };
 }

@@ -336,6 +336,7 @@ async fn wait_for_confirmed_stop(stop_state: &Arc<AtomicU8>) -> bool {
 struct TerminalBuffer {
     committed_lines: Vec<String>,
     active_line: String,
+    replace_on_next_char: bool,
     pending_bytes: Vec<u8>,
 }
 
@@ -344,6 +345,7 @@ impl TerminalBuffer {
         Self {
             committed_lines: Vec::new(),
             active_line: String::new(),
+            replace_on_next_char: false,
             pending_bytes: Vec::new(),
         }
     }
@@ -362,13 +364,17 @@ impl TerminalBuffer {
                         chars.next();
                         self.commit_active_line();
                     } else {
-                        self.active_line.clear();
+                        self.replace_on_next_char = true;
                     }
                 }
                 '\n' => {
                     self.commit_active_line();
                 }
                 _ => {
+                    if self.replace_on_next_char {
+                        self.active_line.clear();
+                        self.replace_on_next_char = false;
+                    }
                     self.active_line.push(ch);
                 }
             }
@@ -381,14 +387,15 @@ impl TerminalBuffer {
             self.committed_lines.push(line);
         }
         self.active_line.clear();
+        self.replace_on_next_char = false;
     }
 
     fn take_committed(&mut self) -> Vec<String> {
         std::mem::take(&mut self.committed_lines)
     }
 
-    fn active_line(&self) -> &str {
-        &self.active_line
+    fn active_line(&self) -> String {
+        self.active_line.clone()
     }
 
     fn finish(&mut self) {
@@ -928,6 +935,45 @@ mod tests {
         buf.feed(b"Starting download\nProgress: 1/10\rProgress: 2/10\rProgress: 3/10\nDone\n");
         let committed = buf.take_committed();
         assert_eq!(committed, vec!["Starting download", "Progress: 3/10", "Done"]);
+        assert_eq!(buf.active_line(), "");
+    }
+
+    #[test]
+    fn terminal_buffer_keeps_progress_reporter_line_active_after_trailing_cr() {
+        let mut buf = TerminalBuffer::new();
+        buf.feed(b"\rProgress: 1/10 (10.00%) -- 1MB/10MB\r");
+        assert_eq!(buf.active_line(), "Progress: 1/10 (10.00%) -- 1MB/10MB");
+        assert!(buf.take_committed().is_empty());
+    }
+
+    #[test]
+    fn terminal_buffer_overwrites_progress_reporter_line_without_committing_history() {
+        let mut buf = TerminalBuffer::new();
+        buf.feed(
+            b"\rProgress: 1/10 (10.00%) -- 1MB/10MB\r\rProgress: 2/10 (20.00%) -- 2MB/10MB\r",
+        );
+        assert_eq!(buf.active_line(), "Progress: 2/10 (20.00%) -- 2MB/10MB");
+        assert!(buf.take_committed().is_empty());
+    }
+
+    #[test]
+    fn terminal_buffer_replaces_longer_progress_tail_with_shorter_status_line() {
+        let mut buf = TerminalBuffer::new();
+        buf.feed(
+            b"\rProgress: 1650/1657 (99.58%) -- 1.14 GB/1.15 GB (793.51 KB/s @ 00m06s18s))\r\r11:07:37.504 \xe5\xb7\xb2\xe4\xb8\x8b\xe8\xbd\xbd\xe5\xae\x8c\xe6\x88\x90\r",
+        );
+        assert_eq!(buf.active_line(), "11:07:37.504 已下载完成");
+        assert!(buf.take_committed().is_empty());
+    }
+
+    #[test]
+    fn terminal_buffer_does_not_commit_progress_line_when_logger_prints_next_line() {
+        let mut buf = TerminalBuffer::new();
+        buf.feed(
+            b"\rProgress: 3/10 (30.00%) -- 3MB/10MB\r\r                                        \r11:00:00.000 \xe7\xad\x89\xe5\xbe\x85\xe4\xb8\x8b\xe8\xbd\xbd\xe5\xae\x8c\xe6\x88\x90...\n",
+        );
+        let committed = buf.take_committed();
+        assert_eq!(committed, vec!["11:00:00.000 等待下载完成..."]);
         assert_eq!(buf.active_line(), "");
     }
 
