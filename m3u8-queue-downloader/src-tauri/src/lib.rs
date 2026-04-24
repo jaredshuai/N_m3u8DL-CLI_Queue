@@ -1,4 +1,5 @@
 mod cli_output_store;
+mod download_dir;
 mod history_store;
 mod models;
 mod persistence;
@@ -10,23 +11,22 @@ mod task_runner;
 mod test_support;
 
 use cli_output_store::CliOutputStore;
+use download_dir::resolve_download_dir;
 use history_store::HistoryStore;
 use models::{
     AddTaskPayload, AppSettings, CliOutputPage, CliTerminalState, CloseButtonBehavior, HistoryPage,
     HistoryStatus, QueueState, Task,
 };
-use queue_manager::QueueManager;
+use queue_manager::{QueueManager, TaskFailureTransition};
 use settings_store::SettingsStore;
 use shutdown::ShutdownManager;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-use task_runner::{StopTaskError, StopTaskResult, TaskRunner};
+use task_runner::TaskRunner;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Listener, Manager, WindowEvent};
-
-const DOWNLOAD_DIR: &str = r"D:\Videos";
 
 pub struct AppState {
     cli_output_store: Arc<CliOutputStore>,
@@ -75,46 +75,59 @@ async fn get_history_page(
     offset: usize,
     limit: usize,
 ) -> Result<HistoryPage, String> {
-    state.history_store.get_page(status, offset, limit)
+    let history_store = Arc::clone(&state.history_store);
+    tauri::async_runtime::spawn_blocking(move || history_store.get_page(status, offset, limit))
+        .await
+        .map_err(|e| format!("history page task failed to join: {e}"))?
 }
 
 #[tauri::command]
-fn get_cli_output_tail(
+async fn get_cli_output_tail(
     state: tauri::State<'_, AppState>,
     task_id: String,
     limit: usize,
 ) -> Result<CliOutputPage, String> {
-    state.cli_output_store.tail(&task_id, limit)
+    let cli_output_store = Arc::clone(&state.cli_output_store);
+    tauri::async_runtime::spawn_blocking(move || cli_output_store.tail(&task_id, limit))
+        .await
+        .map_err(|e| format!("cli output tail task failed to join: {e}"))?
 }
 
 #[tauri::command]
-fn get_cli_output_page(
+async fn get_cli_output_page(
     state: tauri::State<'_, AppState>,
     task_id: String,
     offset: usize,
     limit: usize,
 ) -> Result<CliOutputPage, String> {
-    state.cli_output_store.page(&task_id, offset, limit)
+    let cli_output_store = Arc::clone(&state.cli_output_store);
+    tauri::async_runtime::spawn_blocking(move || cli_output_store.page(&task_id, offset, limit))
+        .await
+        .map_err(|e| format!("cli output page task failed to join: {e}"))?
 }
 
 #[tauri::command]
-fn get_cli_terminal_state(
+async fn get_cli_terminal_state(
     state: tauri::State<'_, AppState>,
     task_id: String,
     limit: usize,
 ) -> Result<CliTerminalState, String> {
-    let page = state.cli_output_store.tail(&task_id, limit)?;
-    let active_line = state
-        .cli_output_store
-        .get_active_line(&task_id)
-        .unwrap_or_default();
-    Ok(CliTerminalState {
-        committed_lines: page.lines,
-        active_line,
-        offset: page.offset,
-        total: page.total,
-        has_more_before: page.has_more_before,
+    let cli_output_store = Arc::clone(&state.cli_output_store);
+    tauri::async_runtime::spawn_blocking(move || {
+        let page = cli_output_store.tail(&task_id, limit)?;
+        let active_line = cli_output_store
+            .get_active_line(&task_id)
+            .unwrap_or_default();
+        Ok(CliTerminalState {
+            committed_lines: page.lines,
+            active_line,
+            offset: page.offset,
+            total: page.total,
+            has_more_before: page.has_more_before,
+        })
     })
+    .await
+    .map_err(|e| format!("cli terminal state task failed to join: {e}"))?
 }
 
 #[tauri::command]
@@ -132,10 +145,12 @@ async fn add_task(
     };
     let (task, should_schedule) = state.queue_manager.add_task(payload).await;
     if should_schedule {
+        let download_dir = resolve_download_dir(&state.settings_store.get());
         try_schedule_next(
             &state.queue_manager,
             &state.history_store,
             &state.task_runner,
+            &download_dir,
             &app_handle,
         )
         .await;
@@ -186,10 +201,12 @@ async fn retry_task(
                 .add_history_retry_task(&history_task)
                 .await;
             if should_schedule {
+                let download_dir = resolve_download_dir(&state.settings_store.get());
                 try_schedule_next(
                     &state.queue_manager,
                     &state.history_store,
                     &state.task_runner,
+                    &download_dir,
                     &app_handle,
                 )
                 .await;
@@ -198,10 +215,12 @@ async fn retry_task(
         }
         Err(err) => return Err(err),
     };
+    let download_dir = resolve_download_dir(&state.settings_store.get());
     try_schedule_next(
         &state.queue_manager,
         &state.history_store,
         &state.task_runner,
+        &download_dir,
         &app_handle,
     )
     .await;
@@ -225,7 +244,10 @@ async fn start_queue(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.shutdown_manager.reset_run_failure();
+    let download_dir = resolve_download_dir(&state.settings_store.get());
+    if state.shutdown_manager.reset_for_new_run()? {
+        let _ = app_handle.emit("shutdown-countdown-cancelled", ());
+    }
     if !state.queue_manager.has_live_work().await {
         state.queue_manager.set_running(false).await;
         let _ = app_handle.emit("queue-state-changed", ());
@@ -237,6 +259,7 @@ async fn start_queue(
         &state.queue_manager,
         &state.history_store,
         &state.task_runner,
+        &download_dir,
         &app_handle,
     )
     .await;
@@ -249,7 +272,7 @@ async fn pause_queue(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    pause_queue_internal(&state.queue_manager, &state.task_runner).await?;
+    pause_queue_internal(&state.queue_manager).await?;
     let _ = app_handle.emit("queue-state-changed", ());
     Ok(())
 }
@@ -275,16 +298,26 @@ fn toggle_main_window_maximize(app_handle: tauri::AppHandle) -> Result<(), Strin
 }
 
 #[tauri::command]
-fn request_main_window_close(
+async fn request_main_window_close(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    apply_close_behavior(&state.settings_store, &app_handle)
+    match state.settings_store.get().close_button_behavior {
+        CloseButtonBehavior::CloseToTray => hide_main_window(&app_handle),
+        CloseButtonBehavior::Exit => {
+            exit_application(
+                Arc::clone(&state.queue_manager),
+                Arc::clone(&state.task_runner),
+                app_handle,
+            )
+            .await
+        }
+    }
 }
 
 #[tauri::command]
-fn open_download_dir() -> Result<(), String> {
-    open_default_download_dir()
+fn open_download_dir(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    open_download_dir_for_path(resolve_download_dir(&state.settings_store.get()))
 }
 
 #[tauri::command]
@@ -297,35 +330,8 @@ fn cancel_auto_shutdown(
     Ok(())
 }
 
-async fn pause_queue_internal(
-    queue_manager: &Arc<QueueManager>,
-    task_runner: &Arc<TaskRunner>,
-) -> Result<(), String> {
+async fn pause_queue_internal(queue_manager: &Arc<QueueManager>) -> Result<(), String> {
     queue_manager.set_running(false).await;
-
-    if let Err(err) = pause_current_task(queue_manager, task_runner).await {
-        queue_manager.set_running(true).await;
-        return Err(err);
-    }
-
-    Ok(())
-}
-
-async fn pause_current_task(
-    queue_manager: &Arc<QueueManager>,
-    task_runner: &Arc<TaskRunner>,
-) -> Result<(), String> {
-    if let Some(task_id) = queue_manager.current_task_id().await {
-        match task_runner.stop_task(&task_id).await {
-            Ok(StopTaskResult::Stopped) => queue_manager.on_task_paused(&task_id).await,
-            Ok(StopTaskResult::AlreadyExited) => {
-                queue_manager
-                    .release_current_task_if_matches(&task_id)
-                    .await;
-            }
-            Err(StopTaskError::KillFailed(err)) => return Err(err),
-        }
-    }
     Ok(())
 }
 
@@ -333,6 +339,7 @@ async fn try_schedule_next(
     queue_manager: &Arc<QueueManager>,
     history_store: &Arc<HistoryStore>,
     task_runner: &Arc<TaskRunner>,
+    download_dir: &PathBuf,
     app_handle: &tauri::AppHandle,
 ) {
     loop {
@@ -341,7 +348,10 @@ async fn try_schedule_next(
             None => return,
         };
         let task_id = task.id.clone();
-        match task_runner.start_task(task, app_handle.clone()).await {
+        match task_runner
+            .start_task(task, download_dir.clone(), app_handle.clone())
+            .await
+        {
             Ok(()) => return,
             Err(e) => {
                 eprintln!("Failed to start task {}: {}", task_id, e);
@@ -367,11 +377,18 @@ async fn handle_start_failure(
     task_id: &str,
     error_message: &str,
 ) -> Result<Option<Task>, String> {
-    if let Some(task) = queue_manager.on_task_failed(task_id, error_message).await {
-        history_store.append(&task)?;
-        return Ok(Some(task));
+    match queue_manager
+        .prepare_task_failure(task_id, error_message)
+        .await
+    {
+        Some(TaskFailureTransition::RetryScheduled) => Ok(None),
+        Some(TaskFailureTransition::Terminal(task)) => {
+            history_store.append(&task)?;
+            queue_manager.finalize_terminal_failure(task_id).await;
+            Ok(Some(task))
+        }
+        None => Ok(None),
     }
-    Ok(None)
 }
 
 async fn handle_task_completed(
@@ -387,12 +404,13 @@ async fn handle_task_completed(
 ) {
     cli_output_store.clear_active_line(&task_id);
     if let Some(task) = queue_manager
-        .on_task_completed(&task_id, &output_path)
+        .snapshot_task_completion(&task_id, &output_path)
         .await
     {
         if let Err(err) = history_store.append(&task) {
             eprintln!("Failed to append completed task to history: {}", err);
         } else {
+            queue_manager.finalize_task_completion(&task_id).await;
             let payload = serde_json::json!({
                 "status": HistoryStatus::Completed,
                 "task": task,
@@ -401,7 +419,15 @@ async fn handle_task_completed(
         }
     }
     let _ = app_handle.emit("queue-state-changed", ());
-    try_schedule_next(&queue_manager, &history_store, &task_runner, &app_handle).await;
+    let download_dir = resolve_download_dir(&settings_store.get());
+    try_schedule_next(
+        &queue_manager,
+        &history_store,
+        &task_runner,
+        &download_dir,
+        &app_handle,
+    )
+    .await;
     if queue_manager.finish_run_if_idle().await {
         let _ = app_handle.emit("queue-state-changed", ());
         if let Ok(Some(seconds)) =
@@ -426,20 +452,35 @@ async fn handle_task_failed(
     error_message: String,
 ) {
     cli_output_store.clear_active_line(&task_id);
-    if let Some(task) = queue_manager.on_task_failed(&task_id, &error_message).await {
-        shutdown_manager.mark_run_failure();
-        if let Err(err) = history_store.append(&task) {
-            eprintln!("Failed to append failed task to history: {}", err);
-        } else {
-            let payload = serde_json::json!({
-                "status": HistoryStatus::Failed,
-                "task": task,
-            });
-            let _ = app_handle.emit("history-task-added", payload);
+    match queue_manager
+        .prepare_task_failure(&task_id, &error_message)
+        .await
+    {
+        Some(TaskFailureTransition::RetryScheduled) | None => {}
+        Some(TaskFailureTransition::Terminal(task)) => {
+            shutdown_manager.mark_run_failure();
+            if let Err(err) = history_store.append(&task) {
+                eprintln!("Failed to append failed task to history: {}", err);
+            } else {
+                queue_manager.finalize_terminal_failure(&task_id).await;
+                let payload = serde_json::json!({
+                    "status": HistoryStatus::Failed,
+                    "task": task,
+                });
+                let _ = app_handle.emit("history-task-added", payload);
+            }
         }
     }
     let _ = app_handle.emit("queue-state-changed", ());
-    try_schedule_next(&queue_manager, &history_store, &task_runner, &app_handle).await;
+    let download_dir = resolve_download_dir(&settings_store.get());
+    try_schedule_next(
+        &queue_manager,
+        &history_store,
+        &task_runner,
+        &download_dir,
+        &app_handle,
+    )
+    .await;
     if queue_manager.finish_run_if_idle().await {
         let _ = app_handle.emit("queue-state-changed", ());
         if let Ok(Some(seconds)) =
@@ -489,21 +530,18 @@ fn hide_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn apply_close_behavior(
-    settings_store: &Arc<SettingsStore>,
-    app_handle: &tauri::AppHandle,
+async fn exit_application(
+    queue_manager: Arc<QueueManager>,
+    task_runner: Arc<TaskRunner>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    match settings_store.get().close_button_behavior {
-        CloseButtonBehavior::CloseToTray => hide_main_window(app_handle),
-        CloseButtonBehavior::Exit => {
-            app_handle.exit(0);
-            Ok(())
-        }
-    }
+    task_runner.terminate_all_running_processes().await?;
+    queue_manager.prepare_for_exit().await;
+    app_handle.exit(0);
+    Ok(())
 }
 
-fn open_default_download_dir() -> Result<(), String> {
-    let path = PathBuf::from(DOWNLOAD_DIR);
+fn open_download_dir_for_path(path: PathBuf) -> Result<(), String> {
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "windows")]
@@ -538,17 +576,35 @@ fn start_queue_from_handle(app_handle: tauri::AppHandle) {
     let queue_manager = Arc::clone(&state.queue_manager);
     let history_store = Arc::clone(&state.history_store);
     let shutdown_manager = Arc::clone(&state.shutdown_manager);
+    let settings_store = Arc::clone(&state.settings_store);
     let task_runner = Arc::clone(&state.task_runner);
 
     tauri::async_runtime::spawn(async move {
-        shutdown_manager.reset_run_failure();
+        match shutdown_manager.reset_for_new_run() {
+            Ok(true) => {
+                let _ = app_handle.emit("shutdown-countdown-cancelled", ());
+            }
+            Ok(false) => {}
+            Err(err) => {
+                eprintln!("Failed to reset shutdown state for new run: {}", err);
+                return;
+            }
+        }
         if !queue_manager.has_live_work().await {
             queue_manager.set_running(false).await;
             let _ = app_handle.emit("queue-state-changed", ());
             return;
         }
         queue_manager.set_running(true).await;
-        try_schedule_next(&queue_manager, &history_store, &task_runner, &app_handle).await;
+        let download_dir = resolve_download_dir(&settings_store.get());
+        try_schedule_next(
+            &queue_manager,
+            &history_store,
+            &task_runner,
+            &download_dir,
+            &app_handle,
+        )
+        .await;
         let _ = app_handle.emit("queue-state-changed", ());
     });
 }
@@ -556,10 +612,9 @@ fn start_queue_from_handle(app_handle: tauri::AppHandle) {
 fn pause_queue_from_handle(app_handle: tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
     let queue_manager = Arc::clone(&state.queue_manager);
-    let task_runner = Arc::clone(&state.task_runner);
 
     tauri::async_runtime::spawn(async move {
-        if let Err(err) = pause_queue_internal(&queue_manager, &task_runner).await {
+        if let Err(err) = pause_queue_internal(&queue_manager).await {
             eprintln!("Failed to pause queue from tray: {}", err);
             return;
         }
@@ -567,17 +622,33 @@ fn pause_queue_from_handle(app_handle: tauri::AppHandle) {
     });
 }
 
+fn request_close_from_handle(app_handle: tauri::AppHandle) {
+    let state = app_handle.state::<AppState>();
+    let settings_store = Arc::clone(&state.settings_store);
+    let queue_manager = Arc::clone(&state.queue_manager);
+    let task_runner = Arc::clone(&state.task_runner);
+
+    match settings_store.get().close_button_behavior {
+        CloseButtonBehavior::CloseToTray => {
+            if let Err(err) = hide_main_window(&app_handle) {
+                eprintln!("Failed to hide main window: {}", err);
+            }
+        }
+        CloseButtonBehavior::Exit => {
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = exit_application(queue_manager, task_runner, app_handle).await {
+                    eprintln!("Failed to exit application cleanly: {}", err);
+                }
+            });
+        }
+    }
+}
+
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show-main-window", "显示主窗口", true, None::<&str>)?;
-    let start = MenuItem::with_id(app, "start-queue", "开始队列", true, None::<&str>)?;
-    let pause = MenuItem::with_id(app, "pause-queue", "暂停队列", true, None::<&str>)?;
-    let open_dir = MenuItem::with_id(
-        app,
-        "open-download-dir",
-        "打开下载目录",
-        true,
-        None::<&str>,
-    )?;
+    let start = MenuItem::with_id(app, "start-queue", "开始/恢复队列", true, None::<&str>)?;
+    let pause = MenuItem::with_id(app, "pause-queue", "暂停后续任务", true, None::<&str>)?;
+    let open_dir = MenuItem::with_id(app, "open-download-dir", "打开下载目录", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &start, &pause, &open_dir, &quit])?;
 
@@ -593,11 +664,13 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             "start-queue" => start_queue_from_handle(app.clone()),
             "pause-queue" => pause_queue_from_handle(app.clone()),
             "open-download-dir" => {
-                if let Err(err) = open_default_download_dir() {
+                let state = app.state::<AppState>();
+                let path = resolve_download_dir(&state.settings_store.get());
+                if let Err(err) = open_download_dir_for_path(path) {
                     eprintln!("Failed to open download directory from tray: {}", err);
                 }
             }
-            "quit" => app.exit(0),
+            "quit" => request_close_from_handle(app.clone()),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -634,10 +707,7 @@ pub fn run() {
 
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let state = window.state::<AppState>();
-                if let Err(err) = apply_close_behavior(&state.settings_store, window.app_handle()) {
-                    eprintln!("Failed to apply close behavior: {}", err);
-                }
+                request_close_from_handle(window.app_handle().clone());
             }
         })
         .setup(|app| {
@@ -757,19 +827,6 @@ pub fn run() {
                 });
             });
 
-            let qm_terminal = Arc::clone(&queue_manager);
-            app.listen("task-terminal-committed-line", move |event: tauri::Event| {
-                let qm = Arc::clone(&qm_terminal);
-                let payload = event.payload().to_string();
-                tauri::async_runtime::spawn(async move {
-                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&payload) {
-                        let task_id = data["id"].as_str().unwrap_or("").to_string();
-                        let line = data["line"].as_str().unwrap_or("").to_string();
-                        qm.append_log(&task_id, line).await;
-                    }
-                });
-            });
-
             let cos_active = Arc::clone(&cli_output_store);
             app.listen("task-terminal-active-line", move |event: tauri::Event| {
                 let cos = Arc::clone(&cos_active);
@@ -833,6 +890,7 @@ mod tests {
         let settings = AppSettings {
             close_button_behavior: CloseButtonBehavior::CloseToTray,
             auto_action_on_complete: true,
+            download_dir: None,
         };
         let payload = AddTaskPayload {
             url: "https://example.com/test.m3u8".to_string(),
@@ -850,12 +908,13 @@ mod tests {
         assert!(started.is_none());
 
         let completed_task = queue_manager
-            .on_task_completed(&task.id, "D:/Videos/test.mp4")
+            .snapshot_task_completion(&task.id, "D:/Videos/test.mp4")
             .await
             .expect("task completed");
         history_store
             .append(&completed_task)
             .expect("append completed task");
+        assert!(queue_manager.finalize_task_completion(&task.id).await);
 
         let started = maybe_start_shutdown_countdown(&queue_manager, &shutdown_manager, &settings)
             .await
@@ -866,36 +925,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pause_current_task_recovers_when_process_is_missing() {
-        let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
-        let task_runner = Arc::new(TaskRunner::new());
-        let payload = AddTaskPayload {
-            url: "https://example.com/test.m3u8".to_string(),
-            save_name: None,
-            headers: None,
-        };
-        let (task, _) = queue_manager.add_task(payload).await;
-
-        queue_manager.set_running(true).await;
-        queue_manager.schedule_next().await.expect("scheduled task");
-
-        pause_current_task(&queue_manager, &task_runner)
-            .await
-            .expect("missing process should be recovered");
-
-        let state = queue_manager.get_state().await;
-        let paused_task = state
-            .tasks
-            .iter()
-            .find(|t| t.id == task.id)
-            .expect("task exists");
-
-        assert_eq!(paused_task.status, models::TaskStatus::Downloading);
-        assert!(state.current_task_id.is_none());
-    }
-
-    #[tokio::test]
-    async fn pause_current_task_resets_state_after_successful_stop() {
+    async fn pause_queue_internal_leaves_current_download_running() {
         let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
         let task_runner = Arc::new(TaskRunner::new());
         let payload = AddTaskPayload {
@@ -913,19 +943,21 @@ mod tests {
             .await;
         task_runner.begin_wait_for_test(&task.id).await;
 
-        pause_current_task(&queue_manager, &task_runner)
+        pause_queue_internal(&queue_manager)
             .await
-            .expect("pause succeeds");
+            .expect("pause queue succeeds");
 
         let state = queue_manager.get_state().await;
-        let paused_task = state
+        let active_task = state
             .tasks
             .iter()
             .find(|t| t.id == task.id)
             .expect("task exists");
 
-        assert_eq!(paused_task.status, models::TaskStatus::Waiting);
-        assert!(state.current_task_id.is_none());
+        assert!(!state.is_running);
+        assert_eq!(state.current_task_id.as_deref(), Some(task.id.as_str()));
+        assert_eq!(active_task.status, models::TaskStatus::Downloading);
+        assert!(task_runner.is_task_running(&task.id).await);
     }
 
     #[tokio::test]
@@ -942,10 +974,22 @@ mod tests {
 
         queue_manager.set_running(true).await;
         queue_manager.schedule_next().await.expect("scheduled task");
-        queue_manager.on_task_failed(&task.id, "first").await;
-        queue_manager.schedule_next().await.expect("rescheduled task");
-        queue_manager.on_task_failed(&task.id, "second").await;
-        queue_manager.schedule_next().await.expect("rescheduled task");
+        assert!(matches!(
+            queue_manager.prepare_task_failure(&task.id, "first").await,
+            Some(TaskFailureTransition::RetryScheduled)
+        ));
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("rescheduled task");
+        assert!(matches!(
+            queue_manager.prepare_task_failure(&task.id, "second").await,
+            Some(TaskFailureTransition::RetryScheduled)
+        ));
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("rescheduled task");
 
         handle_start_failure(&queue_manager, &history_store, &task.id, "third")
             .await
@@ -960,5 +1004,77 @@ mod tests {
         assert_eq!(page.tasks[0].id, task.id);
 
         std::fs::remove_dir_all(history_path).expect("cleanup history");
+    }
+
+    #[tokio::test]
+    async fn handle_start_failure_keeps_task_when_history_append_fails() {
+        let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
+        let history_path = std::env::temp_dir().join(format!("history-file-{}", Uuid::new_v4()));
+        std::fs::write(&history_path, b"blocked").expect("create blocking file");
+        let history_store = Arc::new(HistoryStore::new(history_path.clone()));
+        let payload = AddTaskPayload {
+            url: "https://example.com/test.m3u8".to_string(),
+            save_name: None,
+            headers: None,
+        };
+        let (task, _) = queue_manager.add_task(payload).await;
+
+        queue_manager.set_running(true).await;
+        queue_manager.schedule_next().await.expect("scheduled task");
+        assert!(matches!(
+            queue_manager.prepare_task_failure(&task.id, "first").await,
+            Some(TaskFailureTransition::RetryScheduled)
+        ));
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("rescheduled task");
+        assert!(matches!(
+            queue_manager.prepare_task_failure(&task.id, "second").await,
+            Some(TaskFailureTransition::RetryScheduled)
+        ));
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("rescheduled task");
+
+        let result = handle_start_failure(&queue_manager, &history_store, &task.id, "third").await;
+        assert!(result.is_err());
+
+        let state = queue_manager.get_state().await;
+        assert!(state.tasks.iter().any(|t| t.id == task.id));
+        assert_eq!(state.current_task_id.as_deref(), Some(task.id.as_str()));
+
+        let _ = std::fs::remove_file(history_path);
+    }
+
+    #[tokio::test]
+    async fn completed_task_stays_in_queue_when_history_append_fails() {
+        let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
+        let history_path = std::env::temp_dir().join(format!("history-file-{}", Uuid::new_v4()));
+        std::fs::write(&history_path, b"blocked").expect("create blocking file");
+        let history_store = Arc::new(HistoryStore::new(history_path.clone()));
+        let payload = AddTaskPayload {
+            url: "https://example.com/test.m3u8".to_string(),
+            save_name: None,
+            headers: None,
+        };
+        let (task, _) = queue_manager.add_task(payload).await;
+
+        queue_manager.set_running(true).await;
+        queue_manager.schedule_next().await.expect("scheduled task");
+
+        let completed_task = queue_manager
+            .snapshot_task_completion(&task.id, "D:/Videos/test.mp4")
+            .await
+            .expect("task completed");
+        let append_result = history_store.append(&completed_task);
+        assert!(append_result.is_err());
+
+        let state = queue_manager.get_state().await;
+        assert!(state.tasks.iter().any(|t| t.id == task.id));
+        assert_eq!(state.current_task_id.as_deref(), Some(task.id.as_str()));
+
+        let _ = std::fs::remove_file(history_path);
     }
 }

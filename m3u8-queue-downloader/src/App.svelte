@@ -7,6 +7,7 @@
   import TaskCard from './lib/TaskCard.svelte';
   import TitleBar from './lib/TitleBar.svelte';
   import StatusBar from './lib/StatusBar.svelte';
+  import { getTaskIdSignature, shouldSyncDndItems, toDndItems } from './lib/waiting-dnd.js';
   import {
     closeCliConsole,
     createCliConsoleState,
@@ -36,7 +37,14 @@
   let failedHasMore = $derived($failedHistory.hasMore);
   let showSettings = $state(false);
   let dndItems = $state([]);
+  let dndSyncLocked = $state(false);
+  let historyLoading = $state({
+    completed: false,
+    failed: false,
+  });
   let cliConsole = $state(createCliConsoleState());
+  let waitingTaskSignature = $derived(getTaskIdSignature(waitingTasks));
+  let dndItemSignature = $derived(getTaskIdSignature(dndItems));
 
   const dndOptions = {
     flipDurationMs: 150,
@@ -62,10 +70,12 @@
   }
 
   function handleDndConsider(e) {
+    dndSyncLocked = true;
     dndItems = e.detail.items;
   }
 
   async function handleDndFinalize(e) {
+    dndSyncLocked = true;
     dndItems = e.detail.items;
     const newOrder = dndItems.map(item => item.id);
     try {
@@ -74,6 +84,8 @@
     } catch (err) {
       console.error('Failed to reorder tasks:', err);
       await loadQueueState();
+    } finally {
+      dndSyncLocked = false;
     }
   }
 
@@ -87,7 +99,21 @@
   }));
 
   async function handleLoadMore(status) {
-    await loadHistoryPage(status);
+    if (historyLoading[status]) return;
+
+    historyLoading = {
+      ...historyLoading,
+      [status]: true,
+    };
+
+    try {
+      await loadHistoryPage(status);
+    } finally {
+      historyLoading = {
+        ...historyLoading,
+        [status]: false,
+      };
+    }
   }
 
   onMount(async () => {
@@ -102,7 +128,17 @@
   });
 
   $effect(() => {
-    dndItems = waitingTasks.map((task) => ({ ...task, id: task.id }));
+    const _waitingSignature = waitingTaskSignature;
+    const _dndSignature = dndItemSignature;
+    if (!shouldSyncDndItems({
+      waitingTasks,
+      dndItems,
+      syncLocked: dndSyncLocked,
+    })) {
+      return;
+    }
+
+    dndItems = toDndItems(waitingTasks);
   });
 
   $effect(() => {
@@ -191,9 +227,13 @@
               />
             </div>
           {/each}
-          {#if failedHasMore}
-            <button class="load-more-btn" onclick={() => handleLoadMore('failed')}>
-              加载更多失败记录
+        {#if failedHasMore}
+            <button
+              class="load-more-btn"
+              onclick={() => handleLoadMore('failed')}
+              disabled={historyLoading.failed}
+            >
+              {historyLoading.failed ? '加载中...' : '加载更多失败记录'}
             </button>
           {/if}
         {/if}
@@ -212,8 +252,12 @@
             </div>
           {/each}
           {#if completedHasMore}
-            <button class="load-more-btn" onclick={() => handleLoadMore('completed')}>
-              加载更多已完成记录
+            <button
+              class="load-more-btn"
+              onclick={() => handleLoadMore('completed')}
+              disabled={historyLoading.completed}
+            >
+              {historyLoading.completed ? '加载中...' : '加载更多已完成记录'}
             </button>
           {/if}
         {/if}
@@ -393,6 +437,11 @@
     border-color: var(--color-accent);
     color: var(--color-accent);
     background: var(--color-accent-glow);
+  }
+
+  .load-more-btn:disabled {
+    opacity: 0.5;
+    cursor: progress;
   }
 
   @media (max-width: 640px) {

@@ -3,6 +3,7 @@
 
   let saving = $state(false);
   let error = $state('');
+  let downloadDirDraft = $state('');
 
   async function updateSetting(patch) {
     saving = true;
@@ -20,6 +21,28 @@
       saving = false;
     }
   }
+
+  function resetDownloadDir() {
+    updateSetting({ downloadDir: '' });
+  }
+
+  function commitDownloadDir() {
+    if (downloadDirDraft === ($appSettings.downloadDir ?? '')) {
+      return;
+    }
+    updateSetting({ downloadDir: downloadDirDraft });
+  }
+
+  function handleDownloadDirKeydown(event) {
+    if (event.key === 'Enter' && !event.isComposing) {
+      event.preventDefault();
+      event.currentTarget.blur();
+    }
+  }
+
+  $effect(() => {
+    downloadDirDraft = $appSettings.downloadDir ?? '';
+  });
 </script>
 
 <section class="settings-panel fade-in" aria-label="设置">
@@ -61,6 +84,31 @@
       disabled={saving}
     />
   </label>
+
+  <div class="setting-row download-dir-row">
+    <div class="setting-copy">
+      <strong>下载目录</strong>
+      <span>留空时自动使用 Windows 视频文件夹；也可以填入自定义目录。</span>
+    </div>
+    <div class="download-dir-controls">
+      <input
+        type="text"
+        bind:value={downloadDirDraft}
+        onkeydown={handleDownloadDirKeydown}
+        onblur={commitDownloadDir}
+        placeholder="留空使用系统视频文件夹"
+        disabled={saving}
+      />
+      <button
+        type="button"
+        class="secondary-btn"
+        onclick={resetDownloadDir}
+        disabled={saving || !($appSettings.downloadDir ?? '').trim()}
+      >
+        恢复自动
+      </button>
+    </div>
+  </div>
 
   {#if error}
     <div class="settings-error">{error}</div>
@@ -113,6 +161,11 @@
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
+  .download-dir-row {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 420px);
+    align-items: start;
+  }
+
   .setting-copy {
     display: flex;
     flex-direction: column;
@@ -142,6 +195,44 @@
 
   select:focus {
     border-color: var(--color-accent);
+  }
+
+  .download-dir-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .download-dir-controls input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-input);
+    color: var(--color-text-main);
+    font-family: var(--font-stack);
+    outline: none;
+  }
+
+  .download-dir-controls input:focus {
+    border-color: var(--color-accent);
+  }
+
+  .secondary-btn {
+    flex-shrink: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.03);
+    color: var(--color-text-secondary);
+    font-family: var(--font-stack);
+    cursor: pointer;
+  }
+
+  .secondary-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
   input[type='checkbox'] {

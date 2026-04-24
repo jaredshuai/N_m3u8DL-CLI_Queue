@@ -347,7 +347,6 @@ mod tests {
     use super::*;
     use crate::models::TaskStatus;
     use chrono::Utc;
-    use std::collections::VecDeque;
     use std::thread;
     use uuid::Uuid;
 
@@ -369,7 +368,6 @@ mod tests {
             output_path: Some(format!("D:/Videos/{index}.mp4")),
             error_message: None,
             created_at: Utc::now(),
-            log_lines: VecDeque::new(),
         }
     }
 

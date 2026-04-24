@@ -5,7 +5,11 @@
     CLI_OUTPUT_PAGE_SIZE,
     prependCliOutputPage,
   } from './cli-output.js';
-  import { resolveTerminalActiveLine, shouldReloadTerminalState } from './cli-console.js';
+  import {
+    resolveTerminalActiveLine,
+    shouldApplyTerminalResponse,
+    shouldReloadTerminalState,
+  } from './cli-console.js';
   import { displayProgressPercent } from './progress.js';
 
   let { task, onClose, overlay = false } = $props();
@@ -21,6 +25,7 @@
   let autoStickToBottom = $state(true);
   let loadedTaskId = $state(null);
   let loadedTaskStatus = $state(null);
+  let activeLoadRequestId = $state(0);
 
   let statusKey = $derived(
     task?.status === 'downloading' ? 'down' :
@@ -71,6 +76,8 @@
   }
 
   async function loadTerminalState(taskId, taskStatus) {
+    const requestId = activeLoadRequestId + 1;
+    activeLoadRequestId = requestId;
     cliOutputLoading = true;
     cliOutputError = '';
     try {
@@ -78,6 +85,7 @@
         taskId,
         limit: CLI_OUTPUT_PAGE_SIZE,
       });
+      if (!shouldApplyTerminalResponse(requestId, activeLoadRequestId)) return;
       committedLines = state.committedLines ?? [];
       activeLine = state.activeLine ?? '';
       cliOutputOffset = state.offset ?? 0;
@@ -86,15 +94,19 @@
       loadedTaskId = taskId;
       loadedTaskStatus = taskStatus ?? null;
     } catch (err) {
+      if (!shouldApplyTerminalResponse(requestId, activeLoadRequestId)) return;
       cliOutputError = String(err);
       committedLines = [];
       activeLine = '';
       cliOutputOffset = 0;
       cliOutputTotal = 0;
       cliOutputHasMoreBefore = false;
+      loadedTaskId = taskId;
       loadedTaskStatus = taskStatus ?? null;
     } finally {
-      cliOutputLoading = false;
+      if (shouldApplyTerminalResponse(requestId, activeLoadRequestId)) {
+        cliOutputLoading = false;
+      }
     }
   }
 

@@ -1,38 +1,22 @@
 use crate::models::Task;
 use encoding_rs::{Encoding, GB18030};
+#[cfg(test)]
 use std::collections::HashMap;
-use std::fmt;
+use std::collections::HashMap as StdHashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tauri::{path::BaseDirectory, Emitter, Manager};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
 use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration};
-
-#[derive(Clone)]
-struct RunningTask {
-    pid: u32,
-    stop_state: Arc<AtomicU8>,
-}
 
 pub struct TaskRunner {
-    running_processes: Arc<Mutex<HashMap<String, RunningTask>>>,
+    running_processes: Arc<Mutex<StdHashMap<String, u32>>>,
     #[cfg(test)]
     pending_test_children: Arc<Mutex<HashMap<String, Child>>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StopTaskError {
-    KillFailed(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StopTaskResult {
-    Stopped,
-    AlreadyExited,
-}
+const MAX_CLI_SEARCH_DEPTH: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KillProcessResult {
@@ -40,36 +24,27 @@ enum KillProcessResult {
     AlreadyExited,
 }
 
-const MAX_CLI_SEARCH_DEPTH: usize = 8;
-const STOP_NONE: u8 = 0;
-const STOP_REQUESTED: u8 = 1;
-const STOP_CONFIRMED: u8 = 2;
-const STOP_REQUEST_GRACE_MS: u64 = 500;
-
-impl fmt::Display for StopTaskError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            StopTaskError::KillFailed(message) => f.write_str(message),
-        }
-    }
-}
-
 impl TaskRunner {
     pub fn new() -> Self {
         Self {
-            running_processes: Arc::new(Mutex::new(HashMap::new())),
+            running_processes: Arc::new(Mutex::new(StdHashMap::new())),
             #[cfg(test)]
             pending_test_children: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub async fn start_task(&self, task: Task, app_handle: tauri::AppHandle) -> Result<(), String> {
+    pub async fn start_task(
+        &self,
+        task: Task,
+        download_dir: PathBuf,
+        app_handle: tauri::AppHandle,
+    ) -> Result<(), String> {
         let cli_path = self.find_cli_exe(&app_handle)?;
 
         let mut args: Vec<String> = Vec::new();
         args.push(task.url.clone());
         args.push("--workDir".to_string());
-        args.push(r"D:\Videos".to_string());
+        args.push(download_dir.to_string_lossy().to_string());
 
         if let Some(ref save_name) = task.save_name {
             if !save_name.is_empty() {
@@ -115,10 +90,7 @@ impl TaskRunner {
         let pid = child
             .id()
             .ok_or_else(|| "Failed to get CLI process ID".to_string())?;
-        let stop_state = Arc::new(AtomicU8::new(STOP_NONE));
-
-        self.register_running_task(task_id.clone(), pid, Arc::clone(&stop_state))
-            .await;
+        self.register_running_task(task_id.clone(), pid).await;
 
         let task_id_stdout = task_id.clone();
         let app_handle_stdout = app_handle_progress.clone();
@@ -132,40 +104,8 @@ impl TaskRunner {
             read_cli_stream(stderr, task_id_stderr, app_handle_stderr, Some("[stderr] ")).await;
         });
 
-        self.spawn_wait_task(task_id, child, stop_state, save_name, app_handle_complete);
+        self.spawn_wait_task(task_id, child, save_name, download_dir, app_handle_complete);
         Ok(())
-    }
-
-    pub async fn stop_task(&self, task_id: &str) -> Result<StopTaskResult, StopTaskError> {
-        let running_task = {
-            let processes = self.running_processes.lock().await;
-            processes.get(task_id).cloned()
-        };
-
-        let Some(running_task) = running_task else {
-            return Ok(StopTaskResult::AlreadyExited);
-        };
-
-        running_task
-            .stop_state
-            .store(STOP_REQUESTED, Ordering::SeqCst);
-
-        match kill_process(running_task.pid).await {
-            Ok(KillProcessResult::Killed) => {
-                running_task
-                    .stop_state
-                    .store(STOP_CONFIRMED, Ordering::SeqCst);
-                Ok(StopTaskResult::Stopped)
-            }
-            Ok(KillProcessResult::AlreadyExited) => {
-                running_task.stop_state.store(STOP_NONE, Ordering::SeqCst);
-                Ok(StopTaskResult::AlreadyExited)
-            }
-            Err(err) => {
-                running_task.stop_state.store(STOP_NONE, Ordering::SeqCst);
-                Err(StopTaskError::KillFailed(err))
-            }
-        }
     }
 
     #[cfg(test)]
@@ -174,17 +114,49 @@ impl TaskRunner {
         processes.contains_key(task_id)
     }
 
-    async fn register_running_task(&self, task_id: String, pid: u32, stop_state: Arc<AtomicU8>) {
+    pub async fn terminate_all_running_processes(&self) -> Result<(), String> {
+        let running = {
+            let processes = self.running_processes.lock().await;
+            processes
+                .iter()
+                .map(|(task_id, pid)| (task_id.clone(), *pid))
+                .collect::<Vec<_>>()
+        };
+
+        for (task_id, pid) in &running {
+            match kill_process(*pid).await {
+                Ok(KillProcessResult::Killed) | Ok(KillProcessResult::AlreadyExited) => {}
+                Err(err) => return Err(format!("Failed to terminate task {task_id}: {err}")),
+            }
+        }
+
         let mut processes = self.running_processes.lock().await;
-        processes.insert(task_id, RunningTask { pid, stop_state });
+        for (task_id, _) in &running {
+            processes.remove(task_id);
+        }
+
+        #[cfg(test)]
+        {
+            let mut pending = self.pending_test_children.lock().await;
+            for (task_id, _) in &running {
+                pending.remove(task_id);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn register_running_task(&self, task_id: String, pid: u32) {
+        let mut processes = self.running_processes.lock().await;
+        processes.insert(task_id, pid);
     }
 
     fn spawn_wait_task(
         &self,
         task_id: String,
         mut child: Child,
-        stop_state: Arc<AtomicU8>,
         save_name: Option<String>,
+        download_dir: PathBuf,
         app_handle: tauri::AppHandle,
     ) {
         let running_processes = Arc::clone(&self.running_processes);
@@ -193,14 +165,10 @@ impl TaskRunner {
             let result = child.wait().await;
             cleanup_running_task(&running_processes, &task_id).await;
 
-            if wait_for_confirmed_stop(&stop_state).await {
-                return;
-            }
-
             match result {
                 Ok(exit_status) => {
                     if exit_status.success() {
-                        let output_path = find_output_file(&save_name);
+                        let output_path = find_output_file(&download_dir, &save_name);
                         let payload = serde_json::json!({
                             "id": task_id,
                             "outputPath": output_path.unwrap_or_default(),
@@ -233,10 +201,7 @@ impl TaskRunner {
     #[cfg(test)]
     pub(crate) async fn insert_running_task_for_test(&self, task_id: String, child: Child) {
         let pid = child.id().expect("test child pid");
-        let stop_state = Arc::new(AtomicU8::new(STOP_NONE));
-
-        self.register_running_task(task_id.clone(), pid, Arc::clone(&stop_state))
-            .await;
+        self.register_running_task(task_id.clone(), pid).await;
 
         let mut pending = self.pending_test_children.lock().await;
         pending.insert(task_id, child);
@@ -248,10 +213,6 @@ impl TaskRunner {
             let mut pending = self.pending_test_children.lock().await;
             pending.remove(task_id).expect("pending test child")
         };
-        let stop_state = {
-            let processes = self.running_processes.lock().await;
-            Arc::clone(&processes.get(task_id).expect("running task").stop_state)
-        };
         let running_processes = Arc::clone(&self.running_processes);
         let task_id = task_id.to_string();
 
@@ -259,7 +220,6 @@ impl TaskRunner {
             let mut child = child;
             let _ = child.wait().await;
             cleanup_running_task(&running_processes, &task_id).await;
-            let _ = wait_for_confirmed_stop(&stop_state).await;
         });
     }
 
@@ -316,20 +276,6 @@ fn find_cli_in_ancestors(start_dir: &Path, cli_name: &str, max_depth: usize) -> 
 impl Default for TaskRunner {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-async fn wait_for_confirmed_stop(stop_state: &Arc<AtomicU8>) -> bool {
-    let mut waited = 0;
-    loop {
-        match stop_state.load(Ordering::SeqCst) {
-            STOP_CONFIRMED => return true,
-            STOP_REQUESTED if waited < STOP_REQUEST_GRACE_MS => {
-                sleep(Duration::from_millis(10)).await;
-                waited += 10;
-            }
-            _ => return false,
-        }
     }
 }
 
@@ -410,8 +356,7 @@ async fn read_cli_stream<R>(
     task_id: String,
     app_handle: tauri::AppHandle,
     log_prefix: Option<&'static str>,
-)
-where
+) where
     R: AsyncRead + Unpin,
 {
     let mut buffer = [0_u8; 4096];
@@ -443,13 +388,17 @@ where
 
 #[cfg(test)]
 fn take_cli_segment(input: &[u8]) -> Option<(String, Vec<u8>)> {
-    let split_at = input.iter().position(|byte| *byte == b'\r' || *byte == b'\n')?;
+    let split_at = input
+        .iter()
+        .position(|byte| *byte == b'\r' || *byte == b'\n')?;
     let mut rest_start = split_at + 1;
     if input.get(split_at) == Some(&b'\r') && input.get(split_at + 1) == Some(&b'\n') {
         rest_start = split_at + 2;
     }
 
-    let segment = decode_cli_bytes_lossy(&input[..split_at]).trim().to_string();
+    let segment = decode_cli_bytes_lossy(&input[..split_at])
+        .trim()
+        .to_string();
     let rest = input[rest_start..].to_vec();
     Some((segment, rest))
 }
@@ -594,9 +543,7 @@ fn parse_threads(line: &str) -> Option<String> {
     None
 }
 
-fn find_output_file(save_name: &Option<String>) -> Option<String> {
-    let output_dir = PathBuf::from(r"D:\Videos");
-
+fn find_output_file(output_dir: &PathBuf, save_name: &Option<String>) -> Option<String> {
     if !output_dir.exists() {
         return None;
     }
@@ -711,7 +658,7 @@ fn regex_threads_lazy() -> &'static Regex {
 }
 
 async fn cleanup_running_task(
-    running_processes: &Arc<Mutex<HashMap<String, RunningTask>>>,
+    running_processes: &Arc<Mutex<StdHashMap<String, u32>>>,
     task_id: &str,
 ) {
     let mut processes = running_processes.lock().await;
@@ -784,12 +731,11 @@ async fn kill_process(pid: u32) -> Result<KillProcessResult, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_cli_bytes_lossy, find_cli_in_ancestors, parse_progress, parse_speed,
-        parse_threads, take_cli_segment, TaskRunner, TerminalBuffer,
+        decode_cli_bytes_lossy, find_cli_in_ancestors, parse_progress, parse_speed, parse_threads,
+        take_cli_segment, TaskRunner, TerminalBuffer,
     };
     use crate::test_support::spawn_sleeping_child;
     use std::fs;
-    use tokio::time::{sleep, Duration};
     use uuid::Uuid;
 
     #[test]
@@ -811,8 +757,7 @@ mod tests {
 
     #[test]
     fn parse_progress_reads_real_cli_progress_reporter_line() {
-        let line =
-            "12:34:56.789 Progress: 10/40 (25.00%) -- 1.00MB/4.00MB (512.5KB/s @ 00:00:06)";
+        let line = "12:34:56.789 Progress: 10/40 (25.00%) -- 1.00MB/4.00MB (512.5KB/s @ 00:00:06)";
         assert_eq!(parse_progress(line), Some(0.25));
         assert_eq!(parse_speed(line).as_deref(), Some("512.5KB/s"));
     }
@@ -854,16 +799,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_task_is_idempotent_after_process_already_exited() {
-        let runner = TaskRunner::new();
-
-        runner
-            .stop_task("missing-task")
-            .await
-            .expect("stop on missing process should not error");
-    }
-
-    #[tokio::test]
     async fn running_task_remains_registered_until_process_exits() {
         let runner = TaskRunner::new();
         let task_id = "task-1".to_string();
@@ -878,18 +813,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_task_kills_a_registered_process() {
+    async fn terminate_all_running_processes_clears_registered_tasks() {
         let runner = TaskRunner::new();
-        let task_id = "task-2".to_string();
+        let task_id = "task-terminate".to_string();
         let child = spawn_sleeping_child().await;
 
         runner
             .insert_running_task_for_test(task_id.clone(), child)
             .await;
-        runner.begin_wait_for_test(&task_id).await;
 
-        runner.stop_task(&task_id).await.expect("stop task");
-        sleep(Duration::from_millis(200)).await;
+        runner
+            .terminate_all_running_processes()
+            .await
+            .expect("terminate running processes");
 
         assert!(!runner.is_task_running(&task_id).await);
     }
@@ -934,7 +870,10 @@ mod tests {
         let mut buf = TerminalBuffer::new();
         buf.feed(b"Starting download\nProgress: 1/10\rProgress: 2/10\rProgress: 3/10\nDone\n");
         let committed = buf.take_committed();
-        assert_eq!(committed, vec!["Starting download", "Progress: 3/10", "Done"]);
+        assert_eq!(
+            committed,
+            vec!["Starting download", "Progress: 3/10", "Done"]
+        );
         assert_eq!(buf.active_line(), "");
     }
 
@@ -949,9 +888,7 @@ mod tests {
     #[test]
     fn terminal_buffer_overwrites_progress_reporter_line_without_committing_history() {
         let mut buf = TerminalBuffer::new();
-        buf.feed(
-            b"\rProgress: 1/10 (10.00%) -- 1MB/10MB\r\rProgress: 2/10 (20.00%) -- 2MB/10MB\r",
-        );
+        buf.feed(b"\rProgress: 1/10 (10.00%) -- 1MB/10MB\r\rProgress: 2/10 (20.00%) -- 2MB/10MB\r");
         assert_eq!(buf.active_line(), "Progress: 2/10 (20.00%) -- 2MB/10MB");
         assert!(buf.take_committed().is_empty());
     }

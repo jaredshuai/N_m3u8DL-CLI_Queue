@@ -37,6 +37,21 @@ test('mergeHistoryPage appends tasks on load more', () => {
   assert.equal(state.nextOffset, 3);
 });
 
+test('mergeHistoryPage deduplicates repeated tasks when concurrent pages overlap', () => {
+  const initial = {
+    tasks: [{ id: 'a' }, { id: 'b' }],
+    hasMore: true,
+    nextOffset: 2,
+  };
+  const state = mergeHistoryPage(initial, {
+    tasks: [{ id: 'b' }, { id: 'c' }],
+    hasMore: false,
+    nextOffset: 4,
+  });
+
+  assert.deepEqual(state.tasks.map((task) => task.id), ['a', 'b', 'c']);
+});
+
 test('prependHistoryTask keeps the current window size', () => {
   const tasks = Array.from({ length: DEFAULT_HISTORY_PAGE_SIZE }, (_, index) => ({
     id: `task-${index}`,

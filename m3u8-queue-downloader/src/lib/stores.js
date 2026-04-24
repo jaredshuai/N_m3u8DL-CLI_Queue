@@ -23,6 +23,7 @@ export const sessionProgress = writable(createSessionProgressState());
 export const appSettings = writable({
   closeButtonBehavior: 'closeToTray',
   autoShutdownOnComplete: false,
+  downloadDir: '',
 });
 export const shutdownNotice = writable({
   active: false,

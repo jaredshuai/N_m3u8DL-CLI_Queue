@@ -14,16 +14,41 @@ test('getQueueControlState disables control when queue is empty', () => {
   assert.equal(state.action, 'start');
 });
 
-test('getQueueControlState shows pause while queue is running', () => {
+test('getQueueControlState shows pause-next while a task is actively downloading', () => {
   const state = getQueueControlState({
-    tasks: [{ id: '1' }],
+    tasks: [{ id: '1', status: 'downloading' }, { id: '2', status: 'waiting' }],
     queueRunning: true,
     busy: false,
   });
 
   assert.equal(state.disabled, false);
-  assert.equal(state.label, '暂停队列');
+  assert.equal(state.label, '暂停后续任务');
   assert.equal(state.action, 'pause');
+});
+
+test('getQueueControlState shows resume while queue is draining with waiting tasks left', () => {
+  const state = getQueueControlState({
+    tasks: [{ id: '1', status: 'downloading' }, { id: '2', status: 'waiting' }],
+    queueRunning: false,
+    busy: false,
+  });
+
+  assert.equal(state.disabled, false);
+  assert.equal(state.label, '恢复队列');
+  assert.equal(state.action, 'resume');
+  assert.equal(state.isDraining, true);
+});
+
+test('getQueueControlState disables control while last task is draining', () => {
+  const state = getQueueControlState({
+    tasks: [{ id: '1', status: 'downloading' }],
+    queueRunning: false,
+    busy: false,
+  });
+
+  assert.equal(state.disabled, true);
+  assert.equal(state.label, '收尾中...');
+  assert.equal(state.action, 'draining');
 });
 
 test('getQueueControlState disables control while command is busy', () => {
@@ -41,7 +66,7 @@ test('getQueueControlState disables control while command is busy', () => {
 test('toggleQueue invokes start_queue when queue is stopped', async () => {
   const calls = [];
 
-  await toggleQueue(false, async (command) => {
+  await toggleQueue('start', async (command) => {
     calls.push(command);
   });
 
@@ -51,11 +76,21 @@ test('toggleQueue invokes start_queue when queue is stopped', async () => {
 test('toggleQueue invokes pause_queue when queue is running', async () => {
   const calls = [];
 
-  await toggleQueue(true, async (command) => {
+  await toggleQueue('pause', async (command) => {
     calls.push(command);
   });
 
   assert.deepEqual(calls, ['pause_queue']);
+});
+
+test('toggleQueue invokes start_queue when queue is resumed from draining state', async () => {
+  const calls = [];
+
+  await toggleQueue('resume', async (command) => {
+    calls.push(command);
+  });
+
+  assert.deepEqual(calls, ['start_queue']);
 });
 
 test('runQueueToggle flips busy state around a successful toggle and reload', async () => {
@@ -64,7 +99,7 @@ test('runQueueToggle flips busy state around a successful toggle and reload', as
 
   await runQueueToggle({
     disabled: false,
-    queueRunning: false,
+    action: 'start',
     setBusy: (value) => busyStates.push(value),
     reloadQueueState: async () => calls.push('reload'),
     invokeFn: async (command) => calls.push(command),
@@ -81,7 +116,7 @@ test('runQueueToggle clears busy state and reports error when toggle fails', asy
 
   await runQueueToggle({
     disabled: false,
-    queueRunning: true,
+    action: 'pause',
     setBusy: (value) => busyStates.push(value),
     reloadQueueState: async () => {
       throw new Error('reload should not run');
@@ -102,7 +137,7 @@ test('runQueueToggle does nothing when the control is disabled', async () => {
 
   await runQueueToggle({
     disabled: true,
-    queueRunning: false,
+    action: 'start',
     setBusy: (value) => busyStates.push(value),
     reloadQueueState: async () => calls.push('reload'),
     invokeFn: async (command) => calls.push(command),

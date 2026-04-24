@@ -10,8 +10,9 @@ export function createHistoryState() {
 
 export function mergeHistoryPage(currentState, page, reset = false) {
   const current = currentState ?? createHistoryState();
+  const nextTasks = reset ? [...page.tasks] : dedupeHistoryTasks([...current.tasks, ...page.tasks]);
   return {
-    tasks: reset ? [...page.tasks] : [...current.tasks, ...page.tasks],
+    tasks: nextTasks,
     hasMore: page.hasMore,
     nextOffset: page.nextOffset,
   };
@@ -45,4 +46,16 @@ export function removeHistoryTask(currentState, taskId) {
     tasks: current.tasks.filter((task) => task.id !== taskId),
     nextOffset: Math.max(0, current.nextOffset - 1),
   };
+}
+
+function dedupeHistoryTasks(tasks = []) {
+  const seen = new Set();
+  return tasks.filter((task) => {
+    const key = task?.id;
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }

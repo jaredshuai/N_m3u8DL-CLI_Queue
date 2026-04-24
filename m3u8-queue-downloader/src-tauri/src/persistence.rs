@@ -34,10 +34,14 @@ impl Persistence {
         for task in &mut state.tasks {
             if task.status == TaskStatus::Downloading {
                 task.status = TaskStatus::Waiting;
+                task.progress = 0.0;
+                task.speed.clear();
+                task.threads.clear();
             }
         }
         // Clear current_task_id since no process is running after restart
         state.current_task_id = None;
+        state.is_running = false;
         Some(state)
     }
 }
@@ -98,7 +102,6 @@ mod tests {
     use super::*;
     use crate::models::{QueueState, Task, TaskStatus};
     use chrono::Utc;
-    use std::collections::VecDeque;
     use uuid::Uuid;
 
     fn temp_state_path() -> PathBuf {
@@ -120,7 +123,6 @@ mod tests {
                 output_path: None,
                 error_message: None,
                 created_at: Utc::now(),
-                log_lines: VecDeque::new(),
             }],
             current_task_id: Some("task-1".to_string()),
             is_running: true,
@@ -135,7 +137,11 @@ mod tests {
         let loaded = Persistence::load(&path).expect("load queue state");
         assert_eq!(loaded.tasks.len(), 1);
         assert_eq!(loaded.tasks[0].status, TaskStatus::Waiting);
+        assert_eq!(loaded.tasks[0].progress, 0.0);
+        assert!(loaded.tasks[0].speed.is_empty());
+        assert!(loaded.tasks[0].threads.is_empty());
         assert!(loaded.current_task_id.is_none());
+        assert!(!loaded.is_running);
 
         std::fs::remove_file(path).expect("cleanup queue state");
     }

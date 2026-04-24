@@ -23,10 +23,21 @@ impl ShutdownManager {
         }
     }
 
-    pub fn reset_run_failure(&self) {
+    pub fn reset_for_new_run(&self) -> Result<bool, String> {
+        let countdown_pending = {
+            let state = self.state.lock().expect("shutdown mutex poisoned");
+            state.countdown_pending
+        };
+
+        if countdown_pending && !cfg!(test) {
+            cancel_shutdown()?;
+        }
+
         let mut state = self.state.lock().expect("shutdown mutex poisoned");
         state.run_had_failure = false;
         state.countdown_pending = false;
+        state.cancelled_until_reenabled = false;
+        Ok(countdown_pending)
     }
 
     pub fn mark_run_failure(&self) {
@@ -132,7 +143,7 @@ mod tests {
         manager.mark_run_failure();
         assert!(!manager.should_start_countdown());
 
-        manager.reset_run_failure();
+        manager.reset_for_new_run().expect("reset for new run");
         assert!(manager.should_start_countdown());
     }
 
@@ -143,6 +154,17 @@ mod tests {
         assert!(!manager.should_start_countdown());
 
         manager.clear_cancellation_after_reenable();
+        assert!(manager.should_start_countdown());
+    }
+
+    #[test]
+    fn reset_for_new_run_clears_pending_and_reenables_shutdown_logic() {
+        let manager = ShutdownManager::new();
+        manager.start_countdown().expect("start countdown");
+        assert!(!manager.should_start_countdown());
+
+        let cancelled = manager.reset_for_new_run().expect("reset for new run");
+        assert!(cancelled);
         assert!(manager.should_start_countdown());
     }
 }
