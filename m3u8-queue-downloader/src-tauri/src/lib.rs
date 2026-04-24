@@ -28,6 +28,18 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Listener, Manager, WindowEvent};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseRequestSource {
+    WindowButton,
+    TrayQuit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseAction {
+    HideToTray,
+    ExitApplication,
+}
+
 pub struct AppState {
     cli_output_store: Arc<CliOutputStore>,
     history_store: Arc<HistoryStore>,
@@ -302,9 +314,12 @@ async fn request_main_window_close(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    match state.settings_store.get().close_button_behavior {
-        CloseButtonBehavior::CloseToTray => hide_main_window(&app_handle),
-        CloseButtonBehavior::Exit => {
+    match resolve_close_action(
+        state.settings_store.get().close_button_behavior,
+        CloseRequestSource::WindowButton,
+    ) {
+        CloseAction::HideToTray => hide_main_window(&app_handle),
+        CloseAction::ExitApplication => {
             exit_application(
                 Arc::clone(&state.queue_manager),
                 Arc::clone(&state.task_runner),
@@ -541,6 +556,19 @@ async fn exit_application(
     Ok(())
 }
 
+fn resolve_close_action(
+    behavior: CloseButtonBehavior,
+    source: CloseRequestSource,
+) -> CloseAction {
+    match source {
+        CloseRequestSource::TrayQuit => CloseAction::ExitApplication,
+        CloseRequestSource::WindowButton => match behavior {
+            CloseButtonBehavior::CloseToTray => CloseAction::HideToTray,
+            CloseButtonBehavior::Exit => CloseAction::ExitApplication,
+        },
+    }
+}
+
 fn open_download_dir_for_path(path: PathBuf) -> Result<(), String> {
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
 
@@ -628,13 +656,16 @@ fn request_close_from_handle(app_handle: tauri::AppHandle) {
     let queue_manager = Arc::clone(&state.queue_manager);
     let task_runner = Arc::clone(&state.task_runner);
 
-    match settings_store.get().close_button_behavior {
-        CloseButtonBehavior::CloseToTray => {
+    match resolve_close_action(
+        settings_store.get().close_button_behavior,
+        CloseRequestSource::TrayQuit,
+    ) {
+        CloseAction::HideToTray => {
             if let Err(err) = hide_main_window(&app_handle) {
                 eprintln!("Failed to hide main window: {}", err);
             }
         }
-        CloseButtonBehavior::Exit => {
+        CloseAction::ExitApplication => {
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = exit_application(queue_manager, task_runner, app_handle).await {
                     eprintln!("Failed to exit application cleanly: {}", err);
@@ -879,6 +910,32 @@ mod tests {
 
     fn temp_persistence_path() -> PathBuf {
         std::env::temp_dir().join(format!("queue-state-{}.json", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn tray_quit_always_exits_even_when_window_close_hides_to_tray() {
+        assert_eq!(
+            resolve_close_action(
+                CloseButtonBehavior::CloseToTray,
+                CloseRequestSource::TrayQuit,
+            ),
+            CloseAction::ExitApplication
+        );
+    }
+
+    #[test]
+    fn window_close_respects_close_to_tray_setting() {
+        assert_eq!(
+            resolve_close_action(
+                CloseButtonBehavior::CloseToTray,
+                CloseRequestSource::WindowButton,
+            ),
+            CloseAction::HideToTray
+        );
+        assert_eq!(
+            resolve_close_action(CloseButtonBehavior::Exit, CloseRequestSource::WindowButton),
+            CloseAction::ExitApplication
+        );
     }
 
     #[tokio::test]
