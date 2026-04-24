@@ -77,6 +77,28 @@ jobs:
       - name: Build Tauri installer
         run: npm run tauri:build -- --ci --no-sign
 
+      - name: Prepare portable folder
+        shell: pwsh
+        run: |
+          $portableRoot = Join-Path $PWD '.portable-dist'
+          $portableDir = Join-Path $portableRoot 'm3u8-queue-downloader-portable'
+          if (Test-Path -LiteralPath $portableRoot) {
+            Remove-Item -LiteralPath $portableRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $portableDir | Out-Null
+
+          Copy-Item -LiteralPath 'src-tauri/target/release/m3u8-queue-downloader.exe' -Destination $portableDir -Force
+
+          Get-ChildItem -LiteralPath 'src-tauri/target/release' -Filter '*.dll' -File | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $portableDir $_.Name) -Force
+          }
+
+          if (Test-Path -LiteralPath 'src-tauri/target/release/resources') {
+            Copy-Item -LiteralPath 'src-tauri/target/release/resources' -Destination (Join-Path $portableDir 'resources') -Recurse -Force
+          } else {
+            throw 'Portable resources directory was not found at src-tauri/target/release/resources'
+          }
+
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
@@ -84,4 +106,5 @@ jobs:
           path: |
             m3u8-queue-downloader/src-tauri/target/release/bundle/nsis/*.exe
             m3u8-queue-downloader/src-tauri/target/release/bundle/nsis/*.zip
+            m3u8-queue-downloader/.portable-dist/m3u8-queue-downloader-portable/**
           if-no-files-found: error
