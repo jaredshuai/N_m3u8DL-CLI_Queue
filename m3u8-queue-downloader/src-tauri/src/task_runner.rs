@@ -65,6 +65,7 @@ impl TaskRunner {
 
         let mut cmd = tokio::process::Command::new(&cli_path);
         cmd.args(&args)
+            .current_dir(cli_path.parent().unwrap_or_else(|| Path::new(".")))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 

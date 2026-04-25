@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 const root = process.cwd();
 const resourcesDir = path.join(root, 'src-tauri', 'resources');
 const repoRoot = path.resolve(root, '..');
+const workspaceRoot = path.resolve(repoRoot, '..');
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -17,9 +18,10 @@ const cliSource = resolveRequiredFile('cli', [
   path.join(resourcesDir, 'N_m3u8DL-CLI_v3.0.2.exe'),
 ]);
 
-const ffmpegSource = resolveRequiredFile('ffmpeg', [
+const ffmpegSource = resolveRequiredFfmpeg([
   args.ffmpeg,
   process.env.BUNDLED_FFMPEG_PATH,
+  path.join(workspaceRoot, 'ffmpeg.exe'),
   path.join(resourcesDir, 'ffmpeg.exe'),
   ...findFfmpegOnPath(),
 ]);
@@ -80,6 +82,50 @@ function resolveOptionalFile(candidates) {
     }
   }
   return null;
+}
+
+function resolveRequiredFfmpeg(candidates) {
+  for (const candidate of candidates) {
+    const resolved = resolveExistingFile(candidate);
+    if (!resolved) continue;
+    return resolveFfmpegBinary(resolved);
+  }
+
+  throw new Error('Unable to locate required ffmpeg resource');
+}
+
+function resolveExistingFile(candidate) {
+  if (!candidate || typeof candidate !== 'string') return null;
+  const resolved = path.resolve(candidate);
+  if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+    return resolved;
+  }
+  return null;
+}
+
+function resolveFfmpegBinary(candidate) {
+  const chocolateyBinary = resolveChocolateyFfmpegBinary(candidate);
+  return chocolateyBinary ?? candidate;
+}
+
+function resolveChocolateyFfmpegBinary(candidate) {
+  const normalized = candidate.toLowerCase();
+  if (!normalized.endsWith(`${path.sep}chocolatey${path.sep}bin${path.sep}ffmpeg.exe`)) {
+    return null;
+  }
+
+  const actual = path.resolve(
+    path.dirname(candidate),
+    '..',
+    'lib',
+    'ffmpeg',
+    'tools',
+    'ffmpeg',
+    'bin',
+    'ffmpeg.exe',
+  );
+
+  return resolveExistingFile(actual);
 }
 
 function copyResource(source, destination) {

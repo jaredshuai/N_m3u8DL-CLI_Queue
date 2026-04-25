@@ -39,7 +39,7 @@ export function shouldApplyTerminalResponse(requestId, activeRequestId) {
 
 export function resolveTerminalActiveLine(task, persistedActiveLine = '') {
   if (task && Object.prototype.hasOwnProperty.call(task, 'terminalActiveLine')) {
-    return task.terminalActiveLine ?? '';
+    return task.terminalActiveLine || persistedActiveLine || '';
   }
   return persistedActiveLine ?? '';
 }

@@ -69,16 +69,16 @@ test('buildTerminalView handles task with no active line', () => {
   assert.equal(view.activeLine, '');
 });
 
-test('resolveTerminalActiveLine prefers explicit empty live value over persisted fallback', () => {
+test('resolveTerminalActiveLine shows loaded active line when live field is still empty', () => {
   const activeLine = resolveTerminalActiveLine(
     { id: 'task-1', terminalActiveLine: '' },
     'Progress: 126/1095 (11.51%)'
   );
 
-  assert.equal(activeLine, '');
+  assert.equal(activeLine, 'Progress: 126/1095 (11.51%)');
 });
 
-test('resolveTerminalActiveLine falls back only when live field is absent', () => {
+test('resolveTerminalActiveLine falls back when live field is absent', () => {
   const activeLine = resolveTerminalActiveLine(
     { id: 'task-1' },
     'Progress: 126/1095 (11.51%)'
