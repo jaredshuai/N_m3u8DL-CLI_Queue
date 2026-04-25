@@ -16,7 +16,8 @@
     "tauri:smoke": "tauri build --debug",
     "tauri:build": "tauri build",
     "release:prepare": "node scripts/prepare-release.mjs",
-    "package:sync": "node scripts/prepare-release.mjs package-sync"
+    "package:sync": "node scripts/prepare-release.mjs package-sync",
+    "package:sync:master": "node scripts/prepare-release.mjs package-sync --ref master"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"

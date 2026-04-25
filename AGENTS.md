@@ -26,15 +26,18 @@
 在 `m3u8-queue-downloader/` 目录执行：
 
 ```powershell
-npm run package:sync -- --ref <远端分支名>
+node scripts/prepare-release.mjs package-sync --ref <远端分支名>
 ```
 
 常用变体：
 
 ```powershell
-npm run package:sync -- --ref <远端分支名> --skip-tests
-npm run package:sync -- --run-id <已成功的_actions_run_id>
+npm run package:sync:master
+node scripts/prepare-release.mjs package-sync --ref <远端分支名> --skip-tests
+node scripts/prepare-release.mjs package-sync --run-id <已成功的_actions_run_id>
 ```
+
+不要使用 `npm run package:sync -- --ref master`；当前 npm 版本会把 `--ref` 当作 npm 自身配置吞掉。
 
 说明：
 
