@@ -1,6 +1,6 @@
+use crate::app_error::{AppError, AppResult};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -27,11 +27,11 @@ impl HistoryStatus {
         }
     }
 
-    pub fn from_task_status(status: &TaskStatus) -> Result<Self, String> {
+    pub fn from_task_status(status: &TaskStatus) -> AppResult<Self> {
         match status {
             TaskStatus::Completed => Ok(HistoryStatus::Completed),
             TaskStatus::Failed => Ok(HistoryStatus::Failed),
-            _ => Err("Only completed and failed tasks can be stored in history".to_string()),
+            _ => Err(AppError::InvalidHistoryStatus),
         }
     }
 }
@@ -56,6 +56,8 @@ pub struct AppSettings {
     pub close_button_behavior: CloseButtonBehavior,
     #[serde(default, rename = "autoShutdownOnComplete")]
     pub auto_action_on_complete: bool,
+    #[serde(default, rename = "downloadDir")]
+    pub download_dir: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -63,6 +65,7 @@ impl Default for AppSettings {
         Self {
             close_button_behavior: CloseButtonBehavior::CloseToTray,
             auto_action_on_complete: false,
+            download_dir: None,
         }
     }
 }
@@ -82,7 +85,6 @@ pub struct Task {
     pub output_path: Option<String>,
     pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
-    pub log_lines: VecDeque<String>,
 }
 
 impl Task {
@@ -100,7 +102,6 @@ impl Task {
             output_path: None,
             error_message: None,
             created_at: Utc::now(),
-            log_lines: VecDeque::new(),
         }
     }
 }

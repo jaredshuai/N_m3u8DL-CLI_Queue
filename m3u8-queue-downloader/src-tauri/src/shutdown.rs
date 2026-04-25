@@ -1,3 +1,4 @@
+use crate::app_error::AppResult;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::process::Command;
@@ -23,10 +24,21 @@ impl ShutdownManager {
         }
     }
 
-    pub fn reset_run_failure(&self) {
+    pub fn reset_for_new_run(&self) -> AppResult<bool> {
+        let countdown_pending = {
+            let state = self.state.lock().expect("shutdown mutex poisoned");
+            state.countdown_pending
+        };
+
+        if countdown_pending && !cfg!(test) {
+            cancel_shutdown()?;
+        }
+
         let mut state = self.state.lock().expect("shutdown mutex poisoned");
         state.run_had_failure = false;
         state.countdown_pending = false;
+        state.cancelled_until_reenabled = false;
+        Ok(countdown_pending)
     }
 
     pub fn mark_run_failure(&self) {
@@ -44,7 +56,7 @@ impl ShutdownManager {
         !state.run_had_failure && !state.countdown_pending && !state.cancelled_until_reenabled
     }
 
-    pub fn start_countdown(&self) -> Result<u64, String> {
+    pub fn start_countdown(&self) -> AppResult<u64> {
         if !cfg!(test) {
             schedule_shutdown(SHUTDOWN_SECONDS)?;
         }
@@ -53,7 +65,7 @@ impl ShutdownManager {
         Ok(SHUTDOWN_SECONDS)
     }
 
-    pub fn cancel_countdown(&self) -> Result<(), String> {
+    pub fn cancel_countdown(&self) -> AppResult<()> {
         if !cfg!(test) {
             cancel_shutdown()?;
         }
@@ -76,12 +88,14 @@ pub fn shutdown_seconds() -> u64 {
 }
 
 #[cfg(target_os = "windows")]
-fn schedule_shutdown(seconds: u64) -> Result<(), String> {
+fn schedule_shutdown(seconds: u64) -> AppResult<()> {
     let status = Command::new("shutdown")
         .args(["/s", "/t", &seconds.to_string()])
         .creation_flags(0x08000000)
         .status()
-        .map_err(|e| format!("failed to schedule Windows shutdown: {e}"))?;
+        .map_err(|e| {
+            crate::app_error::AppError::message(format!("failed to schedule Windows shutdown: {e}"))
+        })?;
 
     if status.success() {
         Ok(())
@@ -89,23 +103,26 @@ fn schedule_shutdown(seconds: u64) -> Result<(), String> {
         Err(format!(
             "shutdown /s /t {seconds} failed with exit code {}",
             status.code().unwrap_or(-1)
-        ))
+        )
+        .into())
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn schedule_shutdown(_seconds: u64) -> Result<(), String> {
+fn schedule_shutdown(_seconds: u64) -> AppResult<()> {
     let _ = Command::new("true");
     Err("automatic shutdown is only supported on Windows".to_string())
 }
 
 #[cfg(target_os = "windows")]
-fn cancel_shutdown() -> Result<(), String> {
+fn cancel_shutdown() -> AppResult<()> {
     let status = Command::new("shutdown")
         .args(["/a"])
         .creation_flags(0x08000000)
         .status()
-        .map_err(|e| format!("failed to cancel Windows shutdown: {e}"))?;
+        .map_err(|e| {
+            crate::app_error::AppError::message(format!("failed to cancel Windows shutdown: {e}"))
+        })?;
 
     if status.success() {
         Ok(())
@@ -113,12 +130,13 @@ fn cancel_shutdown() -> Result<(), String> {
         Err(format!(
             "shutdown /a failed with exit code {}",
             status.code().unwrap_or(-1)
-        ))
+        )
+        .into())
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn cancel_shutdown() -> Result<(), String> {
+fn cancel_shutdown() -> AppResult<()> {
     Ok(())
 }
 
@@ -132,7 +150,7 @@ mod tests {
         manager.mark_run_failure();
         assert!(!manager.should_start_countdown());
 
-        manager.reset_run_failure();
+        manager.reset_for_new_run().expect("reset for new run");
         assert!(manager.should_start_countdown());
     }
 
@@ -143,6 +161,17 @@ mod tests {
         assert!(!manager.should_start_countdown());
 
         manager.clear_cancellation_after_reenable();
+        assert!(manager.should_start_countdown());
+    }
+
+    #[test]
+    fn reset_for_new_run_clears_pending_and_reenables_shutdown_logic() {
+        let manager = ShutdownManager::new();
+        manager.start_countdown().expect("start countdown");
+        assert!(!manager.should_start_countdown());
+
+        let cancelled = manager.reset_for_new_run().expect("reset for new run");
+        assert!(cancelled);
         assert!(manager.should_start_countdown());
     }
 }
