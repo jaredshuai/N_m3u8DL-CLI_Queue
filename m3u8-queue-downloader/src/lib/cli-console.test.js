@@ -1,14 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  beginTerminalStateLoad,
   buildTerminalView,
   closeCliConsole,
   createCliConsoleState,
+  createTerminalLoadState,
   findCliConsoleTask,
   openCliConsole,
   resolveTerminalActiveLine,
   shouldApplyTerminalResponse,
   shouldReloadTerminalState,
+  shouldStartTerminalStateLoad,
 } from './cli-console.js';
 
 test('openCliConsole opens the panel for a task id', () => {
@@ -111,4 +114,20 @@ test('shouldReloadTerminalState skips reload when task id and status are unchang
 test('shouldApplyTerminalResponse accepts only the latest request token', () => {
   assert.equal(shouldApplyTerminalResponse(3, 3), true);
   assert.equal(shouldApplyTerminalResponse(2, 3), false);
+});
+
+test('terminal load state marks an in-flight task as already requested', () => {
+  const task = { id: 'task-1', status: 'downloading' };
+  let loadState = createTerminalLoadState();
+
+  assert.equal(shouldStartTerminalStateLoad(task, loadState), true);
+
+  loadState = beginTerminalStateLoad(loadState, task);
+
+  assert.equal(shouldStartTerminalStateLoad(task, loadState), false);
+  assert.equal(
+    shouldStartTerminalStateLoad({ ...task, status: 'completed' }, loadState),
+    true,
+  );
+  assert.equal(loadState.requestId, 1);
 });

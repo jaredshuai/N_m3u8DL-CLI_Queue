@@ -6,9 +6,11 @@
     prependCliOutputPage,
   } from './cli-output.js';
   import {
+    beginTerminalStateLoad,
+    createTerminalLoadState,
     resolveTerminalActiveLine,
     shouldApplyTerminalResponse,
-    shouldReloadTerminalState,
+    shouldStartTerminalStateLoad,
   } from './cli-console.js';
   import { displayProgressPercent } from './progress.js';
 
@@ -23,9 +25,7 @@
   let cliOutputLoading = $state(false);
   let cliOutputError = $state('');
   let autoStickToBottom = $state(true);
-  let loadedTaskId = $state(null);
-  let loadedTaskStatus = $state(null);
-  let activeLoadRequestId = $state(0);
+  let terminalLoadState = createTerminalLoadState();
 
   let statusKey = $derived(
     task?.status === 'downloading' ? 'down' :
@@ -76,8 +76,11 @@
   }
 
   async function loadTerminalState(taskId, taskStatus) {
-    const requestId = activeLoadRequestId + 1;
-    activeLoadRequestId = requestId;
+    terminalLoadState = beginTerminalStateLoad(terminalLoadState, {
+      id: taskId,
+      status: taskStatus,
+    });
+    const requestId = terminalLoadState.requestId;
     cliOutputLoading = true;
     cliOutputError = '';
     try {
@@ -85,26 +88,22 @@
         taskId,
         limit: CLI_OUTPUT_PAGE_SIZE,
       });
-      if (!shouldApplyTerminalResponse(requestId, activeLoadRequestId)) return;
+      if (!shouldApplyTerminalResponse(requestId, terminalLoadState.requestId)) return;
       committedLines = state.committedLines ?? [];
       activeLine = state.activeLine ?? '';
       cliOutputOffset = state.offset ?? 0;
       cliOutputTotal = state.total ?? committedLines.length;
       cliOutputHasMoreBefore = state.hasMoreBefore ?? false;
-      loadedTaskId = taskId;
-      loadedTaskStatus = taskStatus ?? null;
     } catch (err) {
-      if (!shouldApplyTerminalResponse(requestId, activeLoadRequestId)) return;
+      if (!shouldApplyTerminalResponse(requestId, terminalLoadState.requestId)) return;
       cliOutputError = String(err);
       committedLines = [];
       activeLine = '';
       cliOutputOffset = 0;
       cliOutputTotal = 0;
       cliOutputHasMoreBefore = false;
-      loadedTaskId = taskId;
-      loadedTaskStatus = taskStatus ?? null;
     } finally {
-      if (shouldApplyTerminalResponse(requestId, activeLoadRequestId)) {
+      if (shouldApplyTerminalResponse(requestId, terminalLoadState.requestId)) {
         cliOutputLoading = false;
       }
     }
@@ -148,7 +147,7 @@
   }
 
   $effect(() => {
-    if (!shouldReloadTerminalState(task, loadedTaskId, loadedTaskStatus)) return;
+    if (!shouldStartTerminalStateLoad(task, terminalLoadState)) return;
     committedLines = [];
     activeLine = '';
     cliOutputOffset = 0;

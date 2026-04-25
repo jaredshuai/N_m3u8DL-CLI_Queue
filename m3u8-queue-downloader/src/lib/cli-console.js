@@ -37,6 +37,28 @@ export function shouldApplyTerminalResponse(requestId, activeRequestId) {
   return requestId === activeRequestId;
 }
 
+export function createTerminalLoadState() {
+  return {
+    requestId: 0,
+    taskId: null,
+    taskStatus: null,
+  };
+}
+
+export function shouldStartTerminalStateLoad(task, loadState) {
+  const current = loadState ?? createTerminalLoadState();
+  return shouldReloadTerminalState(task, current.taskId, current.taskStatus);
+}
+
+export function beginTerminalStateLoad(loadState, task) {
+  const current = loadState ?? createTerminalLoadState();
+  return {
+    requestId: current.requestId + 1,
+    taskId: task?.id ?? null,
+    taskStatus: task?.status ?? null,
+  };
+}
+
 export function resolveTerminalActiveLine(task, persistedActiveLine = '') {
   if (task && Object.prototype.hasOwnProperty.call(task, 'terminalActiveLine')) {
     return task.terminalActiveLine || persistedActiveLine || '';
