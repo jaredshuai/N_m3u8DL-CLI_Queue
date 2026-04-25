@@ -7,6 +7,7 @@ import {
   findCliConsoleTask,
   openCliConsole,
   resolveTerminalActiveLine,
+  shouldApplyTerminalResponse,
   shouldReloadTerminalState,
 } from './cli-console.js';
 
@@ -105,4 +106,9 @@ test('shouldReloadTerminalState skips reload when task id and status are unchang
     shouldReloadTerminalState({ id: 'task-1', status: 'downloading' }, 'task-1', 'downloading'),
     false
   );
+});
+
+test('shouldApplyTerminalResponse accepts only the latest request token', () => {
+  assert.equal(shouldApplyTerminalResponse(3, 3), true);
+  assert.equal(shouldApplyTerminalResponse(2, 3), false);
 });

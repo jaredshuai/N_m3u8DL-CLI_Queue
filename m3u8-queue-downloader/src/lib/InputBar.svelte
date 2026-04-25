@@ -8,8 +8,10 @@
   let saveName = $state('');
   let headers = $state('');
   let showAdvanced = $state(false);
+  let showHeaders = $state(false);
   let adding = $state(false);
   let queueBusy = $state(false);
+  let hasHeaders = $derived(headers.trim().length > 0);
 
   let duplicateWarnings = $derived(findDuplicateWarnings({
     tasks: $tasks,
@@ -56,10 +58,19 @@
     showAdvanced = !showAdvanced;
   }
 
+  function toggleHeaders() {
+    showHeaders = !showHeaders;
+  }
+
+  function clearHeaders() {
+    headers = '';
+    showHeaders = false;
+  }
+
   async function handleQueueToggle() {
     await runQueueToggle({
       disabled: queueControl.disabled,
-      queueRunning: $queueRunning,
+      action: queueControl.action,
       setBusy: (value) => {
         queueBusy = value;
       },
@@ -110,7 +121,7 @@
   {#if showAdvanced}
     <div class="advanced-panel fade-in">
       <div class="advanced-grid">
-        <div class="field">
+        <div class="field field-full">
           <label class="field-label" for="save-name">保存名称</label>
           <input
             id="save-name"
@@ -120,15 +131,46 @@
             class="field-input"
           />
         </div>
-        <div class="field">
-          <label class="field-label" for="headers-input">请求头</label>
-          <input
-            id="headers-input"
-            type="text"
-            bind:value={headers}
-            placeholder='如: "Referer:xxx" "User-Agent:xxx"'
-            class="field-input"
-          />
+
+        <div class="headers-section">
+          <div class="headers-row">
+            <div class="headers-copy">
+              <label class="field-label" for="headers-input">请求头</label>
+              <span class="headers-hint">
+                {#if hasHeaders}
+                  当前已保留自定义请求头
+                {:else}
+                  通常无需填写，只有少数站点需要自定义 Referer / User-Agent
+                {/if}
+              </span>
+            </div>
+            <div class="headers-actions">
+              {#if hasHeaders}
+                <button class="mini-action danger" onclick={clearHeaders} type="button">清空</button>
+              {/if}
+              <button class="mini-action" onclick={toggleHeaders} type="button">
+                {showHeaders ? '收起请求头' : '编辑请求头'}
+              </button>
+            </div>
+          </div>
+
+          {#if !showHeaders && hasHeaders}
+            <div class="headers-preview" title={headers}>
+              {headers}
+            </div>
+          {/if}
+
+          {#if showHeaders}
+            <div class="field field-full fade-in">
+              <input
+                id="headers-input"
+                type="text"
+                bind:value={headers}
+                placeholder='如: "Referer:xxx" "User-Agent:xxx"'
+                class="field-input"
+              />
+            </div>
+          {/if}
         </div>
       </div>
     </div>
@@ -243,15 +285,19 @@
   }
 
   .advanced-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
   }
 
   .field {
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+
+  .field-full {
+    width: 100%;
   }
 
   .field-label {
@@ -280,6 +326,79 @@
 
   .field-input:focus {
     border-color: var(--color-accent);
+  }
+
+  .headers-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .headers-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .headers-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .headers-hint {
+    font-size: 12px;
+    color: var(--color-text-disabled);
+    line-height: 1.4;
+  }
+
+  .headers-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .mini-action {
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    font-family: var(--font-stack);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.2s, color 0.2s, background 0.2s;
+  }
+
+  .mini-action:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+    background: var(--color-accent-glow);
+  }
+
+  .mini-action.danger:hover {
+    border-color: rgba(248, 113, 113, 0.38);
+    color: var(--color-status-fail);
+    background: rgba(248, 113, 113, 0.1);
+  }
+
+  .headers-preview {
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.18);
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .duplicate-warning {
@@ -312,5 +431,17 @@
 
   .warning-copy span {
     color: var(--color-text-secondary);
+  }
+
+  @media (max-width: 720px) {
+    .headers-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .headers-actions {
+      justify-content: flex-start;
+      flex-wrap: wrap;
+    }
   }
 </style>

@@ -33,6 +33,10 @@ export function shouldReloadTerminalState(task, loadedTaskId, loadedTaskStatus) 
   return task.status !== loadedTaskStatus;
 }
 
+export function shouldApplyTerminalResponse(requestId, activeRequestId) {
+  return requestId === activeRequestId;
+}
+
 export function resolveTerminalActiveLine(task, persistedActiveLine = '') {
   if (task && Object.prototype.hasOwnProperty.call(task, 'terminalActiveLine')) {
     return task.terminalActiveLine ?? '';
