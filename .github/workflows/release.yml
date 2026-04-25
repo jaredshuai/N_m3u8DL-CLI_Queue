@@ -65,19 +65,28 @@ jobs:
         working-directory: m3u8-queue-downloader
         run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
 
+      - name: Install ffmpeg
+        shell: pwsh
+        run: choco install ffmpeg --yes --no-progress
+
       - name: Build bundled legacy CLI
         shell: pwsh
         run: |
           nuget restore N_m3u8DL-CLI.sln
           msbuild N_m3u8DL-CLI.sln /p:Configuration=Release /p:DebugSymbols=false /p:DebugType=None
-          New-Item -ItemType Directory -Force m3u8-queue-downloader/src-tauri/resources | Out-Null
-          Copy-Item N_m3u8DL-CLI/bin/Release/N_m3u8DL-CLI.exe m3u8-queue-downloader/src-tauri/resources/N_m3u8DL-CLI_v3.0.2.exe -Force
+          $ffmpeg = (Get-Command ffmpeg).Source
+          Push-Location m3u8-queue-downloader
+          node scripts/stage-bundled-resources.mjs --cli ../N_m3u8DL-CLI/bin/Release/N_m3u8DL-CLI.exe --ffmpeg $ffmpeg
+          node scripts/validate-bundled-resources.mjs
+          Pop-Location
 
-      - name: Upload bundled CLI build artifact
+      - name: Upload bundled runtime resources
         uses: actions/upload-artifact@v4
         with:
-          name: N_m3u8DL-CLI_bundled
-          path: m3u8-queue-downloader/src-tauri/resources/N_m3u8DL-CLI_v3.0.2.exe
+          name: bundled-runtime-resources
+          path: |
+            m3u8-queue-downloader/src-tauri/resources/N_m3u8DL-CLI_v3.0.2.exe
+            m3u8-queue-downloader/src-tauri/resources/ffmpeg.exe
           if-no-files-found: error
 
       - name: Build and publish Tauri release

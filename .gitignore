@@ -43,7 +43,8 @@ dlldata.c
 # DNX
 project.lock.json
 project.fragment.lock.json
-artifacts/
+artifacts/*
+!artifacts/.gitkeep
 
 *_i.c
 *_p.c
@@ -262,8 +263,12 @@ __pycache__/
 # Tauri / Vite local build outputs
 m3u8-queue-downloader/dist/
 m3u8-queue-downloader/src-tauri/target/
+m3u8-queue-downloader/.pack-dist/
 
 # Local packaging resources injected before build
 m3u8-queue-downloader/src-tauri/resources/*
 !m3u8-queue-downloader/src-tauri/resources/.gitkeep
 *.pyc
+
+# Local code-search metadata
+.ace-tool/

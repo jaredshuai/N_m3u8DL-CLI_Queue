@@ -8,11 +8,15 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "node --test src/lib/*.test.js",
+    "test": "node --test src/lib/*.test.js scripts/*.test.mjs",
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml --locked",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture",
+    "resources:stage": "node scripts/stage-bundled-resources.mjs",
+    "resources:validate": "node scripts/validate-bundled-resources.mjs",
+    "tauri:smoke": "tauri build --debug",
     "tauri:build": "tauri build",
-    "release:prepare": "node scripts/prepare-release.mjs"
+    "release:prepare": "node scripts/prepare-release.mjs",
+    "package:sync": "node scripts/prepare-release.mjs package-sync"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"

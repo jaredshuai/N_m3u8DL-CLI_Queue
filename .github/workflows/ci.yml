@@ -45,6 +45,12 @@ jobs:
         with:
           workspaces: m3u8-queue-downloader/src-tauri -> target
 
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -59,3 +65,23 @@ jobs:
 
       - name: Check Rust crate
         run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Install ffmpeg
+        shell: pwsh
+        working-directory: .
+        run: choco install ffmpeg --yes --no-progress
+
+      - name: Stage bundled runtime resources
+        shell: pwsh
+        working-directory: .
+        run: |
+          nuget restore N_m3u8DL-CLI.sln
+          msbuild N_m3u8DL-CLI.sln /p:Configuration=Release /p:DebugSymbols=false /p:DebugType=None
+          $ffmpeg = (Get-Command ffmpeg).Source
+          Push-Location m3u8-queue-downloader
+          npm run resources:stage -- --cli ../N_m3u8DL-CLI/bin/Release/N_m3u8DL-CLI.exe --ffmpeg $ffmpeg
+          npm run resources:validate
+          Pop-Location
+
+      - name: Tauri debug smoke build
+        run: npm run tauri:smoke
