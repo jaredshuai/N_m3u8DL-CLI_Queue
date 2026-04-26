@@ -71,13 +71,17 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
             let (lifecycle_sender, lifecycle_receiver) = tokio::sync::mpsc::unbounded_channel();
+            let (output_sender, output_receiver) = tokio::sync::mpsc::unbounded_channel();
             let state = AppState::new(
                 std::sync::Arc::new(CliOutputStore::new(cli_output_path)),
                 std::sync::Arc::new(HistoryStore::new(history_path)),
                 std::sync::Arc::new(QueueManager::new(persistence_path)),
                 std::sync::Arc::new(SettingsStore::new(settings_path)),
                 std::sync::Arc::new(ShutdownManager::new()),
-                std::sync::Arc::new(TaskRunner::with_lifecycle_sender(lifecycle_sender)),
+                std::sync::Arc::new(TaskRunner::with_event_senders(
+                    lifecycle_sender,
+                    output_sender,
+                )),
             );
 
             app.manage(state.clone());
@@ -87,7 +91,7 @@ pub fn run() {
                 state.clone(),
                 lifecycle_receiver,
             );
-            event_handlers::register_event_handlers(app, app_handle, state);
+            event_handlers::spawn_task_output_worker(app_handle, state, output_receiver);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

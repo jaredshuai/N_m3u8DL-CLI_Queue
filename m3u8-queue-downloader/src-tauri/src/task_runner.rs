@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::collections::HashMap as StdHashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{path::BaseDirectory, Emitter, Manager};
+use tauri::{path::BaseDirectory, Manager};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
 use tokio::sync::mpsc;
@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 pub struct TaskRunner {
     running_processes: Arc<Mutex<StdHashMap<String, u32>>>,
     lifecycle_sender: Option<mpsc::UnboundedSender<TaskLifecycleEvent>>,
+    output_sender: Option<mpsc::UnboundedSender<TaskOutputEvent>>,
     #[cfg(test)]
     pending_test_children: Arc<Mutex<HashMap<String, Child>>>,
 }
@@ -26,6 +27,28 @@ const MAX_CLI_SEARCH_DEPTH: usize = 8;
 pub(crate) enum TaskLifecycleEvent {
     Completed { id: String, output_path: String },
     Failed { id: String, error_message: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum TaskOutputEvent {
+    Progress {
+        id: String,
+        progress: Option<f32>,
+        speed: Option<String>,
+        threads: Option<String>,
+    },
+    LogLine {
+        id: String,
+        line: String,
+    },
+    TerminalCommittedLine {
+        id: String,
+        line: String,
+    },
+    TerminalActiveLine {
+        id: String,
+        active_line: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,15 +62,31 @@ impl TaskRunner {
         Self {
             running_processes: Arc::new(Mutex::new(StdHashMap::new())),
             lifecycle_sender: None,
+            output_sender: None,
             #[cfg(test)]
             pending_test_children: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
+    #[cfg(test)]
     pub fn with_lifecycle_sender(sender: mpsc::UnboundedSender<TaskLifecycleEvent>) -> Self {
         Self {
             running_processes: Arc::new(Mutex::new(StdHashMap::new())),
             lifecycle_sender: Some(sender),
+            output_sender: None,
+            #[cfg(test)]
+            pending_test_children: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn with_event_senders(
+        lifecycle_sender: mpsc::UnboundedSender<TaskLifecycleEvent>,
+        output_sender: mpsc::UnboundedSender<TaskOutputEvent>,
+    ) -> Self {
+        Self {
+            running_processes: Arc::new(Mutex::new(StdHashMap::new())),
+            lifecycle_sender: Some(lifecycle_sender),
+            output_sender: Some(output_sender),
             #[cfg(test)]
             pending_test_children: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -106,22 +145,27 @@ impl TaskRunner {
 
         let task_id = task.id.clone();
         let save_name = task.save_name.clone();
-        let app_handle_progress = app_handle.clone();
         let pid = child
             .id()
             .ok_or_else(|| AppError::message("Failed to get CLI process ID"))?;
         self.register_running_task(task_id.clone(), pid).await;
 
         let task_id_stdout = task_id.clone();
-        let app_handle_stdout = app_handle_progress.clone();
+        let output_sender_stdout = self.output_sender.clone();
         tokio::spawn(async move {
-            read_cli_stream(stdout, task_id_stdout, app_handle_stdout, None).await;
+            read_cli_stream(stdout, task_id_stdout, output_sender_stdout, None).await;
         });
 
         let task_id_stderr = task_id.clone();
-        let app_handle_stderr = app_handle_progress.clone();
+        let output_sender_stderr = self.output_sender.clone();
         tokio::spawn(async move {
-            read_cli_stream(stderr, task_id_stderr, app_handle_stderr, Some("[stderr] ")).await;
+            read_cli_stream(
+                stderr,
+                task_id_stderr,
+                output_sender_stderr,
+                Some("[stderr] "),
+            )
+            .await;
         });
 
         self.spawn_wait_task(task_id, child, save_name, download_dir);
@@ -327,7 +371,7 @@ impl Default for TaskRunner {
 async fn read_cli_stream<R>(
     mut stream: R,
     task_id: String,
-    app_handle: tauri::AppHandle,
+    output_sender: Option<mpsc::UnboundedSender<TaskOutputEvent>>,
     log_prefix: Option<&'static str>,
 ) where
     R: AsyncRead + Unpin,
@@ -342,12 +386,12 @@ async fn read_cli_stream<R>(
                 term.feed(&buffer[..n]);
 
                 for line in term.take_committed() {
-                    emit_committed_line(&line, &task_id, &app_handle, log_prefix);
+                    emit_committed_line(&line, &task_id, &output_sender, log_prefix);
                 }
 
                 if should_emit_active_line(log_prefix) {
                     let active = term.active_line().trim().to_string();
-                    emit_active_line(&active, &task_id, &app_handle, log_prefix);
+                    emit_active_line(&active, &task_id, &output_sender, log_prefix);
                 }
             }
             Err(_) => break,
@@ -356,17 +400,17 @@ async fn read_cli_stream<R>(
 
     term.finish();
     for line in term.take_committed() {
-        emit_committed_line(&line, &task_id, &app_handle, log_prefix);
+        emit_committed_line(&line, &task_id, &output_sender, log_prefix);
     }
     if should_emit_active_line(log_prefix) {
-        emit_active_line("", &task_id, &app_handle, log_prefix);
+        emit_active_line("", &task_id, &output_sender, log_prefix);
     }
 }
 
 fn emit_committed_line(
     segment: &str,
     task_id: &str,
-    app_handle: &tauri::AppHandle,
+    output_sender: &Option<mpsc::UnboundedSender<TaskOutputEvent>>,
     log_prefix: Option<&str>,
 ) {
     if segment.is_empty() {
@@ -379,13 +423,15 @@ fn emit_committed_line(
         let threads = parse_threads(segment);
 
         if progress.is_some() || speed.is_some() || threads.is_some() {
-            let payload = serde_json::json!({
-                "id": task_id,
-                "progress": progress,
-                "speed": speed,
-                "threads": threads,
-            });
-            let _ = app_handle.emit("task-progress", payload);
+            send_output_event(
+                output_sender,
+                TaskOutputEvent::Progress {
+                    id: task_id.to_string(),
+                    progress,
+                    speed,
+                    threads,
+                },
+            );
         }
     }
 
@@ -395,17 +441,20 @@ fn emit_committed_line(
         segment.to_string()
     };
 
-    let log_payload = serde_json::json!({
-        "id": task_id,
-        "line": line,
-    });
-    let _ = app_handle.emit("task-log", log_payload);
-
-    let terminal_payload = serde_json::json!({
-        "id": task_id,
-        "line": line,
-    });
-    let _ = app_handle.emit("task-terminal-committed-line", terminal_payload);
+    send_output_event(
+        output_sender,
+        TaskOutputEvent::LogLine {
+            id: task_id.to_string(),
+            line: line.clone(),
+        },
+    );
+    send_output_event(
+        output_sender,
+        TaskOutputEvent::TerminalCommittedLine {
+            id: task_id.to_string(),
+            line,
+        },
+    );
 }
 
 fn should_emit_active_line(log_prefix: Option<&str>) -> bool {
@@ -415,7 +464,7 @@ fn should_emit_active_line(log_prefix: Option<&str>) -> bool {
 fn emit_active_line(
     line: &str,
     task_id: &str,
-    app_handle: &tauri::AppHandle,
+    output_sender: &Option<mpsc::UnboundedSender<TaskOutputEvent>>,
     log_prefix: Option<&str>,
 ) {
     if !line.is_empty() && log_prefix.is_none() {
@@ -424,13 +473,15 @@ fn emit_active_line(
         let threads = parse_threads(line);
 
         if progress.is_some() || speed.is_some() || threads.is_some() {
-            let payload = serde_json::json!({
-                "id": task_id,
-                "progress": progress,
-                "speed": speed,
-                "threads": threads,
-            });
-            let _ = app_handle.emit("task-progress", payload);
+            send_output_event(
+                output_sender,
+                TaskOutputEvent::Progress {
+                    id: task_id.to_string(),
+                    progress,
+                    speed,
+                    threads,
+                },
+            );
         }
     }
 
@@ -442,11 +493,22 @@ fn emit_active_line(
         line.to_string()
     };
 
-    let payload = serde_json::json!({
-        "id": task_id,
-        "activeLine": prefixed,
-    });
-    let _ = app_handle.emit("task-terminal-active-line", payload);
+    send_output_event(
+        output_sender,
+        TaskOutputEvent::TerminalActiveLine {
+            id: task_id.to_string(),
+            active_line: prefixed,
+        },
+    );
+}
+
+fn send_output_event(
+    output_sender: &Option<mpsc::UnboundedSender<TaskOutputEvent>>,
+    event: TaskOutputEvent,
+) {
+    if let Some(sender) = output_sender {
+        let _ = sender.send(event);
+    }
 }
 
 fn find_output_file(output_dir: &PathBuf, save_name: &Option<String>) -> Option<String> {
@@ -602,10 +664,14 @@ async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_cli_in_ancestors, should_emit_active_line, TaskLifecycleEvent, TaskRunner};
+    use super::{
+        find_cli_in_ancestors, read_cli_stream, should_emit_active_line, TaskLifecycleEvent,
+        TaskOutputEvent, TaskRunner,
+    };
     use crate::test_support::{spawn_sleeping_child, spawn_success_child};
     use std::fs;
     use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
     use tokio::sync::mpsc;
     use tokio::time::timeout;
     use uuid::Uuid;
@@ -614,6 +680,43 @@ mod tests {
     fn stderr_stream_does_not_drive_terminal_active_line() {
         assert!(should_emit_active_line(None));
         assert!(!should_emit_active_line(Some("[stderr] ")));
+    }
+
+    #[tokio::test]
+    async fn cli_stream_sends_output_events_through_internal_channel() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let task_id = "task-output".to_string();
+        let line = "Progress: 1/4 (25.00%) -- 1.00MB/4.00MB (512 KB/s @ 00:00:06)";
+
+        tokio::spawn(async move {
+            writer
+                .write_all(format!("{line}\n").as_bytes())
+                .await
+                .expect("write cli output");
+        });
+
+        read_cli_stream(reader, task_id.clone(), Some(tx), None).await;
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+
+        assert!(events.contains(&TaskOutputEvent::Progress {
+            id: task_id.clone(),
+            progress: Some(0.25),
+            speed: Some("512 KB/s".to_string()),
+            threads: None,
+        }));
+        assert!(events.contains(&TaskOutputEvent::LogLine {
+            id: task_id.clone(),
+            line: line.to_string(),
+        }));
+        assert!(events.contains(&TaskOutputEvent::TerminalCommittedLine {
+            id: task_id,
+            line: line.to_string(),
+        }));
     }
 
     #[tokio::test]
