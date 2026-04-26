@@ -2,7 +2,13 @@ import { listen } from '@tauri-apps/api/event';
 import { buildProgressPatch } from './progress.js';
 import { prependHistoricalTask } from './history-store.js';
 import { loadQueueState, tasks } from './queue-store.js';
-import { clearShutdownNotice, shutdownNotice, startShutdownCountdown } from './settings-store.js';
+import {
+  clearAppNotice,
+  clearShutdownNotice,
+  showAppErrorNotice,
+  shutdownNotice,
+  startShutdownCountdown,
+} from './settings-store.js';
 import {
   queueTerminalActiveLine,
   queueTerminalCommittedLine,
@@ -77,7 +83,11 @@ export async function setupListeners() {
     });
   });
 
-  unlisteners = [u1, u2, u3b, u3c, u4, u5, u6, u7];
+  const u8 = await listen('task-error', (event) => {
+    showAppErrorNotice(event.payload?.message ?? '任务状态保存失败');
+  });
+
+  unlisteners = [u1, u2, u3b, u3c, u4, u5, u6, u7, u8];
 }
 
 export function teardownListeners() {
@@ -90,4 +100,5 @@ export function teardownListeners() {
   }
   resetTerminalLiveState();
   clearShutdownNotice();
+  clearAppNotice();
 }

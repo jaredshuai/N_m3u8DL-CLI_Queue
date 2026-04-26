@@ -187,13 +187,12 @@ impl TaskRunner {
                 .collect::<Vec<_>>()
         };
 
+        let mut errors = Vec::new();
         for (task_id, pid) in &running {
             match kill_process(*pid).await {
                 Ok(KillProcessResult::Killed) | Ok(KillProcessResult::AlreadyExited) => {}
                 Err(err) => {
-                    return Err(AppError::message(format!(
-                        "Failed to terminate task {task_id}: {err}"
-                    )));
+                    errors.push(format!("Failed to terminate task {task_id}: {err}"));
                 }
             }
         }
@@ -209,6 +208,10 @@ impl TaskRunner {
             for (task_id, _) in &running {
                 pending.remove(task_id);
             }
+        }
+
+        if !errors.is_empty() {
+            return Err(AppError::message(errors.join("; ")));
         }
 
         Ok(())

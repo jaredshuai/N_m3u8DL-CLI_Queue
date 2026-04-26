@@ -235,6 +235,8 @@ async fn retry_task_impl(
                     app_handle,
                 )
                 .await?;
+                let _ = app_handle.emit("queue-state-changed", ());
+                return Ok(task);
             }
             task
         }

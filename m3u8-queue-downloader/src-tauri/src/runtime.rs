@@ -119,7 +119,10 @@ pub(crate) async fn try_schedule_next(
                     }
                     Ok(None) => {}
                     Err(persist_err) => {
-                        eprintln!("Failed to persist terminal start failure: {}", persist_err)
+                        let message =
+                            format!("任务启动失败，但写入失败历史时出错：{}", persist_err);
+                        eprintln!("{message}");
+                        emit_task_error(app_handle, &task_id, message);
                     }
                 }
             }
@@ -205,7 +208,9 @@ pub(crate) async fn handle_task_completed(
         }
         Ok(None) => {}
         Err(err) => {
-            eprintln!("Failed to append completed task to history: {}", err);
+            let message = format!("任务已完成，但写入完成历史时出错：{}", err);
+            eprintln!("{message}");
+            emit_task_error(&app_handle, &task_id, message);
         }
     }
     let _ = app_handle.emit("queue-state-changed", ());
@@ -276,7 +281,9 @@ pub(crate) async fn handle_task_failed(
                     let _ = app_handle.emit("history-task-added", payload);
                 }
                 Err(err) => {
-                    eprintln!("Failed to append failed task to history: {}", err);
+                    let message = format!("任务已失败，但写入失败历史时出错：{}", err);
+                    eprintln!("{message}");
+                    emit_task_error(&app_handle, &task_id, message);
                 }
             }
         }
@@ -367,9 +374,19 @@ pub(crate) async fn exit_application(
     if let Err(err) = queue_manager.prepare_for_exit().await {
         eprintln!("Failed to persist queue state before exit: {}", err);
     }
-    task_runner.terminate_all_running_processes().await?;
+    if let Err(err) = task_runner.terminate_all_running_processes().await {
+        eprintln!("Failed to terminate running processes during exit: {}", err);
+    }
     app_handle.exit(0);
     Ok(())
+}
+
+fn emit_task_error(app_handle: &AppHandle, task_id: &str, message: String) {
+    let payload = serde_json::json!({
+        "id": task_id,
+        "message": message,
+    });
+    let _ = app_handle.emit("task-error", payload);
 }
 
 pub(crate) fn resolve_close_action(

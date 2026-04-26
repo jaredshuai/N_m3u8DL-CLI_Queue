@@ -126,7 +126,8 @@ mod tests {
     use crate::queue_manager::{QueueManager, TaskFailureTransition};
     use crate::runtime::{
         handle_start_failure, maybe_start_shutdown_countdown, pause_queue_internal,
-        record_completed_task, resolve_close_action, CloseAction, CloseRequestSource,
+        record_completed_task, record_terminal_failure_task, resolve_close_action, CloseAction,
+        CloseRequestSource,
     };
     use crate::shutdown::ShutdownManager;
     use crate::task_runner::TaskRunner;
@@ -428,6 +429,42 @@ mod tests {
             "D:/Videos/test.mp4",
         )
         .await;
+        assert!(result.is_err());
+
+        let state = queue_manager.get_state().await;
+        assert!(state.tasks.iter().all(|t| t.id != task.id));
+        assert!(state.current_task_id.is_none());
+
+        let _ = std::fs::remove_file(history_path);
+    }
+
+    #[tokio::test]
+    async fn terminal_failure_finalizes_queue_when_history_append_fails() {
+        let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
+        let history_path = std::env::temp_dir().join(format!("history-file-{}", Uuid::new_v4()));
+        std::fs::write(&history_path, b"blocked").expect("create blocking file");
+        let history_store = Arc::new(HistoryStore::new(history_path.clone()));
+        let payload = AddTaskPayload {
+            url: "https://example.com/test.m3u8".to_string(),
+            save_name: None,
+            headers: None,
+        };
+        let (task, _) = queue_manager.add_task(payload).await.expect("add task");
+
+        queue_manager.set_running(true).await.expect("set running");
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("scheduled task");
+
+        let mut failed_task = task.clone();
+        failed_task.status = crate::models::TaskStatus::Failed;
+        failed_task.error_message = Some("terminal failure".to_string());
+
+        let result =
+            record_terminal_failure_task(&queue_manager, &history_store, &task.id, failed_task)
+                .await;
         assert!(result.is_err());
 
         let state = queue_manager.get_state().await;

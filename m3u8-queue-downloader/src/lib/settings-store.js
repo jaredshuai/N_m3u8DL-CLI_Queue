@@ -13,6 +13,11 @@ export const shutdownNotice = writable({
   error: null,
 });
 
+export const appNotice = writable({
+  title: '',
+  message: '',
+});
+
 let shutdownTimer = null;
 
 function clearShutdownTimer() {
@@ -88,5 +93,19 @@ export function clearShutdownNotice() {
     active: false,
     secondsRemaining: 0,
     error: null,
+  });
+}
+
+export function showAppErrorNotice(message, title = '任务状态保存失败') {
+  appNotice.set({
+    title,
+    message: String(message || '任务状态保存失败'),
+  });
+}
+
+export function clearAppNotice() {
+  appNotice.set({
+    title: '',
+    message: '',
   });
 }

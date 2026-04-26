@@ -17,7 +17,9 @@
   import {
     completedHistory,
     failedHistory,
+    appNotice,
     cancelAutoShutdown,
+    clearAppNotice,
     loadAppSettings,
     loadHistoryPage,
     loadInitialHistory,
@@ -209,6 +211,16 @@
       </section>
     {/if}
 
+    {#if $appNotice.message}
+      <section class="app-notice error" role="alert">
+        <div>
+          <strong>{$appNotice.title}</strong>
+          <span>{$appNotice.message}</span>
+        </div>
+        <button onclick={clearAppNotice}>关闭</button>
+      </section>
+    {/if}
+
     <section class="task-list" aria-hidden={cliConsole.open && cliConsoleTask ? 'true' : undefined}>
       {#if hasVisibleItems}
         {#if activeTasks.length > 0}
@@ -397,6 +409,50 @@
 
   .shutdown-banner button:hover {
     background: rgba(234, 179, 8, 0.18);
+  }
+
+  .app-notice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-shrink: 0;
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(248, 113, 113, 0.35);
+    background: rgba(248, 113, 113, 0.08);
+  }
+
+  .app-notice div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .app-notice strong {
+    color: var(--color-status-fail);
+    font-size: 13px;
+  }
+
+  .app-notice span {
+    color: var(--color-text-secondary);
+    font-size: 12px;
+  }
+
+  .app-notice button {
+    flex-shrink: 0;
+    padding: 7px 12px;
+    border: 1px solid rgba(248, 113, 113, 0.45);
+    border-radius: var(--radius-sm);
+    background: rgba(248, 113, 113, 0.12);
+    color: var(--color-status-fail);
+    font-family: var(--font-stack);
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .app-notice button:hover {
+    background: rgba(248, 113, 113, 0.18);
   }
 
   .task-list {
