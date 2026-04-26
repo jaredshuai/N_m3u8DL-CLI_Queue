@@ -362,6 +362,7 @@ function downloadArtifactToDirectory(repo, runId, artifactName, destination) {
 
 export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination, context = {}) {
   const resolved = resolveAllowedArtifactsDirectory(destination, context);
+  const renameSync = context.renameSync ?? fs.renameSync;
   const files = listFilesRecursive(source);
   if (files.length === 0) {
     throw new Error('Downloaded artifact did not contain any files');
@@ -372,6 +373,7 @@ export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination
   const stagingDir = fs.mkdtempSync(path.join(parent, `.${path.basename(resolved)}-staging-`));
   const backupDir = path.join(parent, `.${path.basename(resolved)}-backup-${process.pid}-${Date.now()}`);
   let backupCreated = false;
+  let replacedInPlace = false;
 
   try {
     for (const file of files) {
@@ -384,18 +386,29 @@ export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination
     validateDownloadedArtifactContents(stagingDir);
 
     if (fs.existsSync(resolved)) {
-      fs.renameSync(resolved, backupDir);
-      backupCreated = true;
+      try {
+        renameSync(resolved, backupDir);
+        backupCreated = true;
+      } catch (err) {
+        if (!isRecoverableDirectoryRenameError(err)) {
+          throw err;
+        }
+        replaceDirectoryContentsInPlace(stagingDir, resolved);
+        validateDownloadedArtifactContents(resolved);
+        replacedInPlace = true;
+      }
     }
 
-    try {
-      fs.renameSync(stagingDir, resolved);
-    } catch (err) {
-      if (backupCreated && !fs.existsSync(resolved)) {
-        fs.renameSync(backupDir, resolved);
-        backupCreated = false;
+    if (!replacedInPlace) {
+      try {
+        renameSync(stagingDir, resolved);
+      } catch (err) {
+        if (backupCreated && !fs.existsSync(resolved)) {
+          renameSync(backupDir, resolved);
+          backupCreated = false;
+        }
+        throw err;
       }
-      throw err;
     }
 
     if (backupCreated) {
@@ -408,6 +421,40 @@ export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination
     fs.rmSync(stagingDir, { recursive: true, force: true });
     if (backupCreated) {
       fs.rmSync(backupDir, { recursive: true, force: true });
+    }
+  }
+}
+
+export function replaceDirectoryContentsInPlace(source, destination) {
+  const sourceFiles = listFilesRecursive(source);
+  const sourceRelativeFiles = new Set();
+  const sourceRelativeDirs = new Set(['']);
+
+  fs.mkdirSync(destination, { recursive: true });
+
+  for (const file of sourceFiles) {
+    const relativePath = normalizePortableRelativePath(path.relative(source, file));
+    sourceRelativeFiles.add(relativePath);
+    for (const directory of parentRelativeDirectories(relativePath)) {
+      sourceRelativeDirs.add(directory);
+    }
+
+    const targetPath = path.join(destination, ...relativePath.split('/'));
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.copyFileSync(file, targetPath);
+  }
+
+  for (const file of listFilesRecursive(destination)) {
+    const relativePath = normalizePortableRelativePath(path.relative(destination, file));
+    if (!sourceRelativeFiles.has(relativePath)) {
+      fs.rmSync(file, { force: true });
+    }
+  }
+
+  for (const directory of listDirectoriesRecursive(destination)) {
+    const relativePath = normalizePortableRelativePath(path.relative(destination, directory));
+    if (!sourceRelativeDirs.has(relativePath)) {
+      fs.rmdirSync(directory);
     }
   }
 }
@@ -527,6 +574,24 @@ function normalizeDownloadedPath(relativePath) {
   return relativePath;
 }
 
+function normalizePortableRelativePath(relativePath) {
+  return relativePath.split(path.sep).join('/');
+}
+
+function parentRelativeDirectories(relativePath) {
+  const directories = [];
+  let directory = path.posix.dirname(relativePath);
+  while (directory && directory !== '.') {
+    directories.push(directory);
+    directory = path.posix.dirname(directory);
+  }
+  return directories;
+}
+
+function isRecoverableDirectoryRenameError(err) {
+  return ['EPERM', 'EACCES', 'EBUSY'].includes(err?.code);
+}
+
 function listFilesRecursive(directory) {
   const entries = fs.readdirSync(directory, { withFileTypes: true });
   const files = [];
@@ -541,6 +606,21 @@ function listFilesRecursive(directory) {
   }
 
   return files.sort();
+}
+
+function listDirectoriesRecursive(directory) {
+  const entries = fs.readdirSync(directory, { withFileTypes: true });
+  const directories = [];
+
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      directories.push(...listDirectoriesRecursive(fullPath));
+      directories.push(fullPath);
+    }
+  }
+
+  return directories.sort((left, right) => right.length - left.length);
 }
 
 function sleep(ms) {

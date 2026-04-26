@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   replaceArtifactsDirectoryFromDownloadedFiles,
+  replaceDirectoryContentsInPlace,
   resolveAllowedArtifactsDirectory,
   validatePackageRun,
 } from './prepare-release.mjs';
@@ -134,6 +135,57 @@ test('replaceArtifactsDirectoryFromDownloadedFiles leaves existing artifacts whe
     /Downloaded artifact is missing required files/,
   );
   assert.equal(fs.readFileSync(path.join(destination, 'old.txt'), 'utf8'), 'old package');
+
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('replaceArtifactsDirectoryFromDownloadedFiles falls back when destination rename is blocked', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-sync-'));
+  const testContext = buildTempArtifactsContext(tempRoot);
+  const source = path.join(tempRoot, 'downloaded');
+  const destination = path.join(testContext.defaultArtifactsDir, 'latest');
+  writeValidDownloadedArtifact(source);
+  fs.mkdirSync(destination, { recursive: true });
+  fs.writeFileSync(path.join(destination, 'old.txt'), 'old package');
+
+  const files = replaceArtifactsDirectoryFromDownloadedFiles(source, destination, {
+    ...testContext,
+    renameSync(from, to) {
+      if (path.resolve(from) === path.resolve(destination)) {
+        const err = new Error(`blocked rename to ${to}`);
+        err.code = 'EPERM';
+        throw err;
+      }
+      fs.renameSync(from, to);
+    },
+  });
+
+  assert(files.includes(path.join(destination, 'm3u8-queue-downloader-portable', 'm3u8-queue-downloader.exe')));
+  assert.equal(fs.existsSync(path.join(destination, 'old.txt')), false);
+  assert.equal(
+    fs.readFileSync(
+      path.join(destination, 'm3u8-queue-downloader-portable', 'm3u8-queue-downloader.exe'),
+      'utf8',
+    ),
+    'portable exe',
+  );
+
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('replaceDirectoryContentsInPlace removes stale files without replacing the root directory', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-sync-'));
+  const source = path.join(tempRoot, 'source');
+  const destination = path.join(tempRoot, 'destination');
+  fs.mkdirSync(path.join(source, 'new-dir'), { recursive: true });
+  fs.mkdirSync(path.join(destination, 'old-dir'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'new-dir', 'new.txt'), 'new');
+  fs.writeFileSync(path.join(destination, 'old-dir', 'old.txt'), 'old');
+
+  replaceDirectoryContentsInPlace(source, destination);
+
+  assert.equal(fs.readFileSync(path.join(destination, 'new-dir', 'new.txt'), 'utf8'), 'new');
+  assert.equal(fs.existsSync(path.join(destination, 'old-dir')), false);
 
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
