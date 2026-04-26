@@ -7,11 +7,13 @@ mod event_handlers;
 mod history_store;
 mod models;
 mod persistence;
+mod progress_parser;
 mod queue_manager;
 mod runtime;
 mod settings_store;
 mod shutdown;
 mod task_runner;
+mod terminal_parser;
 #[cfg(test)]
 mod test_support;
 mod tray;

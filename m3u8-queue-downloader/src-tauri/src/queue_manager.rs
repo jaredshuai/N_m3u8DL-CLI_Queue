@@ -29,10 +29,10 @@ impl QueueManager {
     pub async fn add_task(&self, payload: AddTaskPayload) -> AppResult<(Task, bool)> {
         let task = Task::new(payload.url, payload.save_name, payload.headers);
         let mut state = self.state.lock().await;
-        state.tasks.push(task.clone());
-        let should_schedule = state.is_running && state.current_task_id.is_none();
-        self.persist(&state)?;
-        drop(state);
+        let mut next_state = state.clone();
+        next_state.tasks.push(task.clone());
+        let should_schedule = next_state.is_running && next_state.current_task_id.is_none();
+        self.commit_state(&mut state, next_state)?;
         Ok((task, should_schedule))
     }
 
@@ -42,8 +42,9 @@ impl QueueManager {
         match task {
             Some(t) => {
                 if t.status == TaskStatus::Waiting || t.status == TaskStatus::Failed {
-                    state.tasks.retain(|t| t.id != id);
-                    self.persist(&state)?;
+                    let mut next_state = state.clone();
+                    next_state.tasks.retain(|t| t.id != id);
+                    self.commit_state(&mut state, next_state)?;
                     Ok(())
                 } else {
                     Err(AppError::InvalidTaskStatus {
@@ -59,9 +60,11 @@ impl QueueManager {
 
     pub async fn retry_task(&self, id: &str) -> AppResult<Task> {
         let mut state = self.state.lock().await;
-        let task = state.tasks.iter_mut().find(|t| t.id == id);
-        match task {
-            Some(t) => {
+        let position = state.tasks.iter().position(|t| t.id == id);
+        match position {
+            Some(position) => {
+                let mut next_state = state.clone();
+                let t = &mut next_state.tasks[position];
                 if t.status == TaskStatus::Failed {
                     t.status = TaskStatus::Waiting;
                     t.progress = 0.0;
@@ -69,7 +72,7 @@ impl QueueManager {
                     t.threads = String::new();
                     t.error_message = None;
                     let task = t.clone();
-                    self.persist(&state)?;
+                    self.commit_state(&mut state, next_state)?;
                     Ok(task)
                 } else {
                     Err(AppError::InvalidTaskStatus {
@@ -96,7 +99,8 @@ impl QueueManager {
     pub async fn reorder_tasks(&self, task_ids: Vec<String>) -> AppResult<()> {
         let mut state = self.state.lock().await;
 
-        let original_tasks = std::mem::take(&mut state.tasks);
+        let mut next_state = state.clone();
+        let original_tasks = std::mem::take(&mut next_state.tasks);
         let mut waiting_tasks: Vec<Task> = original_tasks
             .iter()
             .filter(|task| task.status == TaskStatus::Waiting)
@@ -115,11 +119,11 @@ impl QueueManager {
         }
         reordered_waiting.extend(waiting_tasks);
 
-        state.tasks = non_waiting
+        next_state.tasks = non_waiting
             .into_iter()
             .chain(reordered_waiting.into_iter())
             .collect();
-        self.persist(&state)?;
+        self.commit_state(&mut state, next_state)?;
         Ok(())
     }
 
@@ -149,11 +153,12 @@ impl QueueManager {
             .cloned();
 
         if let Some(ref task) = next_task {
-            if let Some(t) = state.tasks.iter_mut().find(|t| t.id == task.id) {
+            let mut next_state = state.clone();
+            if let Some(t) = next_state.tasks.iter_mut().find(|t| t.id == task.id) {
                 t.status = TaskStatus::Downloading;
             }
-            state.current_task_id = Some(task.id.clone());
-            self.persist(&state)?;
+            next_state.current_task_id = Some(task.id.clone());
+            self.commit_state(&mut state, next_state)?;
         }
 
         Ok(next_task.map(|mut t| {
@@ -173,16 +178,17 @@ impl QueueManager {
 
     pub async fn finalize_task_completion(&self, id: &str) -> AppResult<bool> {
         let mut state = self.state.lock().await;
-        let removed = if let Some(position) = state.tasks.iter().position(|t| t.id == id) {
-            state.tasks.remove(position);
+        let mut next_state = state.clone();
+        let removed = if let Some(position) = next_state.tasks.iter().position(|t| t.id == id) {
+            next_state.tasks.remove(position);
             true
         } else {
             false
         };
-        if state.current_task_id.as_deref() == Some(id) {
-            state.current_task_id = None;
+        if next_state.current_task_id.as_deref() == Some(id) {
+            next_state.current_task_id = None;
         }
-        self.persist(&state)?;
+        self.commit_state(&mut state, next_state)?;
         Ok(removed)
     }
 
@@ -196,8 +202,9 @@ impl QueueManager {
         }
 
         let mut state = self.state.lock().await;
-        let transition = if let Some(position) = state.tasks.iter().position(|t| t.id == id) {
-            let t = &mut state.tasks[position];
+        let mut next_state = state.clone();
+        let transition = if let Some(position) = next_state.tasks.iter().position(|t| t.id == id) {
+            let t = &mut next_state.tasks[position];
             if t.retry_count < 2 {
                 t.retry_count += 1;
                 t.status = TaskStatus::Waiting;
@@ -216,26 +223,27 @@ impl QueueManager {
             None
         };
         if !matches!(transition, Some(TaskFailureTransition::Terminal(_)))
-            && state.current_task_id.as_deref() == Some(id)
+            && next_state.current_task_id.as_deref() == Some(id)
         {
-            state.current_task_id = None;
+            next_state.current_task_id = None;
         }
-        self.persist(&state)?;
+        self.commit_state(&mut state, next_state)?;
         Ok(transition)
     }
 
     pub async fn finalize_terminal_failure(&self, id: &str) -> AppResult<bool> {
         let mut state = self.state.lock().await;
-        let removed = if let Some(position) = state.tasks.iter().position(|t| t.id == id) {
-            state.tasks.remove(position);
+        let mut next_state = state.clone();
+        let removed = if let Some(position) = next_state.tasks.iter().position(|t| t.id == id) {
+            next_state.tasks.remove(position);
             true
         } else {
             false
         };
-        if state.current_task_id.as_deref() == Some(id) {
-            state.current_task_id = None;
+        if next_state.current_task_id.as_deref() == Some(id) {
+            next_state.current_task_id = None;
         }
-        self.persist(&state)?;
+        self.commit_state(&mut state, next_state)?;
         Ok(removed)
     }
 
@@ -267,8 +275,9 @@ impl QueueManager {
         });
 
         if state.is_running && !has_live_work && state.current_task_id.is_none() {
-            state.is_running = false;
-            self.persist(&state)?;
+            let mut next_state = state.clone();
+            next_state.is_running = false;
+            self.commit_state(&mut state, next_state)?;
             return Ok(true);
         }
 
@@ -283,23 +292,28 @@ impl QueueManager {
     }
 
     pub async fn set_running(&self, running: bool) -> AppResult<()> {
+        let mut state = self.state.lock().await;
+        let mut next_state = state.clone();
+        next_state.is_running = running;
+        self.commit_state(&mut state, next_state)?;
+        drop(state);
+
         if running {
             self.clear_shutdown_flag().await;
         }
 
-        let mut state = self.state.lock().await;
-        state.is_running = running;
-        self.persist(&state)
+        Ok(())
     }
 
     pub async fn prepare_for_exit(&self) -> AppResult<()> {
         self.mark_shutting_down().await;
 
         let mut state = self.state.lock().await;
-        state.is_running = false;
-        state.current_task_id = None;
+        let mut next_state = state.clone();
+        next_state.is_running = false;
+        next_state.current_task_id = None;
 
-        for task in &mut state.tasks {
+        for task in &mut next_state.tasks {
             if task.status == TaskStatus::Downloading {
                 task.status = TaskStatus::Waiting;
                 task.progress = 0.0;
@@ -308,7 +322,7 @@ impl QueueManager {
             }
         }
 
-        self.persist(&state)
+        self.commit_state(&mut state, next_state)
     }
 
     pub async fn is_shutting_down(&self) -> bool {
@@ -327,6 +341,16 @@ impl QueueManager {
 
     fn persist(&self, state: &QueueState) -> AppResult<()> {
         Persistence::save(state, &self.persistence_path)
+    }
+
+    fn commit_state(
+        &self,
+        current_state: &mut QueueState,
+        next_state: QueueState,
+    ) -> AppResult<()> {
+        self.persist(&next_state)?;
+        *current_state = next_state;
+        Ok(())
     }
 }
 
@@ -392,6 +416,41 @@ mod tests {
         let result = manager.add_task(payload).await;
 
         assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn add_task_rolls_back_memory_when_persistence_fails() {
+        let path = std::env::temp_dir().join(format!("queue-state-dir-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).expect("create blocking directory");
+        let manager = QueueManager::new(path.clone());
+        let payload = AddTaskPayload {
+            url: "https://example.com/running.m3u8".to_string(),
+            save_name: None,
+            headers: None,
+        };
+
+        let result = manager.add_task(payload).await;
+        let state = manager.get_state().await;
+
+        assert!(result.is_err());
+        assert!(state.tasks.is_empty());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn set_running_rolls_back_memory_when_persistence_fails() {
+        let path = std::env::temp_dir().join(format!("queue-state-dir-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).expect("create blocking directory");
+        let manager = QueueManager::new(path.clone());
+
+        let result = manager.set_running(true).await;
+        let state = manager.get_state().await;
+
+        assert!(result.is_err());
+        assert!(!state.is_running);
 
         let _ = std::fs::remove_dir_all(path);
     }
