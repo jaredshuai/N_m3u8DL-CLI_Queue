@@ -377,8 +377,10 @@ async fn read_cli_stream<R>(
                     emit_committed_line(&line, &task_id, &app_handle, log_prefix);
                 }
 
-                let active = term.active_line().trim().to_string();
-                emit_active_line(&active, &task_id, &app_handle, log_prefix);
+                if should_emit_active_line(log_prefix) {
+                    let active = term.active_line().trim().to_string();
+                    emit_active_line(&active, &task_id, &app_handle, log_prefix);
+                }
             }
             Err(_) => break,
         }
@@ -388,7 +390,9 @@ async fn read_cli_stream<R>(
     for line in term.take_committed() {
         emit_committed_line(&line, &task_id, &app_handle, log_prefix);
     }
-    emit_active_line("", &task_id, &app_handle, log_prefix);
+    if should_emit_active_line(log_prefix) {
+        emit_active_line("", &task_id, &app_handle, log_prefix);
+    }
 }
 
 #[cfg(test)]
@@ -451,6 +455,10 @@ fn emit_committed_line(
         "line": line,
     });
     let _ = app_handle.emit("task-terminal-committed-line", terminal_payload);
+}
+
+fn should_emit_active_line(log_prefix: Option<&str>) -> bool {
+    log_prefix.is_none()
 }
 
 fn emit_active_line(
@@ -737,7 +745,7 @@ async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
 mod tests {
     use super::{
         decode_cli_bytes_lossy, find_cli_in_ancestors, parse_progress, parse_speed, parse_threads,
-        take_cli_segment, TaskRunner, TerminalBuffer,
+        should_emit_active_line, take_cli_segment, TaskRunner, TerminalBuffer,
     };
     use crate::test_support::spawn_sleeping_child;
     use std::fs;
@@ -780,6 +788,12 @@ mod tests {
     fn parse_threads_reads_common_cli_formats() {
         assert_eq!(parse_threads("Threads: 16").as_deref(), Some("16"));
         assert_eq!(parse_threads("16 threads active").as_deref(), Some("16"));
+    }
+
+    #[test]
+    fn stderr_stream_does_not_drive_terminal_active_line() {
+        assert!(should_emit_active_line(None));
+        assert!(!should_emit_active_line(Some("[stderr] ")));
     }
 
     #[test]

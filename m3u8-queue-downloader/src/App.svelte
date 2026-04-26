@@ -25,6 +25,7 @@
     setupListeners,
     shutdownNotice,
     tasks,
+    terminalActiveLines,
     teardownListeners,
   } from './lib/stores.js';
   import { invoke } from '@tauri-apps/api/core';
@@ -97,6 +98,14 @@
     completedTasks,
     failedTasks,
   }));
+  let cliConsoleHasLiveActiveLine = $derived(
+    cliConsole.taskId
+      ? Object.prototype.hasOwnProperty.call($terminalActiveLines, cliConsole.taskId)
+      : false
+  );
+  let cliConsoleLiveActiveLine = $derived(
+    cliConsoleHasLiveActiveLine ? $terminalActiveLines[cliConsole.taskId] : ''
+  );
 
   async function handleLoadMore(status) {
     if (historyLoading[status]) return;
@@ -290,7 +299,13 @@
 
     {#if cliConsole.open && cliConsoleTask}
       <div class="cli-console-overlay">
-        <CliConsolePanel task={cliConsoleTask} onClose={handleCloseCliConsole} overlay={true} />
+        <CliConsolePanel
+          task={cliConsoleTask}
+          onClose={handleCloseCliConsole}
+          overlay={true}
+          liveActiveLine={cliConsoleLiveActiveLine}
+          hasLiveActiveLine={cliConsoleHasLiveActiveLine}
+        />
       </div>
     {/if}
   </section>

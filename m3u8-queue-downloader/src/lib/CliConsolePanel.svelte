@@ -14,7 +14,13 @@
   } from './cli-console.js';
   import { displayProgressPercent } from './progress.js';
 
-  let { task, onClose, overlay = false } = $props();
+  let {
+    task,
+    onClose,
+    overlay = false,
+    liveActiveLine = '',
+    hasLiveActiveLine = false,
+  } = $props();
 
   let cliPanel = $state(null);
   let committedLines = $state([]);
@@ -51,8 +57,9 @@
   let liveCommittedLines = $derived(task?.terminalCommittedLines ?? []);
   let mergedCommittedLines = $derived(mergeCommitted(committedLines, liveCommittedLines));
 
-  let liveActiveLine = $derived(resolveTerminalActiveLine(task, activeLine));
-  let displayActiveLine = $derived(liveActiveLine);
+  let displayActiveLine = $derived(
+    hasLiveActiveLine ? (liveActiveLine ?? '') : resolveTerminalActiveLine(task, activeLine)
+  );
 
   let totalLineCount = $derived(mergedCommittedLines.length + (displayActiveLine ? 1 : 0));
   let displayLineCount = $derived(

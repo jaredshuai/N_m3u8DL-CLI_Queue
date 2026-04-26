@@ -3,6 +3,7 @@ import { buildProgressPatch, normalizeTaskProgress } from './progress.js';
 import { prependHistoricalTask, completedHistory, failedHistory } from './history-store.js';
 import { loadQueueState, sessionProgress, tasks } from './queue-store.js';
 import { clearShutdownNotice, shutdownNotice, startShutdownCountdown } from './settings-store.js';
+import { queueTerminalActiveLine, resetTerminalActiveLines } from './terminal-live.js';
 
 let unlisteners = [];
 let pendingProgress = {};
@@ -68,17 +69,13 @@ export async function setupListeners() {
           lines.length > MAX_TERMINAL_LINES
             ? lines.slice(lines.length - MAX_TERMINAL_LINES)
             : lines,
-        terminalActiveLine: task.terminalActiveLine ?? '',
       };
     });
   });
 
   const u3c = await listen('task-terminal-active-line', (event) => {
     const payload = event.payload;
-    updateTaskEverywhere(payload.id, (task) => ({
-      ...task,
-      terminalActiveLine: payload.activeLine ?? '',
-    }));
+    queueTerminalActiveLine(payload.id, payload.activeLine ?? '');
   });
 
   const u4 = await listen('history-task-added', (event) => {
@@ -114,5 +111,6 @@ export function teardownListeners() {
     progressTimer = null;
     pendingProgress = {};
   }
+  resetTerminalActiveLines();
   clearShutdownNotice();
 }

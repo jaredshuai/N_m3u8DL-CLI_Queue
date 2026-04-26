@@ -268,8 +268,6 @@ function getRunArtifact(repo, runId) {
 }
 
 function downloadArtifactToDirectory(repo, runId, artifactName, destination) {
-  clearArtifactsDirectory(destination);
-
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-gui-'));
   try {
     execFileSync('gh', [
@@ -282,21 +280,59 @@ function downloadArtifactToDirectory(repo, runId, artifactName, destination) {
       stdio: 'inherit',
     });
 
-    const files = listFilesRecursive(tempDir);
-    if (files.length === 0) {
-      throw new Error('Downloaded artifact did not contain any files');
-    }
+    return replaceArtifactsDirectoryFromDownloadedFiles(tempDir, destination);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
 
+export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination, context = {}) {
+  const resolved = resolveAllowedArtifactsDirectory(destination, context);
+  const files = listFilesRecursive(source);
+  if (files.length === 0) {
+    throw new Error('Downloaded artifact did not contain any files');
+  }
+
+  const parent = path.dirname(resolved);
+  fs.mkdirSync(parent, { recursive: true });
+  const stagingDir = fs.mkdtempSync(path.join(parent, `.${path.basename(resolved)}-staging-`));
+  const backupDir = path.join(parent, `.${path.basename(resolved)}-backup-${process.pid}-${Date.now()}`);
+  let backupCreated = false;
+
+  try {
     for (const file of files) {
-      const relativePath = normalizeDownloadedPath(path.relative(tempDir, file));
-      const targetPath = path.join(destination, relativePath);
+      const relativePath = normalizeDownloadedPath(path.relative(source, file));
+      const targetPath = path.join(stagingDir, relativePath);
       fs.mkdirSync(path.dirname(targetPath), { recursive: true });
       fs.copyFileSync(file, targetPath);
     }
 
-    return listFilesRecursive(destination);
+    if (fs.existsSync(resolved)) {
+      fs.renameSync(resolved, backupDir);
+      backupCreated = true;
+    }
+
+    try {
+      fs.renameSync(stagingDir, resolved);
+    } catch (err) {
+      if (backupCreated && !fs.existsSync(resolved)) {
+        fs.renameSync(backupDir, resolved);
+        backupCreated = false;
+      }
+      throw err;
+    }
+
+    if (backupCreated) {
+      fs.rmSync(backupDir, { recursive: true, force: true });
+      backupCreated = false;
+    }
+
+    return listFilesRecursive(resolved);
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+    if (backupCreated) {
+      fs.rmSync(backupDir, { recursive: true, force: true });
+    }
   }
 }
 
