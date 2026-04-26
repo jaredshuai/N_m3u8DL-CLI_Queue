@@ -268,6 +268,7 @@ m3u8-queue-downloader/.pack-dist/
 # Local packaging resources injected before build
 m3u8-queue-downloader/src-tauri/resources/*
 !m3u8-queue-downloader/src-tauri/resources/.gitkeep
+!m3u8-queue-downloader/src-tauri/resources/ffmpeg.exe
 *.pyc
 
 # Local code-search metadata
