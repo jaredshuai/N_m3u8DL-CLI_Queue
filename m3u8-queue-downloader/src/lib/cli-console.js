@@ -5,6 +5,8 @@ export function createCliConsoleState() {
   };
 }
 
+export const MAX_RENDERED_TERMINAL_LINES = 3000;
+
 export function openCliConsole(currentState, taskId) {
   return {
     ...(currentState ?? createCliConsoleState()),
@@ -91,4 +93,13 @@ export function buildTerminalView(task) {
     : [];
   const activeLine = resolveTerminalActiveLine(task);
   return { committedLines: committed, activeLine };
+}
+
+export function capRenderedTerminalLines(
+  lines = [],
+  maxLines = MAX_RENDERED_TERMINAL_LINES,
+) {
+  if (!Array.isArray(lines)) return [];
+  if (lines.length <= maxLines) return lines;
+  return lines.slice(lines.length - maxLines);
 }

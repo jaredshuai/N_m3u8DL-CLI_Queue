@@ -13,6 +13,7 @@ pub enum TaskFailureTransition {
 pub struct QueueManager {
     state: Arc<Mutex<QueueState>>,
     persistence_path: PathBuf,
+    shutting_down: Arc<Mutex<bool>>,
 }
 
 impl QueueManager {
@@ -21,17 +22,18 @@ impl QueueManager {
         Self {
             state: Arc::new(Mutex::new(state)),
             persistence_path,
+            shutting_down: Arc::new(Mutex::new(false)),
         }
     }
 
-    pub async fn add_task(&self, payload: AddTaskPayload) -> (Task, bool) {
+    pub async fn add_task(&self, payload: AddTaskPayload) -> AppResult<(Task, bool)> {
         let task = Task::new(payload.url, payload.save_name, payload.headers);
         let mut state = self.state.lock().await;
         state.tasks.push(task.clone());
         let should_schedule = state.is_running && state.current_task_id.is_none();
-        self.persist(&state);
+        self.persist(&state)?;
         drop(state);
-        (task, should_schedule)
+        Ok((task, should_schedule))
     }
 
     pub async fn remove_task(&self, id: &str) -> AppResult<()> {
@@ -41,7 +43,7 @@ impl QueueManager {
             Some(t) => {
                 if t.status == TaskStatus::Waiting || t.status == TaskStatus::Failed {
                     state.tasks.retain(|t| t.id != id);
-                    self.persist(&state);
+                    self.persist(&state)?;
                     Ok(())
                 } else {
                     Err(AppError::InvalidTaskStatus {
@@ -67,7 +69,7 @@ impl QueueManager {
                     t.threads = String::new();
                     t.error_message = None;
                     let task = t.clone();
-                    self.persist(&state);
+                    self.persist(&state)?;
                     Ok(task)
                 } else {
                     Err(AppError::InvalidTaskStatus {
@@ -81,7 +83,7 @@ impl QueueManager {
         }
     }
 
-    pub async fn add_history_retry_task(&self, task: &Task) -> (Task, bool) {
+    pub async fn add_history_retry_task(&self, task: &Task) -> AppResult<(Task, bool)> {
         let payload = AddTaskPayload {
             url: task.url.clone(),
             save_name: task.save_name.clone(),
@@ -117,7 +119,7 @@ impl QueueManager {
             .into_iter()
             .chain(reordered_waiting.into_iter())
             .collect();
-        self.persist(&state);
+        self.persist(&state)?;
         Ok(())
     }
 
@@ -125,15 +127,19 @@ impl QueueManager {
         self.state.lock().await.clone()
     }
 
-    pub async fn schedule_next(&self) -> Option<Task> {
+    pub async fn schedule_next(&self) -> AppResult<Option<Task>> {
+        if self.is_shutting_down().await {
+            return Ok(None);
+        }
+
         let mut state = self.state.lock().await;
 
         if state.current_task_id.is_some() {
-            return None;
+            return Ok(None);
         }
 
         if !state.is_running {
-            return None;
+            return Ok(None);
         }
 
         let next_task = state
@@ -147,13 +153,13 @@ impl QueueManager {
                 t.status = TaskStatus::Downloading;
             }
             state.current_task_id = Some(task.id.clone());
-            self.persist(&state);
+            self.persist(&state)?;
         }
 
-        next_task.map(|mut t| {
+        Ok(next_task.map(|mut t| {
             t.status = TaskStatus::Downloading;
             t
-        })
+        }))
     }
 
     pub async fn snapshot_task_completion(&self, id: &str, output_path: &str) -> Option<Task> {
@@ -165,7 +171,7 @@ impl QueueManager {
         Some(task)
     }
 
-    pub async fn finalize_task_completion(&self, id: &str) -> bool {
+    pub async fn finalize_task_completion(&self, id: &str) -> AppResult<bool> {
         let mut state = self.state.lock().await;
         let removed = if let Some(position) = state.tasks.iter().position(|t| t.id == id) {
             state.tasks.remove(position);
@@ -176,15 +182,19 @@ impl QueueManager {
         if state.current_task_id.as_deref() == Some(id) {
             state.current_task_id = None;
         }
-        self.persist(&state);
-        removed
+        self.persist(&state)?;
+        Ok(removed)
     }
 
     pub async fn prepare_task_failure(
         &self,
         id: &str,
         error_message: &str,
-    ) -> Option<TaskFailureTransition> {
+    ) -> AppResult<Option<TaskFailureTransition>> {
+        if self.is_shutting_down().await {
+            return Ok(None);
+        }
+
         let mut state = self.state.lock().await;
         let transition = if let Some(position) = state.tasks.iter().position(|t| t.id == id) {
             let t = &mut state.tasks[position];
@@ -210,11 +220,11 @@ impl QueueManager {
         {
             state.current_task_id = None;
         }
-        self.persist(&state);
-        transition
+        self.persist(&state)?;
+        Ok(transition)
     }
 
-    pub async fn finalize_terminal_failure(&self, id: &str) -> bool {
+    pub async fn finalize_terminal_failure(&self, id: &str) -> AppResult<bool> {
         let mut state = self.state.lock().await;
         let removed = if let Some(position) = state.tasks.iter().position(|t| t.id == id) {
             state.tasks.remove(position);
@@ -225,8 +235,8 @@ impl QueueManager {
         if state.current_task_id.as_deref() == Some(id) {
             state.current_task_id = None;
         }
-        self.persist(&state);
-        removed
+        self.persist(&state)?;
+        Ok(removed)
     }
 
     pub async fn update_task_progress(
@@ -250,7 +260,7 @@ impl QueueManager {
         }
     }
 
-    pub async fn finish_run_if_idle(&self) -> bool {
+    pub async fn finish_run_if_idle(&self) -> AppResult<bool> {
         let mut state = self.state.lock().await;
         let has_live_work = state.tasks.iter().any(|task| {
             task.status == TaskStatus::Waiting || task.status == TaskStatus::Downloading
@@ -258,11 +268,11 @@ impl QueueManager {
 
         if state.is_running && !has_live_work && state.current_task_id.is_none() {
             state.is_running = false;
-            self.persist(&state);
-            return true;
+            self.persist(&state)?;
+            return Ok(true);
         }
 
-        false
+        Ok(false)
     }
 
     pub async fn has_live_work(&self) -> bool {
@@ -272,13 +282,19 @@ impl QueueManager {
         })
     }
 
-    pub async fn set_running(&self, running: bool) {
+    pub async fn set_running(&self, running: bool) -> AppResult<()> {
+        if running {
+            self.clear_shutdown_flag().await;
+        }
+
         let mut state = self.state.lock().await;
         state.is_running = running;
-        self.persist(&state);
+        self.persist(&state)
     }
 
-    pub async fn prepare_for_exit(&self) {
+    pub async fn prepare_for_exit(&self) -> AppResult<()> {
+        self.mark_shutting_down().await;
+
         let mut state = self.state.lock().await;
         state.is_running = false;
         state.current_task_id = None;
@@ -292,13 +308,25 @@ impl QueueManager {
             }
         }
 
-        self.persist(&state);
+        self.persist(&state)
     }
 
-    fn persist(&self, state: &QueueState) {
-        if let Err(e) = Persistence::save(state, &self.persistence_path) {
-            eprintln!("Failed to persist queue state: {}", e);
-        }
+    pub async fn is_shutting_down(&self) -> bool {
+        *self.shutting_down.lock().await
+    }
+
+    async fn mark_shutting_down(&self) {
+        let mut shutting_down = self.shutting_down.lock().await;
+        *shutting_down = true;
+    }
+
+    async fn clear_shutdown_flag(&self) {
+        let mut shutting_down = self.shutting_down.lock().await;
+        *shutting_down = false;
+    }
+
+    fn persist(&self, state: &QueueState) -> AppResult<()> {
+        Persistence::save(state, &self.persistence_path)
     }
 }
 
@@ -311,14 +339,17 @@ mod tests {
         let manager = QueueManager::new(
             std::env::temp_dir().join(format!("queue-state-{}.json", uuid::Uuid::new_v4())),
         );
-        manager.set_running(false).await;
+        manager
+            .set_running(false)
+            .await
+            .expect("persist running state");
         let payload = AddTaskPayload {
             url: "https://example.com/paused.m3u8".to_string(),
             save_name: None,
             headers: None,
         };
 
-        let (_, should_schedule) = manager.add_task(payload).await;
+        let (_, should_schedule) = manager.add_task(payload).await.expect("add task");
         let state = manager.get_state().await;
 
         assert!(!state.is_running);
@@ -330,14 +361,17 @@ mod tests {
         let manager = QueueManager::new(
             std::env::temp_dir().join(format!("queue-state-{}.json", uuid::Uuid::new_v4())),
         );
-        manager.set_running(true).await;
+        manager
+            .set_running(true)
+            .await
+            .expect("persist running state");
         let payload = AddTaskPayload {
             url: "https://example.com/running.m3u8".to_string(),
             save_name: None,
             headers: None,
         };
 
-        let (_, should_schedule) = manager.add_task(payload).await;
+        let (_, should_schedule) = manager.add_task(payload).await.expect("add task");
         let state = manager.get_state().await;
 
         assert!(state.is_running);
@@ -345,23 +379,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_for_exit_resets_downloading_state() {
-        let manager = QueueManager::new(
-            std::env::temp_dir().join(format!("queue-state-{}.json", uuid::Uuid::new_v4())),
-        );
-        manager.set_running(true).await;
+    async fn add_task_reports_persistence_failure() {
+        let path = std::env::temp_dir().join(format!("queue-state-dir-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).expect("create blocking directory");
+        let manager = QueueManager::new(path.clone());
         let payload = AddTaskPayload {
             url: "https://example.com/running.m3u8".to_string(),
             save_name: None,
             headers: None,
         };
-        let (task, _) = manager.add_task(payload).await;
-        manager.schedule_next().await.expect("schedule first task");
+
+        let result = manager.add_task(payload).await;
+
+        assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn prepare_for_exit_resets_downloading_state() {
+        let manager = QueueManager::new(
+            std::env::temp_dir().join(format!("queue-state-{}.json", uuid::Uuid::new_v4())),
+        );
+        manager
+            .set_running(true)
+            .await
+            .expect("persist running state");
+        let payload = AddTaskPayload {
+            url: "https://example.com/running.m3u8".to_string(),
+            save_name: None,
+            headers: None,
+        };
+        let (task, _) = manager.add_task(payload).await.expect("add task");
+        manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("schedule first task");
         manager
             .update_task_progress(&task.id, Some(0.5), Some("1 MB/s".to_string()), None)
             .await;
 
-        manager.prepare_for_exit().await;
+        manager.prepare_for_exit().await.expect("prepare exit");
 
         let state = manager.get_state().await;
         let prepared = state
@@ -377,6 +436,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepare_for_exit_ignores_late_child_failure() {
+        let manager = QueueManager::new(
+            std::env::temp_dir().join(format!("queue-state-{}.json", uuid::Uuid::new_v4())),
+        );
+        manager
+            .set_running(true)
+            .await
+            .expect("persist running state");
+        let payload = AddTaskPayload {
+            url: "https://example.com/running.m3u8".to_string(),
+            save_name: None,
+            headers: None,
+        };
+        let (task, _) = manager.add_task(payload).await.expect("add task");
+        manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("schedule first task");
+
+        manager.prepare_for_exit().await.expect("prepare exit");
+        let transition = manager
+            .prepare_task_failure(&task.id, "killed during shutdown")
+            .await
+            .expect("prepare task failure");
+
+        let state = manager.get_state().await;
+        let prepared = state
+            .tasks
+            .iter()
+            .find(|t| t.id == task.id)
+            .expect("task exists");
+        assert!(transition.is_none());
+        assert!(!state.is_running);
+        assert!(state.current_task_id.is_none());
+        assert_eq!(prepared.status, TaskStatus::Waiting);
+        assert_eq!(prepared.retry_count, 0);
+    }
+
+    #[tokio::test]
     async fn reorder_waiting_tasks_persists_across_reload() {
         let path = std::env::temp_dir().join(format!("queue-state-{}.json", uuid::Uuid::new_v4()));
         let manager = QueueManager::new(path.clone());
@@ -387,24 +486,34 @@ mod tests {
                 save_name: Some("first".to_string()),
                 headers: None,
             })
-            .await;
+            .await
+            .expect("add first task");
         let (second, _) = manager
             .add_task(AddTaskPayload {
                 url: "https://example.com/2.m3u8".to_string(),
                 save_name: Some("second".to_string()),
                 headers: None,
             })
-            .await;
+            .await
+            .expect("add second task");
         let (third, _) = manager
             .add_task(AddTaskPayload {
                 url: "https://example.com/3.m3u8".to_string(),
                 save_name: Some("third".to_string()),
                 headers: None,
             })
-            .await;
+            .await
+            .expect("add third task");
 
-        manager.set_running(true).await;
-        manager.schedule_next().await.expect("schedule first task");
+        manager
+            .set_running(true)
+            .await
+            .expect("persist running state");
+        manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("schedule first task");
         manager
             .reorder_tasks(vec![third.id.clone(), second.id.clone()])
             .await

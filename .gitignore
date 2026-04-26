@@ -269,6 +269,7 @@ m3u8-queue-downloader/.pack-dist/
 m3u8-queue-downloader/src-tauri/resources/*
 !m3u8-queue-downloader/src-tauri/resources/.gitkeep
 !m3u8-queue-downloader/src-tauri/resources/ffmpeg.exe
+m3u8-queue-downloader/src-tauri/lib/
 *.pyc
 
 # Local code-search metadata

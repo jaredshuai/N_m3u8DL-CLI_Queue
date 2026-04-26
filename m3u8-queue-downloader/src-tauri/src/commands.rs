@@ -146,17 +146,19 @@ pub async fn add_task(
         save_name,
         headers,
     };
-    let (task, should_schedule) = state.queue_manager.add_task(payload).await;
+    let (task, should_schedule) = command_result(state.queue_manager.add_task(payload).await)?;
     if should_schedule {
         let download_dir = resolve_download_dir(&state.settings_store.get());
-        runtime::try_schedule_next(
-            &state.queue_manager,
-            &state.history_store,
-            &state.task_runner,
-            &download_dir,
-            &app_handle,
-        )
-        .await;
+        command_result(
+            runtime::try_schedule_next(
+                &state.queue_manager,
+                &state.history_store,
+                &state.task_runner,
+                &download_dir,
+                &app_handle,
+            )
+            .await,
+        )?;
     }
     let _ = app_handle.emit("queue-state-changed", ());
     Ok(task)
@@ -222,7 +224,7 @@ async fn retry_task_impl(
             let (task, should_schedule) = state
                 .queue_manager
                 .add_history_retry_task(&history_task)
-                .await;
+                .await?;
             if should_schedule {
                 let download_dir = resolve_download_dir(&state.settings_store.get());
                 runtime::try_schedule_next(
@@ -232,7 +234,7 @@ async fn retry_task_impl(
                     &download_dir,
                     app_handle,
                 )
-                .await;
+                .await?;
             }
             task
         }
@@ -247,7 +249,7 @@ async fn retry_task_impl(
         &download_dir,
         app_handle,
     )
-    .await;
+    .await?;
     let _ = app_handle.emit("queue-state-changed", ());
     Ok(task)
 }

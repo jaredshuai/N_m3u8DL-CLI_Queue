@@ -5,6 +5,15 @@ import process from 'node:process';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+export const DEFAULT_FFMPEG_RELATIVE_PATH = path.join(
+  'lib',
+  'ffmpeg',
+  'tools',
+  'ffmpeg',
+  'bin',
+  'ffmpeg.exe',
+);
+
 if (isMainModule()) {
   stageBundledResources();
 }
@@ -46,6 +55,7 @@ export function stageBundledResources({
   fs.mkdirSync(resourcesDir, { recursive: true });
   copyResource(cliSource, path.join(resourcesDir, 'N_m3u8DL-CLI_v3.0.2.exe'));
   copyResource(ffmpegSource, path.join(resourcesDir, 'ffmpeg.exe'));
+  copyResource(ffmpegSource, path.join(root, 'src-tauri', DEFAULT_FFMPEG_RELATIVE_PATH));
 
   if (optionalConfigSource) {
     copyResource(optionalConfigSource, path.join(resourcesDir, 'config.txt'));
@@ -160,6 +170,7 @@ export function copyResource(source, destination) {
   if (path.resolve(source) === path.resolve(destination)) {
     return;
   }
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.copyFileSync(source, destination);
 }
 

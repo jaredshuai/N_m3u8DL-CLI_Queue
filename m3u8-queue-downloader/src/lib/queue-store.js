@@ -14,15 +14,43 @@ export const sessionCompletedCount = derived(
   ($sessionProgress) => $sessionProgress.completedCount,
 );
 
+export function createQueueStateLoader({
+  invokeQueueState,
+  setTasks,
+  setQueueRunning,
+  onError = console.error,
+}) {
+  let requestGeneration = 0;
+
+  return async function loadLatestQueueState() {
+    const requestId = requestGeneration + 1;
+    requestGeneration = requestId;
+
+    try {
+      const state = await invokeQueueState();
+      if (requestId !== requestGeneration) return false;
+
+      const normalized = (state.tasks ?? []).map(normalizeTaskProgress);
+      setTasks(normalized);
+      setQueueRunning(state.isRunning ?? false);
+      return true;
+    } catch (err) {
+      if (requestId === requestGeneration) {
+        onError('Failed to load queue state:', err);
+      }
+      return false;
+    }
+  };
+}
+
+const loadLatestQueueState = createQueueStateLoader({
+  invokeQueueState: () => invoke('get_queue_state'),
+  setTasks: (nextTasks) => tasks.set(nextTasks),
+  setQueueRunning: (running) => queueRunning.set(running),
+});
+
 export async function loadQueueState() {
-  try {
-    const state = await invoke('get_queue_state');
-    const normalized = (state.tasks ?? []).map(normalizeTaskProgress);
-    tasks.set(normalized);
-    queueRunning.set(state.isRunning ?? false);
-  } catch (err) {
-    console.error('Failed to load queue state:', err);
-  }
+  return loadLatestQueueState();
 }
 
 export function trackSessionTask(taskId) {

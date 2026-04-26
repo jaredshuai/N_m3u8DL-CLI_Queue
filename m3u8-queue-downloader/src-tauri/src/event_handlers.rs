@@ -1,41 +1,16 @@
 use crate::app_state::AppState;
 use crate::runtime;
+use crate::task_runner::TaskLifecycleEvent;
 use std::future::Future;
 use std::sync::Arc;
 use tauri::{AppHandle, Listener};
+use tokio::sync::mpsc;
 
 pub(crate) fn register_event_handlers(
     app: &mut tauri::App,
     app_handle: AppHandle,
     state: AppState,
 ) {
-    register_json_listener(
-        app,
-        "task-completed",
-        state.clone(),
-        app_handle.clone(),
-        |state, app_handle, data| async move {
-            let task_id = data["id"].as_str().unwrap_or("").to_string();
-            let output_path = data["outputPath"].as_str().unwrap_or("").to_string();
-            runtime::handle_task_completed(state, app_handle, task_id, output_path).await;
-        },
-    );
-
-    register_json_listener(
-        app,
-        "task-failed",
-        state.clone(),
-        app_handle.clone(),
-        |state, app_handle, data| async move {
-            let task_id = data["id"].as_str().unwrap_or("").to_string();
-            let error_message = data["errorMessage"]
-                .as_str()
-                .unwrap_or("Unknown error")
-                .to_string();
-            runtime::handle_task_failed(state, app_handle, task_id, error_message).await;
-        },
-    );
-
     register_json_listener(
         app,
         "task-progress",
@@ -93,6 +68,37 @@ pub(crate) fn register_event_handlers(
             }
         },
     );
+}
+
+pub(crate) fn spawn_task_lifecycle_worker(
+    app_handle: AppHandle,
+    state: AppState,
+    mut receiver: mpsc::UnboundedReceiver<TaskLifecycleEvent>,
+) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = receiver.recv().await {
+            match event {
+                TaskLifecycleEvent::Completed { id, output_path } => {
+                    runtime::handle_task_completed(
+                        state.clone(),
+                        app_handle.clone(),
+                        id,
+                        output_path,
+                    )
+                    .await;
+                }
+                TaskLifecycleEvent::Failed { id, error_message } => {
+                    runtime::handle_task_failed(
+                        state.clone(),
+                        app_handle.clone(),
+                        id,
+                        error_message,
+                    )
+                    .await;
+                }
+            }
+        }
+    });
 }
 
 fn register_json_listener<F, Fut>(

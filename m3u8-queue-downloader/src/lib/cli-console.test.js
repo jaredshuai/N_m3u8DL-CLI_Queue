@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   beginTerminalStateLoad,
   buildTerminalView,
+  capRenderedTerminalLines,
   closeCliConsole,
   createCliConsoleState,
   createTerminalLoadState,
@@ -70,6 +71,12 @@ test('buildTerminalView handles task with no active line', () => {
 
   assert.deepEqual(view.committedLines, ['line-1', 'line-2']);
   assert.equal(view.activeLine, '');
+});
+
+test('capRenderedTerminalLines keeps only the newest render window', () => {
+  const lines = ['line-1', 'line-2', 'line-3', 'line-4'];
+
+  assert.deepEqual(capRenderedTerminalLines(lines, 2), ['line-3', 'line-4']);
 });
 
 test('resolveTerminalActiveLine shows loaded active line when live field is still empty', () => {

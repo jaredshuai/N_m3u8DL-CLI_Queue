@@ -26,6 +26,7 @@
     shutdownNotice,
     tasks,
     terminalActiveLines,
+    terminalCommittedLines,
     teardownListeners,
   } from './lib/stores.js';
   import { invoke } from '@tauri-apps/api/core';
@@ -105,6 +106,9 @@
   );
   let cliConsoleLiveActiveLine = $derived(
     cliConsoleHasLiveActiveLine ? $terminalActiveLines[cliConsole.taskId] : ''
+  );
+  let cliConsoleLiveCommittedLines = $derived(
+    cliConsole.taskId ? ($terminalCommittedLines[cliConsole.taskId] ?? []) : []
   );
 
   async function handleLoadMore(status) {
@@ -303,6 +307,7 @@
           task={cliConsoleTask}
           onClose={handleCloseCliConsole}
           overlay={true}
+          liveCommittedLines={cliConsoleLiveCommittedLines}
           liveActiveLine={cliConsoleLiveActiveLine}
           hasLiveActiveLine={cliConsoleHasLiveActiveLine}
         />

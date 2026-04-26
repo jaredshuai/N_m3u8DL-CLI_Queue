@@ -68,17 +68,23 @@ pub fn run() {
         })
         .setup(|app| {
             let app_handle = app.handle().clone();
+            let (lifecycle_sender, lifecycle_receiver) = tokio::sync::mpsc::unbounded_channel();
             let state = AppState::new(
                 std::sync::Arc::new(CliOutputStore::new(cli_output_path)),
                 std::sync::Arc::new(HistoryStore::new(history_path)),
                 std::sync::Arc::new(QueueManager::new(persistence_path)),
                 std::sync::Arc::new(SettingsStore::new(settings_path)),
                 std::sync::Arc::new(ShutdownManager::new()),
-                std::sync::Arc::new(TaskRunner::new()),
+                std::sync::Arc::new(TaskRunner::with_lifecycle_sender(lifecycle_sender)),
             );
 
             app.manage(state.clone());
             tray::setup_tray(app)?;
+            event_handlers::spawn_task_lifecycle_worker(
+                app_handle.clone(),
+                state.clone(),
+                lifecycle_receiver,
+            );
             event_handlers::register_event_handlers(app, app_handle, state);
             Ok(())
         })
@@ -114,7 +120,7 @@ mod tests {
     use crate::queue_manager::{QueueManager, TaskFailureTransition};
     use crate::runtime::{
         handle_start_failure, maybe_start_shutdown_countdown, pause_queue_internal,
-        resolve_close_action, CloseAction, CloseRequestSource,
+        record_completed_task, resolve_close_action, CloseAction, CloseRequestSource,
     };
     use crate::shutdown::ShutdownManager;
     use crate::task_runner::TaskRunner;
@@ -177,6 +183,16 @@ mod tests {
         assert_eq!(requested_source, None);
     }
 
+    #[test]
+    fn main_window_capability_does_not_allow_renderer_event_emit() {
+        let capability = include_str!("../capabilities/default.json");
+
+        assert!(
+            !capability.contains("core:event:allow-emit"),
+            "renderer event emit can forge backend lifecycle events"
+        );
+    }
+
     #[tokio::test]
     async fn completed_run_with_auto_shutdown_enabled_starts_countdown() {
         let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
@@ -193,10 +209,14 @@ mod tests {
             save_name: None,
             headers: None,
         };
-        let (task, _) = queue_manager.add_task(payload).await;
+        let (task, _) = queue_manager.add_task(payload).await.expect("add task");
 
-        queue_manager.set_running(true).await;
-        queue_manager.schedule_next().await.expect("scheduled task");
+        queue_manager.set_running(true).await.expect("set running");
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("scheduled task");
 
         let started = maybe_start_shutdown_countdown(&queue_manager, &shutdown_manager, &settings)
             .await
@@ -210,7 +230,10 @@ mod tests {
         history_store
             .append(&completed_task)
             .expect("append completed task");
-        assert!(queue_manager.finalize_task_completion(&task.id).await);
+        assert!(queue_manager
+            .finalize_task_completion(&task.id)
+            .await
+            .expect("finalize completion"));
 
         let started = maybe_start_shutdown_countdown(&queue_manager, &shutdown_manager, &settings)
             .await
@@ -229,11 +252,15 @@ mod tests {
             save_name: None,
             headers: None,
         };
-        let (task, _) = queue_manager.add_task(payload).await;
+        let (task, _) = queue_manager.add_task(payload).await.expect("add task");
         let child = spawn_sleeping_child().await;
 
-        queue_manager.set_running(true).await;
-        queue_manager.schedule_next().await.expect("scheduled task");
+        queue_manager.set_running(true).await.expect("set running");
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("scheduled task");
         task_runner
             .insert_running_task_for_test(task.id.clone(), child)
             .await;
@@ -266,25 +293,37 @@ mod tests {
             save_name: None,
             headers: None,
         };
-        let (task, _) = queue_manager.add_task(payload).await;
+        let (task, _) = queue_manager.add_task(payload).await.expect("add task");
 
-        queue_manager.set_running(true).await;
-        queue_manager.schedule_next().await.expect("scheduled task");
+        queue_manager.set_running(true).await.expect("set running");
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("scheduled task");
         assert!(matches!(
-            queue_manager.prepare_task_failure(&task.id, "first").await,
+            queue_manager
+                .prepare_task_failure(&task.id, "first")
+                .await
+                .expect("prepare first failure"),
             Some(TaskFailureTransition::RetryScheduled)
         ));
         queue_manager
             .schedule_next()
             .await
+            .expect("persist rescheduled task")
             .expect("rescheduled task");
         assert!(matches!(
-            queue_manager.prepare_task_failure(&task.id, "second").await,
+            queue_manager
+                .prepare_task_failure(&task.id, "second")
+                .await
+                .expect("prepare second failure"),
             Some(TaskFailureTransition::RetryScheduled)
         ));
         queue_manager
             .schedule_next()
             .await
+            .expect("persist rescheduled task")
             .expect("rescheduled task");
 
         handle_start_failure(&queue_manager, &history_store, &task.id, "third")
@@ -303,7 +342,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_start_failure_keeps_task_when_history_append_fails() {
+    async fn handle_start_failure_finalizes_task_when_history_append_fails() {
         let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
         let history_path = std::env::temp_dir().join(format!("history-file-{}", Uuid::new_v4()));
         std::fs::write(&history_path, b"blocked").expect("create blocking file");
@@ -313,39 +352,51 @@ mod tests {
             save_name: None,
             headers: None,
         };
-        let (task, _) = queue_manager.add_task(payload).await;
+        let (task, _) = queue_manager.add_task(payload).await.expect("add task");
 
-        queue_manager.set_running(true).await;
-        queue_manager.schedule_next().await.expect("scheduled task");
+        queue_manager.set_running(true).await.expect("set running");
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("scheduled task");
         assert!(matches!(
-            queue_manager.prepare_task_failure(&task.id, "first").await,
+            queue_manager
+                .prepare_task_failure(&task.id, "first")
+                .await
+                .expect("prepare first failure"),
             Some(TaskFailureTransition::RetryScheduled)
         ));
         queue_manager
             .schedule_next()
             .await
+            .expect("persist rescheduled task")
             .expect("rescheduled task");
         assert!(matches!(
-            queue_manager.prepare_task_failure(&task.id, "second").await,
+            queue_manager
+                .prepare_task_failure(&task.id, "second")
+                .await
+                .expect("prepare second failure"),
             Some(TaskFailureTransition::RetryScheduled)
         ));
         queue_manager
             .schedule_next()
             .await
+            .expect("persist rescheduled task")
             .expect("rescheduled task");
 
         let result = handle_start_failure(&queue_manager, &history_store, &task.id, "third").await;
         assert!(result.is_err());
 
         let state = queue_manager.get_state().await;
-        assert!(state.tasks.iter().any(|t| t.id == task.id));
-        assert_eq!(state.current_task_id.as_deref(), Some(task.id.as_str()));
+        assert!(state.tasks.iter().all(|t| t.id != task.id));
+        assert!(state.current_task_id.is_none());
 
         let _ = std::fs::remove_file(history_path);
     }
 
     #[tokio::test]
-    async fn completed_task_stays_in_queue_when_history_append_fails() {
+    async fn completed_task_finalizes_queue_when_history_append_fails() {
         let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
         let history_path = std::env::temp_dir().join(format!("history-file-{}", Uuid::new_v4()));
         std::fs::write(&history_path, b"blocked").expect("create blocking file");
@@ -355,21 +406,27 @@ mod tests {
             save_name: None,
             headers: None,
         };
-        let (task, _) = queue_manager.add_task(payload).await;
+        let (task, _) = queue_manager.add_task(payload).await.expect("add task");
 
-        queue_manager.set_running(true).await;
-        queue_manager.schedule_next().await.expect("scheduled task");
-
-        let completed_task = queue_manager
-            .snapshot_task_completion(&task.id, "D:/Videos/test.mp4")
+        queue_manager.set_running(true).await.expect("set running");
+        queue_manager
+            .schedule_next()
             .await
-            .expect("task completed");
-        let append_result = history_store.append(&completed_task);
-        assert!(append_result.is_err());
+            .expect("persist scheduled task")
+            .expect("scheduled task");
+
+        let result = record_completed_task(
+            &queue_manager,
+            &history_store,
+            &task.id,
+            "D:/Videos/test.mp4",
+        )
+        .await;
+        assert!(result.is_err());
 
         let state = queue_manager.get_state().await;
-        assert!(state.tasks.iter().any(|t| t.id == task.id));
-        assert_eq!(state.current_task_id.as_deref(), Some(task.id.as_str()));
+        assert!(state.tasks.iter().all(|t| t.id != task.id));
+        assert!(state.current_task_id.is_none());
 
         let _ = std::fs::remove_file(history_path);
     }

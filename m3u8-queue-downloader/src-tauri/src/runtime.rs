@@ -32,12 +32,12 @@ pub(crate) async fn start_queue_internal(
         let _ = app_handle.emit("shutdown-countdown-cancelled", ());
     }
     if !state.queue_manager.has_live_work().await {
-        state.queue_manager.set_running(false).await;
+        state.queue_manager.set_running(false).await?;
         let _ = app_handle.emit("queue-state-changed", ());
         return Ok(());
     }
 
-    state.queue_manager.set_running(true).await;
+    state.queue_manager.set_running(true).await?;
     try_schedule_next(
         &state.queue_manager,
         &state.history_store,
@@ -45,14 +45,13 @@ pub(crate) async fn start_queue_internal(
         &download_dir,
         app_handle,
     )
-    .await;
+    .await?;
     let _ = app_handle.emit("queue-state-changed", ());
     Ok(())
 }
 
 pub(crate) async fn pause_queue_internal(queue_manager: &Arc<QueueManager>) -> AppResult<()> {
-    queue_manager.set_running(false).await;
-    Ok(())
+    queue_manager.set_running(false).await
 }
 
 pub(crate) async fn request_close_internal(
@@ -92,18 +91,19 @@ pub(crate) async fn try_schedule_next(
     task_runner: &Arc<TaskRunner>,
     download_dir: &PathBuf,
     app_handle: &AppHandle,
-) {
+) -> AppResult<()> {
     loop {
         let task = match queue_manager.schedule_next().await {
-            Some(task) => task,
-            None => return,
+            Ok(Some(task)) => task,
+            Ok(None) => return Ok(()),
+            Err(err) => return Err(err),
         };
         let task_id = task.id.clone();
         match task_runner
             .start_task(task, download_dir.clone(), app_handle.clone())
             .await
         {
-            Ok(()) => return,
+            Ok(()) => return Ok(()),
             Err(err) => {
                 let error_message = err.to_string();
                 eprintln!("Failed to start task {}: {}", task_id, error_message);
@@ -135,16 +135,45 @@ pub(crate) async fn handle_start_failure(
 ) -> AppResult<Option<Task>> {
     match queue_manager
         .prepare_task_failure(task_id, error_message)
-        .await
+        .await?
     {
         Some(TaskFailureTransition::RetryScheduled) => Ok(None),
         Some(TaskFailureTransition::Terminal(task)) => {
-            history_store.append(&task)?;
-            queue_manager.finalize_terminal_failure(task_id).await;
+            let task =
+                record_terminal_failure_task(queue_manager, history_store, task_id, task).await?;
             Ok(Some(task))
         }
         None => Ok(None),
     }
+}
+
+pub(crate) async fn record_completed_task(
+    queue_manager: &Arc<QueueManager>,
+    history_store: &Arc<HistoryStore>,
+    task_id: &str,
+    output_path: &str,
+) -> AppResult<Option<Task>> {
+    let Some(task) = queue_manager
+        .snapshot_task_completion(task_id, output_path)
+        .await
+    else {
+        return Ok(None);
+    };
+
+    let append_result = history_store.append(&task);
+    queue_manager.finalize_task_completion(task_id).await?;
+    append_result.map(|_| Some(task))
+}
+
+pub(crate) async fn record_terminal_failure_task(
+    queue_manager: &Arc<QueueManager>,
+    history_store: &Arc<HistoryStore>,
+    task_id: &str,
+    task: Task,
+) -> AppResult<Task> {
+    let append_result = history_store.append(&task);
+    queue_manager.finalize_terminal_failure(task_id).await?;
+    append_result.map(|_| task)
 }
 
 pub(crate) async fn handle_task_completed(
@@ -154,44 +183,60 @@ pub(crate) async fn handle_task_completed(
     output_path: String,
 ) {
     state.cli_output_store.clear_active_line(&task_id);
-    if let Some(task) = state
-        .queue_manager
-        .snapshot_task_completion(&task_id, &output_path)
-        .await
+    if state.queue_manager.is_shutting_down().await {
+        let _ = app_handle.emit("queue-state-changed", ());
+        return;
+    }
+
+    match record_completed_task(
+        &state.queue_manager,
+        &state.history_store,
+        &task_id,
+        &output_path,
+    )
+    .await
     {
-        if let Err(err) = state.history_store.append(&task) {
-            eprintln!("Failed to append completed task to history: {}", err);
-        } else {
-            state.queue_manager.finalize_task_completion(&task_id).await;
+        Ok(Some(task)) => {
             let payload = serde_json::json!({
                 "status": HistoryStatus::Completed,
                 "task": task,
             });
             let _ = app_handle.emit("history-task-added", payload);
         }
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("Failed to append completed task to history: {}", err);
+        }
     }
     let _ = app_handle.emit("queue-state-changed", ());
     let download_dir = resolve_download_dir(&state.settings_store.get());
-    try_schedule_next(
+    if let Err(err) = try_schedule_next(
         &state.queue_manager,
         &state.history_store,
         &state.task_runner,
         &download_dir,
         &app_handle,
     )
-    .await;
-    if state.queue_manager.finish_run_if_idle().await {
-        let _ = app_handle.emit("queue-state-changed", ());
-        if let Ok(Some(seconds)) = maybe_start_shutdown_countdown(
-            &state.queue_manager,
-            &state.shutdown_manager,
-            &state.settings_store.get(),
-        )
-        .await
-        {
-            let payload = serde_json::json!({ "seconds": seconds });
-            let _ = app_handle.emit("shutdown-countdown-started", payload);
+    .await
+    {
+        eprintln!("Failed to schedule next task after completion: {}", err);
+    }
+    match state.queue_manager.finish_run_if_idle().await {
+        Ok(true) => {
+            let _ = app_handle.emit("queue-state-changed", ());
+            if let Ok(Some(seconds)) = maybe_start_shutdown_countdown(
+                &state.queue_manager,
+                &state.shutdown_manager,
+                &state.settings_store.get(),
+            )
+            .await
+            {
+                let payload = serde_json::json!({ "seconds": seconds });
+                let _ = app_handle.emit("shutdown-countdown-started", payload);
+            }
         }
+        Ok(false) => {}
+        Err(err) => eprintln!("Failed to finish idle run after completion: {}", err),
     }
 }
 
@@ -202,51 +247,70 @@ pub(crate) async fn handle_task_failed(
     error_message: String,
 ) {
     state.cli_output_store.clear_active_line(&task_id);
+    if state.queue_manager.is_shutting_down().await {
+        let _ = app_handle.emit("queue-state-changed", ());
+        return;
+    }
+
     match state
         .queue_manager
         .prepare_task_failure(&task_id, &error_message)
         .await
     {
-        Some(TaskFailureTransition::RetryScheduled) | None => {}
-        Some(TaskFailureTransition::Terminal(task)) => {
+        Ok(Some(TaskFailureTransition::RetryScheduled)) | Ok(None) => {}
+        Ok(Some(TaskFailureTransition::Terminal(task))) => {
             state.shutdown_manager.mark_run_failure();
-            if let Err(err) = state.history_store.append(&task) {
-                eprintln!("Failed to append failed task to history: {}", err);
-            } else {
-                state
-                    .queue_manager
-                    .finalize_terminal_failure(&task_id)
-                    .await;
-                let payload = serde_json::json!({
-                    "status": HistoryStatus::Failed,
-                    "task": task,
-                });
-                let _ = app_handle.emit("history-task-added", payload);
+            match record_terminal_failure_task(
+                &state.queue_manager,
+                &state.history_store,
+                &task_id,
+                task,
+            )
+            .await
+            {
+                Ok(task) => {
+                    let payload = serde_json::json!({
+                        "status": HistoryStatus::Failed,
+                        "task": task,
+                    });
+                    let _ = app_handle.emit("history-task-added", payload);
+                }
+                Err(err) => {
+                    eprintln!("Failed to append failed task to history: {}", err);
+                }
             }
         }
+        Err(err) => eprintln!("Failed to prepare task failure: {}", err),
     }
     let _ = app_handle.emit("queue-state-changed", ());
     let download_dir = resolve_download_dir(&state.settings_store.get());
-    try_schedule_next(
+    if let Err(err) = try_schedule_next(
         &state.queue_manager,
         &state.history_store,
         &state.task_runner,
         &download_dir,
         &app_handle,
     )
-    .await;
-    if state.queue_manager.finish_run_if_idle().await {
-        let _ = app_handle.emit("queue-state-changed", ());
-        if let Ok(Some(seconds)) = maybe_start_shutdown_countdown(
-            &state.queue_manager,
-            &state.shutdown_manager,
-            &state.settings_store.get(),
-        )
-        .await
-        {
-            let payload = serde_json::json!({ "seconds": seconds });
-            let _ = app_handle.emit("shutdown-countdown-started", payload);
+    .await
+    {
+        eprintln!("Failed to schedule next task after failure: {}", err);
+    }
+    match state.queue_manager.finish_run_if_idle().await {
+        Ok(true) => {
+            let _ = app_handle.emit("queue-state-changed", ());
+            if let Ok(Some(seconds)) = maybe_start_shutdown_countdown(
+                &state.queue_manager,
+                &state.shutdown_manager,
+                &state.settings_store.get(),
+            )
+            .await
+            {
+                let payload = serde_json::json!({ "seconds": seconds });
+                let _ = app_handle.emit("shutdown-countdown-started", payload);
+            }
         }
+        Ok(false) => {}
+        Err(err) => eprintln!("Failed to finish idle run after failure: {}", err),
     }
 }
 
@@ -300,8 +364,10 @@ pub(crate) async fn exit_application(
     task_runner: Arc<TaskRunner>,
     app_handle: AppHandle,
 ) -> AppResult<()> {
+    if let Err(err) = queue_manager.prepare_for_exit().await {
+        eprintln!("Failed to persist queue state before exit: {}", err);
+    }
     task_runner.terminate_all_running_processes().await?;
-    queue_manager.prepare_for_exit().await;
     app_handle.exit(0);
     Ok(())
 }

@@ -58,14 +58,19 @@ async function packageSync(argv) {
 
   let runId = options.runId;
   let run = null;
+  const expectedRef = options.ref ?? getCurrentGitBranch();
+  const expectedSha = options.sha ?? getCurrentGitHeadSha();
 
   if (runId != null) {
     run = getRunView(options.repo, runId);
-    if (run.status !== 'completed' || run.conclusion !== 'success') {
-      throw new Error(`Run ${runId} is not a successful completed run`);
-    }
+    validatePackageRun(run, {
+      workflow: options.workflow,
+      ref: expectedRef,
+      sha: expectedSha,
+      runId,
+    });
   } else {
-    const ref = options.ref ?? getCurrentGitBranch();
+    const ref = expectedRef;
     const beforeIds = new Set(getWorkflowRuns(options.repo, options.workflow, ref).map((runItem) => String(runItem.databaseId)));
 
     runWorkflow(options.repo, options.workflow, ref, !options.skipTests);
@@ -78,9 +83,12 @@ async function packageSync(argv) {
 
     runId = Number(queuedRun.databaseId);
     run = waitForRunCompletion(options.repo, runId, options.pollSeconds, options.timeoutMinutes);
-    if (run.conclusion !== 'success') {
-      throw new Error(`Workflow failed: ${run.url}`);
-    }
+    validatePackageRun(run, {
+      workflow: options.workflow,
+      ref,
+      sha: expectedSha,
+      runId,
+    });
   }
 
   const artifact = getRunArtifact(options.repo, runId);
@@ -102,6 +110,7 @@ function parsePackageArgs(argv) {
     skipTests: false,
     artifactsDir: null,
     runId: null,
+    sha: null,
     pollSeconds: 15,
     timeoutMinutes: 45,
     noWait: false,
@@ -127,6 +136,9 @@ function parsePackageArgs(argv) {
         if (!Number.isInteger(options.runId) || options.runId <= 0) {
           throw new Error(`Invalid value for ${arg}: ${argv[i]}`);
         }
+        break;
+      case '--sha':
+        options.sha = requireValue(argv, ++i, arg);
         break;
       case '--poll-seconds':
         options.pollSeconds = Number(requireValue(argv, ++i, arg));
@@ -192,6 +204,13 @@ function getCurrentGitBranch() {
   }).trim();
 }
 
+function getCurrentGitHeadSha() {
+  return execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+  }).trim();
+}
+
 function getWorkflowRuns(repo, workflow, branch) {
   return runGhJson([
     'run', 'list',
@@ -228,11 +247,66 @@ function waitForNewRun(repo, workflow, branch, beforeIds) {
 }
 
 function getRunView(repo, runId) {
-  return runGhJson([
-    'run', 'view', String(runId),
-    '--repo', repo,
-    '--json', 'status,conclusion,url,headBranch,headSha',
-  ]);
+  const run = runGhJson(['api', `repos/${repo}/actions/runs/${runId}`]);
+  return {
+    status: run.status,
+    conclusion: run.conclusion,
+    url: run.html_url,
+    headBranch: run.head_branch,
+    headSha: run.head_sha,
+    workflowName: run.name,
+    workflowPath: run.path,
+  };
+}
+
+export function validatePackageRun(run, expected) {
+  const runLabel = expected.runId ? `Run ${expected.runId}` : 'Run';
+  if (run.status !== 'completed' || run.conclusion !== 'success') {
+    throw new Error(`${runLabel} is not a successful completed run`);
+  }
+
+  if (!workflowMatches(run, expected.workflow)) {
+    throw new Error(
+      `${runLabel} does not belong to workflow ${expected.workflow}: ${run.workflowPath ?? run.workflowName ?? '(unknown)'}`,
+    );
+  }
+
+  if (expected.ref && run.headBranch !== expected.ref) {
+    throw new Error(
+      `${runLabel} does not match expected ref ${expected.ref}: ${run.headBranch ?? '(unknown)'}`,
+    );
+  }
+
+  if (
+    expected.sha &&
+    normalizeSha(run.headSha) !== normalizeSha(expected.sha)
+  ) {
+    throw new Error(
+      `${runLabel} does not match expected sha ${expected.sha}: ${run.headSha ?? '(unknown)'}`,
+    );
+  }
+}
+
+function workflowMatches(run, expectedWorkflow) {
+  if (!expectedWorkflow) return true;
+
+  if (run.workflowPath) {
+    return normalizeWorkflowIdentifier(run.workflowPath) === normalizeWorkflowIdentifier(expectedWorkflow);
+  }
+
+  return run.workflowName === expectedWorkflow;
+}
+
+function normalizeWorkflowIdentifier(value) {
+  const normalized = String(value ?? '').replaceAll('\\', '/').replace(/^\/+/, '');
+  if (normalized.includes('/')) {
+    return normalized;
+  }
+  return `.github/workflows/${normalized}`;
+}
+
+function normalizeSha(value) {
+  return String(value ?? '').trim().toLowerCase();
 }
 
 function waitForRunCompletion(repo, runId, pollSeconds, timeoutMinutes) {
@@ -307,6 +381,8 @@ export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination
       fs.copyFileSync(file, targetPath);
     }
 
+    validateDownloadedArtifactContents(stagingDir);
+
     if (fs.existsSync(resolved)) {
       fs.renameSync(resolved, backupDir);
       backupCreated = true;
@@ -336,11 +412,36 @@ export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination
   }
 }
 
-function clearArtifactsDirectory(destination) {
-  const resolved = resolveAllowedArtifactsDirectory(destination);
+export function validateDownloadedArtifactContents(directory) {
+  const files = listFilesRecursive(directory).map((file) =>
+    normalizeDownloadedPath(path.relative(directory, file)).split(path.sep).join('/'),
+  );
+  const hasFile = (relativePath) => files.includes(relativePath);
+  const hasInstaller = files.some((file) =>
+    /^m3u8-queue-downloader_.*_x64-setup\.exe$/i.test(file),
+  );
+  const missing = [];
 
-  fs.rmSync(resolved, { recursive: true, force: true });
-  fs.mkdirSync(resolved, { recursive: true });
+  if (!hasInstaller) {
+    missing.push('m3u8-queue-downloader_*_x64-setup.exe');
+  }
+
+  for (const required of [
+    'm3u8-queue-downloader-portable/m3u8-queue-downloader.exe',
+    'm3u8-queue-downloader-portable/resources/N_m3u8DL-CLI_v3.0.2.exe',
+    'm3u8-queue-downloader-portable/resources/ffmpeg.exe',
+    'm3u8-queue-downloader-portable/lib/ffmpeg/tools/ffmpeg/bin/ffmpeg.exe',
+  ]) {
+    if (!hasFile(required)) {
+      missing.push(required);
+    }
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Downloaded artifact is missing required files: ${missing.join(', ')}`,
+    );
+  }
 }
 
 export function resolveAllowedArtifactsDirectory(destination, context = {}) {

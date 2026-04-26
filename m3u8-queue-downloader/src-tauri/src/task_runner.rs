@@ -9,15 +9,23 @@ use std::sync::Arc;
 use tauri::{path::BaseDirectory, Emitter, Manager};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
+use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
 pub struct TaskRunner {
     running_processes: Arc<Mutex<StdHashMap<String, u32>>>,
+    lifecycle_sender: Option<mpsc::UnboundedSender<TaskLifecycleEvent>>,
     #[cfg(test)]
     pending_test_children: Arc<Mutex<HashMap<String, Child>>>,
 }
 
 const MAX_CLI_SEARCH_DEPTH: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TaskLifecycleEvent {
+    Completed { id: String, output_path: String },
+    Failed { id: String, error_message: String },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KillProcessResult {
@@ -29,6 +37,16 @@ impl TaskRunner {
     pub fn new() -> Self {
         Self {
             running_processes: Arc::new(Mutex::new(StdHashMap::new())),
+            lifecycle_sender: None,
+            #[cfg(test)]
+            pending_test_children: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn with_lifecycle_sender(sender: mpsc::UnboundedSender<TaskLifecycleEvent>) -> Self {
+        Self {
+            running_processes: Arc::new(Mutex::new(StdHashMap::new())),
+            lifecycle_sender: Some(sender),
             #[cfg(test)]
             pending_test_children: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -88,7 +106,6 @@ impl TaskRunner {
         let task_id = task.id.clone();
         let save_name = task.save_name.clone();
         let app_handle_progress = app_handle.clone();
-        let app_handle_complete = app_handle.clone();
         let pid = child
             .id()
             .ok_or_else(|| AppError::message("Failed to get CLI process ID"))?;
@@ -106,7 +123,7 @@ impl TaskRunner {
             read_cli_stream(stderr, task_id_stderr, app_handle_stderr, Some("[stderr] ")).await;
         });
 
-        self.spawn_wait_task(task_id, child, save_name, download_dir, app_handle_complete);
+        self.spawn_wait_task(task_id, child, save_name, download_dir);
         Ok(())
     }
 
@@ -163,43 +180,44 @@ impl TaskRunner {
         mut child: Child,
         save_name: Option<String>,
         download_dir: PathBuf,
-        app_handle: tauri::AppHandle,
     ) {
         let running_processes = Arc::clone(&self.running_processes);
+        let lifecycle_sender = self.lifecycle_sender.clone();
 
         tokio::spawn(async move {
             let result = child.wait().await;
             cleanup_running_task(&running_processes, &task_id).await;
 
-            match result {
+            let event = match result {
                 Ok(exit_status) => {
                     if exit_status.success() {
                         let output_path = find_output_file(&download_dir, &save_name);
-                        let payload = serde_json::json!({
-                            "id": task_id,
-                            "outputPath": output_path.unwrap_or_default(),
-                        });
-                        let _ = app_handle.emit("task-completed", payload);
+                        TaskLifecycleEvent::Completed {
+                            id: task_id,
+                            output_path: output_path.unwrap_or_default(),
+                        }
                     } else {
                         let error_msg = format!(
                             "Process exited with code: {}",
                             exit_status.code().unwrap_or(-1)
                         );
-                        let payload = serde_json::json!({
-                            "id": task_id,
-                            "errorMessage": error_msg,
-                        });
-                        let _ = app_handle.emit("task-failed", payload);
+                        TaskLifecycleEvent::Failed {
+                            id: task_id,
+                            error_message: error_msg,
+                        }
                     }
                 }
                 Err(e) => {
                     let error_msg = format!("Process error: {}", e);
-                    let payload = serde_json::json!({
-                        "id": task_id,
-                        "errorMessage": error_msg,
-                    });
-                    let _ = app_handle.emit("task-failed", payload);
+                    TaskLifecycleEvent::Failed {
+                        id: task_id,
+                        error_message: error_msg,
+                    }
                 }
+            };
+
+            if let Some(sender) = lifecycle_sender {
+                let _ = sender.send(event);
             }
         });
     }
@@ -220,12 +238,33 @@ impl TaskRunner {
             pending.remove(task_id).expect("pending test child")
         };
         let running_processes = Arc::clone(&self.running_processes);
+        let lifecycle_sender = self.lifecycle_sender.clone();
         let task_id = task_id.to_string();
 
         tokio::spawn(async move {
             let mut child = child;
-            let _ = child.wait().await;
+            let result = child.wait().await;
             cleanup_running_task(&running_processes, &task_id).await;
+            if let Some(sender) = lifecycle_sender {
+                let event = match result {
+                    Ok(status) if status.success() => TaskLifecycleEvent::Completed {
+                        id: task_id,
+                        output_path: String::new(),
+                    },
+                    Ok(status) => TaskLifecycleEvent::Failed {
+                        id: task_id,
+                        error_message: format!(
+                            "Process exited with code: {}",
+                            status.code().unwrap_or(-1)
+                        ),
+                    },
+                    Err(err) => TaskLifecycleEvent::Failed {
+                        id: task_id,
+                        error_message: format!("Process error: {err}"),
+                    },
+                };
+                let _ = sender.send(event);
+            }
         });
     }
 
@@ -745,10 +784,13 @@ async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
 mod tests {
     use super::{
         decode_cli_bytes_lossy, find_cli_in_ancestors, parse_progress, parse_speed, parse_threads,
-        should_emit_active_line, take_cli_segment, TaskRunner, TerminalBuffer,
+        should_emit_active_line, take_cli_segment, TaskLifecycleEvent, TaskRunner, TerminalBuffer,
     };
-    use crate::test_support::spawn_sleeping_child;
+    use crate::test_support::{spawn_sleeping_child, spawn_success_child};
     use std::fs;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tokio::time::timeout;
     use uuid::Uuid;
 
     #[test]
@@ -847,6 +889,28 @@ mod tests {
             .expect("terminate running processes");
 
         assert!(!runner.is_task_running(&task_id).await);
+    }
+
+    #[tokio::test]
+    async fn wait_task_sends_completion_through_internal_channel() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner = TaskRunner::with_lifecycle_sender(tx);
+        let task_id = "task-complete".to_string();
+        let child = spawn_success_child().await;
+
+        runner
+            .insert_running_task_for_test(task_id.clone(), child)
+            .await;
+        runner.begin_wait_for_test(&task_id).await;
+
+        let event = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("lifecycle event timeout")
+            .expect("lifecycle event");
+        assert!(matches!(
+            event,
+            TaskLifecycleEvent::Completed { id, .. } if id == task_id
+        ));
     }
 
     #[test]

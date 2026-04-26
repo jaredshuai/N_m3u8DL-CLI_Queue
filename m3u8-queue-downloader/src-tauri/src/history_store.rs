@@ -119,6 +119,11 @@ impl HistoryStore {
         let mut result = Vec::new();
 
         for chunk_meta in index.chunks.iter().rev() {
+            if remaining_skip >= chunk_meta.count {
+                remaining_skip -= chunk_meta.count;
+                continue;
+            }
+
             let chunk_path = self.status_dir(status).join(&chunk_meta.file);
             let chunk_tasks = load_chunk(&chunk_path)?;
 
@@ -488,6 +493,34 @@ mod tests {
 
         assert_eq!(page.tasks.len(), 1);
         assert_eq!(page.tasks[0].id, "task-0");
+
+        fs::remove_dir_all(path).expect("cleanup history dir");
+    }
+
+    #[test]
+    fn get_page_uses_index_counts_to_skip_unneeded_chunks() {
+        let path = temp_history_path();
+        let store = HistoryStore::new(path.clone());
+
+        for index in 0..25 {
+            store
+                .append(&build_task(index, TaskStatus::Completed))
+                .expect("append history task");
+        }
+        fs::write(path.join("completed").join("000003.json"), "{broken")
+            .expect("corrupt newest skipped chunk");
+
+        let page = store
+            .get_page(HistoryStatus::Completed, 5, 5)
+            .expect("read page after skipping newest chunk");
+
+        assert_eq!(
+            page.tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["task-19", "task-18", "task-17", "task-16", "task-15"]
+        );
 
         fs::remove_dir_all(path).expect("cleanup history dir");
     }

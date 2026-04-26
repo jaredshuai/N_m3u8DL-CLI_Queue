@@ -1,30 +1,17 @@
 import { listen } from '@tauri-apps/api/event';
-import { buildProgressPatch, normalizeTaskProgress } from './progress.js';
-import { prependHistoricalTask, completedHistory, failedHistory } from './history-store.js';
-import { loadQueueState, sessionProgress, tasks } from './queue-store.js';
+import { buildProgressPatch } from './progress.js';
+import { prependHistoricalTask } from './history-store.js';
+import { loadQueueState, tasks } from './queue-store.js';
 import { clearShutdownNotice, shutdownNotice, startShutdownCountdown } from './settings-store.js';
-import { queueTerminalActiveLine, resetTerminalActiveLines } from './terminal-live.js';
+import {
+  queueTerminalActiveLine,
+  queueTerminalCommittedLine,
+  resetTerminalLiveState,
+} from './terminal-live.js';
 
 let unlisteners = [];
 let pendingProgress = {};
 let progressTimer = null;
-
-function updateTaskList(list, taskId, updater) {
-  return list.map((task) => (task.id === taskId ? updater(task) : task));
-}
-
-function updateHistoryStore(store, taskId, updater) {
-  store.update((state) => ({
-    ...state,
-    tasks: updateTaskList(state.tasks, taskId, updater),
-  }));
-}
-
-function updateTaskEverywhere(taskId, updater) {
-  tasks.update((currentTasks) => updateTaskList(currentTasks, taskId, updater));
-  updateHistoryStore(completedHistory, taskId, updater);
-  updateHistoryStore(failedHistory, taskId, updater);
-}
 
 function flushProgress() {
   const batch = pendingProgress;
@@ -60,17 +47,7 @@ export async function setupListeners() {
 
   const u3b = await listen('task-terminal-committed-line', (event) => {
     const payload = event.payload;
-    updateTaskEverywhere(payload.id, (task) => {
-      const lines = [...(task.terminalCommittedLines ?? []), payload.line];
-      const MAX_TERMINAL_LINES = 2000;
-      return {
-        ...task,
-        terminalCommittedLines:
-          lines.length > MAX_TERMINAL_LINES
-            ? lines.slice(lines.length - MAX_TERMINAL_LINES)
-            : lines,
-      };
-    });
+    queueTerminalCommittedLine(payload.id, payload.line ?? '');
   });
 
   const u3c = await listen('task-terminal-active-line', (event) => {
@@ -111,6 +88,6 @@ export function teardownListeners() {
     progressTimer = null;
     pendingProgress = {};
   }
-  resetTerminalActiveLines();
+  resetTerminalLiveState();
   clearShutdownNotice();
 }

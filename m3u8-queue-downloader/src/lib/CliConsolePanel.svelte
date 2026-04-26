@@ -7,6 +7,8 @@
   } from './cli-output.js';
   import {
     beginTerminalStateLoad,
+    capRenderedTerminalLines,
+    MAX_RENDERED_TERMINAL_LINES,
     createTerminalLoadState,
     resolveTerminalActiveLine,
     shouldApplyTerminalResponse,
@@ -18,6 +20,7 @@
     task,
     onClose,
     overlay = false,
+    liveCommittedLines = [],
     liveActiveLine = '',
     hasLiveActiveLine = false,
   } = $props();
@@ -54,8 +57,11 @@
   let progressPct = $derived(displayProgressPercent(task?.progress));
 
   // Only use the new terminal stream model; do not merge any legacy logLines.
-  let liveCommittedLines = $derived(task?.terminalCommittedLines ?? []);
-  let mergedCommittedLines = $derived(mergeCommitted(committedLines, liveCommittedLines));
+  let mergedCommittedLines = $derived(mergeCommitted(committedLines, liveCommittedLines ?? []));
+  let renderedCommittedLines = $derived(capRenderedTerminalLines(mergedCommittedLines));
+  let hiddenRenderedLineCount = $derived(
+    Math.max(0, mergedCommittedLines.length - renderedCommittedLines.length)
+  );
 
   let displayActiveLine = $derived(
     hasLiveActiveLine ? (liveActiveLine ?? '') : resolveTerminalActiveLine(task, activeLine)
@@ -220,7 +226,12 @@
       <div class="cli-line cli-error">CLI 实况加载失败：{cliOutputError}</div>
     {/if}
     {#if mergedCommittedLines.length > 0 || displayActiveLine}
-      {#each mergedCommittedLines as line}
+      {#if hiddenRenderedLineCount > 0}
+        <div class="cli-line cli-truncated">
+          为保持界面响应，仅渲染最近 {MAX_RENDERED_TERMINAL_LINES} 行；更早输出仍保留在分页总数中。
+        </div>
+      {/if}
+      {#each renderedCommittedLines as line}
         <div class="cli-line">{line}</div>
       {/each}
       {#if displayActiveLine}
@@ -452,6 +463,11 @@
 
   .cli-error {
     color: var(--color-status-fail);
+  }
+
+  .cli-truncated {
+    color: var(--color-text-disabled);
+    font-style: italic;
   }
 
   @media (max-width: 900px) {
