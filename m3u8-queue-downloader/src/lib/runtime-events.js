@@ -31,6 +31,14 @@ function flushProgress() {
   );
 }
 
+function flushPendingProgress() {
+  if (Object.keys(pendingProgress).length === 0) return;
+  if (progressTimer) {
+    clearTimeout(progressTimer);
+  }
+  flushProgress();
+}
+
 export async function setupListeners() {
   const u1 = await listen('task-progress', (event) => {
     const payload = event.payload;
@@ -48,6 +56,7 @@ export async function setupListeners() {
   });
 
   const u2 = await listen('queue-state-changed', async () => {
+    flushPendingProgress();
     await loadQueueState();
   });
 

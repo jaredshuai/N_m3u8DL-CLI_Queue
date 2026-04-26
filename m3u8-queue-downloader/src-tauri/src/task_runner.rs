@@ -57,6 +57,13 @@ enum KillProcessResult {
     AlreadyExited,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct ProgressSnapshot {
+    progress: Option<f32>,
+    speed: Option<String>,
+    threads: Option<String>,
+}
+
 impl TaskRunner {
     pub fn new() -> Self {
         Self {
@@ -381,6 +388,7 @@ async fn read_cli_stream<R>(
 {
     let mut buffer = [0_u8; 4096];
     let mut term = TerminalBuffer::new();
+    let mut last_progress: Option<ProgressSnapshot> = None;
 
     loop {
         match stream.read(&mut buffer).await {
@@ -389,12 +397,24 @@ async fn read_cli_stream<R>(
                 term.feed(&buffer[..n]);
 
                 for line in term.take_committed() {
-                    emit_committed_line(&line, &task_id, &output_sender, log_prefix);
+                    emit_committed_line(
+                        &line,
+                        &task_id,
+                        &output_sender,
+                        log_prefix,
+                        &mut last_progress,
+                    );
                 }
 
                 if should_emit_active_line(log_prefix) {
                     let active = term.active_line().trim().to_string();
-                    emit_active_line(&active, &task_id, &output_sender, log_prefix);
+                    emit_active_line(
+                        &active,
+                        &task_id,
+                        &output_sender,
+                        log_prefix,
+                        &mut last_progress,
+                    );
                 }
             }
             Err(_) => break,
@@ -403,10 +423,16 @@ async fn read_cli_stream<R>(
 
     term.finish();
     for line in term.take_committed() {
-        emit_committed_line(&line, &task_id, &output_sender, log_prefix);
+        emit_committed_line(
+            &line,
+            &task_id,
+            &output_sender,
+            log_prefix,
+            &mut last_progress,
+        );
     }
     if should_emit_active_line(log_prefix) {
-        emit_active_line("", &task_id, &output_sender, log_prefix);
+        emit_active_line("", &task_id, &output_sender, log_prefix, &mut last_progress);
     }
 }
 
@@ -415,27 +441,14 @@ fn emit_committed_line(
     task_id: &str,
     output_sender: &Option<mpsc::UnboundedSender<TaskOutputEvent>>,
     log_prefix: Option<&str>,
+    last_progress: &mut Option<ProgressSnapshot>,
 ) {
     if segment.is_empty() {
         return;
     }
 
     if log_prefix.is_none() {
-        let progress = parse_progress(segment);
-        let speed = parse_speed(segment);
-        let threads = parse_threads(segment);
-
-        if progress.is_some() || speed.is_some() || threads.is_some() {
-            send_output_event(
-                output_sender,
-                TaskOutputEvent::Progress {
-                    id: task_id.to_string(),
-                    progress,
-                    speed,
-                    threads,
-                },
-            );
-        }
+        emit_progress_if_changed(output_sender, task_id, segment, last_progress);
     }
 
     let line = if let Some(prefix) = log_prefix {
@@ -469,23 +482,10 @@ fn emit_active_line(
     task_id: &str,
     output_sender: &Option<mpsc::UnboundedSender<TaskOutputEvent>>,
     log_prefix: Option<&str>,
+    last_progress: &mut Option<ProgressSnapshot>,
 ) {
     if !line.is_empty() && log_prefix.is_none() {
-        let progress = parse_progress(line);
-        let speed = parse_speed(line);
-        let threads = parse_threads(line);
-
-        if progress.is_some() || speed.is_some() || threads.is_some() {
-            send_output_event(
-                output_sender,
-                TaskOutputEvent::Progress {
-                    id: task_id.to_string(),
-                    progress,
-                    speed,
-                    threads,
-                },
-            );
-        }
+        emit_progress_if_changed(output_sender, task_id, line, last_progress);
     }
 
     let prefixed = if line.is_empty() {
@@ -503,6 +503,46 @@ fn emit_active_line(
             active_line: prefixed,
         },
     );
+}
+
+fn emit_progress_if_changed(
+    output_sender: &Option<mpsc::UnboundedSender<TaskOutputEvent>>,
+    task_id: &str,
+    segment: &str,
+    last_progress: &mut Option<ProgressSnapshot>,
+) {
+    let Some(snapshot) = parse_progress_snapshot(segment) else {
+        return;
+    };
+
+    if last_progress.as_ref() == Some(&snapshot) {
+        return;
+    }
+
+    *last_progress = Some(snapshot.clone());
+    send_output_event(
+        output_sender,
+        TaskOutputEvent::Progress {
+            id: task_id.to_string(),
+            progress: snapshot.progress,
+            speed: snapshot.speed,
+            threads: snapshot.threads,
+        },
+    );
+}
+
+fn parse_progress_snapshot(segment: &str) -> Option<ProgressSnapshot> {
+    let snapshot = ProgressSnapshot {
+        progress: parse_progress(segment),
+        speed: parse_speed(segment),
+        threads: parse_threads(segment),
+    };
+
+    if snapshot.progress.is_some() || snapshot.speed.is_some() || snapshot.threads.is_some() {
+        Some(snapshot)
+    } else {
+        None
+    }
 }
 
 fn send_output_event(
@@ -720,6 +760,32 @@ mod tests {
             id: task_id,
             line: line.to_string(),
         }));
+    }
+
+    #[tokio::test]
+    async fn cli_stream_deduplicates_active_and_committed_progress() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let task_id = "task-progress-dedupe".to_string();
+        let line = "Progress: 1/4 (25.00%) -- 1.00MB/4.00MB (512 KB/s @ 00:00:06)";
+
+        tokio::spawn(async move {
+            writer
+                .write_all(format!("{line}\r").as_bytes())
+                .await
+                .expect("write cli output");
+        });
+
+        read_cli_stream(reader, task_id, Some(tx), None).await;
+
+        let mut progress_events = 0;
+        while let Some(event) = rx.recv().await {
+            if matches!(event, TaskOutputEvent::Progress { .. }) {
+                progress_events += 1;
+            }
+        }
+
+        assert_eq!(progress_events, 1);
     }
 
     #[tokio::test]

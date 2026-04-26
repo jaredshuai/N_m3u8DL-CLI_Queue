@@ -8,6 +8,8 @@ import {
   createCliConsoleState,
   createTerminalLoadState,
   findCliConsoleTask,
+  findCommittedLineOverlap,
+  mergeTerminalCommittedLines,
   openCliConsole,
   resolveTerminalActiveLine,
   shouldApplyTerminalResponse,
@@ -77,6 +79,23 @@ test('capRenderedTerminalLines keeps only the newest render window', () => {
   const lines = ['line-1', 'line-2', 'line-3', 'line-4'];
 
   assert.deepEqual(capRenderedTerminalLines(lines, 2), ['line-3', 'line-4']);
+});
+
+test('mergeTerminalCommittedLines removes persisted/live boundary overlap', () => {
+  assert.deepEqual(
+    mergeTerminalCommittedLines(
+      ['line-1', 'line-2', 'line-3'],
+      ['line-2', 'line-3', 'line-4'],
+    ),
+    ['line-1', 'line-2', 'line-3', 'line-4'],
+  );
+});
+
+test('findCommittedLineOverlap scans linearly for suffix-prefix overlap', () => {
+  const persisted = Array.from({ length: 200 }, (_, index) => `persisted-${index}`);
+  const live = ['persisted-198', 'persisted-199', 'live-1'];
+
+  assert.equal(findCommittedLineOverlap(persisted, live), 2);
 });
 
 test('resolveTerminalActiveLine shows loaded active line when live field is still empty', () => {

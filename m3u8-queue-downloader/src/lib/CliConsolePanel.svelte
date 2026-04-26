@@ -10,6 +10,7 @@
     capRenderedTerminalLines,
     MAX_RENDERED_TERMINAL_LINES,
     createTerminalLoadState,
+    mergeTerminalCommittedLines,
     resolveTerminalActiveLine,
     shouldApplyTerminalResponse,
     shouldStartTerminalStateLoad,
@@ -57,7 +58,9 @@
   let progressPct = $derived(displayProgressPercent(task?.progress));
 
   // Only use the new terminal stream model; do not merge any legacy logLines.
-  let mergedCommittedLines = $derived(mergeCommitted(committedLines, liveCommittedLines ?? []));
+  let mergedCommittedLines = $derived(
+    mergeTerminalCommittedLines(committedLines, liveCommittedLines ?? [])
+  );
   let renderedCommittedLines = $derived(capRenderedTerminalLines(mergedCommittedLines));
   let hiddenRenderedLineCount = $derived(
     Math.max(0, mergedCommittedLines.length - renderedCommittedLines.length)
@@ -71,22 +74,6 @@
   let displayLineCount = $derived(
     Math.max(cliOutputTotal ?? 0, mergedCommittedLines.length) + (displayActiveLine ? 1 : 0)
   );
-
-  function mergeCommitted(persisted, live) {
-    if (persisted.length === 0) return live;
-    if (live.length === 0) return persisted;
-
-    const maxOverlap = Math.min(persisted.length, live.length);
-    for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
-      const pSuffix = persisted.slice(persisted.length - overlap);
-      const lPrefix = live.slice(0, overlap);
-      if (pSuffix.length === lPrefix.length && pSuffix.every((v, i) => v === lPrefix[i])) {
-        return [...persisted, ...live.slice(overlap)];
-      }
-    }
-
-    return [...persisted, ...live];
-  }
 
   async function loadTerminalState(taskId, taskStatus) {
     terminalLoadState = beginTerminalStateLoad(terminalLoadState, {

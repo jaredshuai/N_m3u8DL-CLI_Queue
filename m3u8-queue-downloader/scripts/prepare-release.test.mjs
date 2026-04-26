@@ -173,6 +173,84 @@ test('replaceArtifactsDirectoryFromDownloadedFiles falls back when destination r
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
+test('replaceArtifactsDirectoryFromDownloadedFiles preserves backup when rollback rename fails', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-sync-'));
+  const testContext = buildTempArtifactsContext(tempRoot);
+  const source = path.join(tempRoot, 'downloaded');
+  const destination = path.join(testContext.defaultArtifactsDir, 'latest');
+  let backupPath = null;
+  writeValidDownloadedArtifact(source);
+  fs.mkdirSync(destination, { recursive: true });
+  fs.writeFileSync(path.join(destination, 'old.txt'), 'old package');
+
+  assert.throws(
+    () => replaceArtifactsDirectoryFromDownloadedFiles(source, destination, {
+      ...testContext,
+      renameSync(from, to) {
+        if (path.resolve(from) === path.resolve(destination)) {
+          backupPath = to;
+          fs.renameSync(from, to);
+          return;
+        }
+
+        if (path.resolve(to) === path.resolve(destination)) {
+          throw new Error(path.resolve(from) === path.resolve(backupPath)
+            ? 'rollback failed'
+            : 'replace failed');
+        }
+
+        fs.renameSync(from, to);
+      },
+    }),
+    /failed to restore backup/i,
+  );
+
+  assert(backupPath, 'expected backup path to be captured');
+  assert.equal(fs.readFileSync(path.join(backupPath, 'old.txt'), 'utf8'), 'old package');
+  assert.equal(fs.existsSync(destination), false);
+
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('replaceArtifactsDirectoryFromDownloadedFiles rolls back failed in-place replacement', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-sync-'));
+  const testContext = buildTempArtifactsContext(tempRoot);
+  const source = path.join(tempRoot, 'downloaded');
+  const destination = path.join(testContext.defaultArtifactsDir, 'latest');
+  let replacementFailed = false;
+  writeValidDownloadedArtifact(source);
+  fs.mkdirSync(destination, { recursive: true });
+  fs.writeFileSync(path.join(destination, 'old.txt'), 'old package');
+
+  assert.throws(
+    () => replaceArtifactsDirectoryFromDownloadedFiles(source, destination, {
+      ...testContext,
+      renameSync(from, to) {
+        if (path.resolve(from) === path.resolve(destination)) {
+          const err = new Error(`blocked rename to ${to}`);
+          err.code = 'EPERM';
+          throw err;
+        }
+        fs.renameSync(from, to);
+      },
+      replaceDirectoryContentsInPlace(from, to) {
+        if (!replacementFailed && path.resolve(to) === path.resolve(destination)) {
+          replacementFailed = true;
+          fs.writeFileSync(path.join(destination, 'partial.txt'), 'partial');
+          throw new Error('copy failed');
+        }
+        replaceDirectoryContentsInPlace(from, to);
+      },
+    }),
+    /copy failed/,
+  );
+
+  assert.equal(fs.readFileSync(path.join(destination, 'old.txt'), 'utf8'), 'old package');
+  assert.equal(fs.existsSync(path.join(destination, 'partial.txt')), false);
+
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
 test('replaceDirectoryContentsInPlace removes stale files without replacing the root directory', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-sync-'));
   const source = path.join(tempRoot, 'source');

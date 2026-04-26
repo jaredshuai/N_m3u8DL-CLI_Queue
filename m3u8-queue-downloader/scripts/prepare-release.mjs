@@ -363,6 +363,8 @@ function downloadArtifactToDirectory(repo, runId, artifactName, destination) {
 export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination, context = {}) {
   const resolved = resolveAllowedArtifactsDirectory(destination, context);
   const renameSync = context.renameSync ?? fs.renameSync;
+  const replaceInPlace = context.replaceDirectoryContentsInPlace ?? replaceDirectoryContentsInPlace;
+  const validateArtifacts = context.validateDownloadedArtifactContents ?? validateDownloadedArtifactContents;
   const files = listFilesRecursive(source);
   if (files.length === 0) {
     throw new Error('Downloaded artifact did not contain any files');
@@ -383,7 +385,7 @@ export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination
       fs.copyFileSync(file, targetPath);
     }
 
-    validateDownloadedArtifactContents(stagingDir);
+    validateArtifacts(stagingDir);
 
     if (fs.existsSync(resolved)) {
       try {
@@ -393,8 +395,13 @@ export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination
         if (!isRecoverableDirectoryRenameError(err)) {
           throw err;
         }
-        replaceDirectoryContentsInPlace(stagingDir, resolved);
-        validateDownloadedArtifactContents(resolved);
+        replaceArtifactsContentsInPlaceWithRollback(
+          stagingDir,
+          resolved,
+          parent,
+          replaceInPlace,
+          validateArtifacts,
+        );
         replacedInPlace = true;
       }
     }
@@ -404,8 +411,15 @@ export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination
         renameSync(stagingDir, resolved);
       } catch (err) {
         if (backupCreated && !fs.existsSync(resolved)) {
-          renameSync(backupDir, resolved);
-          backupCreated = false;
+          try {
+            renameSync(backupDir, resolved);
+            backupCreated = false;
+          } catch (rollbackErr) {
+            backupCreated = false;
+            throw new Error(
+              `Failed to replace artifacts (${err.message}) and failed to restore backup at ${backupDir}: ${rollbackErr.message}`,
+            );
+          }
         }
         throw err;
       }
@@ -419,7 +433,45 @@ export function replaceArtifactsDirectoryFromDownloadedFiles(source, destination
     return listFilesRecursive(resolved);
   } finally {
     fs.rmSync(stagingDir, { recursive: true, force: true });
+    if (backupCreated && fs.existsSync(resolved)) {
+      fs.rmSync(backupDir, { recursive: true, force: true });
+    }
+  }
+}
+
+function replaceArtifactsContentsInPlaceWithRollback(
+  source,
+  destination,
+  parent,
+  replaceInPlace,
+  validateArtifacts,
+) {
+  const backupDir = fs.mkdtempSync(path.join(parent, `.${path.basename(destination)}-inplace-backup-`));
+  let backupCreated = false;
+  let preserveBackup = false;
+
+  try {
+    if (fs.existsSync(destination)) {
+      replaceInPlace(destination, backupDir);
+      backupCreated = true;
+    }
+
+    replaceInPlace(source, destination);
+    validateArtifacts(destination);
+  } catch (err) {
     if (backupCreated) {
+      try {
+        replaceInPlace(backupDir, destination);
+      } catch (rollbackErr) {
+        preserveBackup = true;
+        throw new Error(
+          `In-place artifact replacement failed (${err.message}) and failed to restore backup at ${backupDir}: ${rollbackErr.message}`,
+        );
+      }
+    }
+    throw err;
+  } finally {
+    if (!preserveBackup) {
       fs.rmSync(backupDir, { recursive: true, force: true });
     }
   }
@@ -560,6 +612,7 @@ function hasArtifactsPathSegment(relativePath) {
 
 function normalizeDownloadedPath(relativePath) {
   const normalized = relativePath.split(path.sep).join('/');
+  let stripped = normalized;
   const prefixes = [
     '.portable-dist/',
     'src-tauri/target/release/bundle/nsis/',
@@ -567,15 +620,31 @@ function normalizeDownloadedPath(relativePath) {
 
   for (const prefix of prefixes) {
     if (normalized.startsWith(prefix)) {
-      return normalized.slice(prefix.length).split('/').join(path.sep);
+      stripped = normalized.slice(prefix.length);
+      break;
     }
   }
 
-  return relativePath;
+  const portablePath = normalizePortableRelativePath(stripped);
+  if (isUnsafeRelativePath(portablePath)) {
+    throw new Error(`Refusing unsafe artifact path: ${relativePath}`);
+  }
+
+  return portablePath.split('/').join(path.sep);
 }
 
 function normalizePortableRelativePath(relativePath) {
   return relativePath.split(path.sep).join('/');
+}
+
+function isUnsafeRelativePath(relativePath) {
+  if (!relativePath || path.isAbsolute(relativePath) || path.win32.isAbsolute(relativePath)) {
+    return true;
+  }
+
+  return relativePath
+    .split('/')
+    .some((segment) => segment === '..' || segment === '');
 }
 
 function parentRelativeDirectories(relativePath) {
