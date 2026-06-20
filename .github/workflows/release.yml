@@ -65,11 +65,11 @@ jobs:
       - name: Build bundled legacy CLI
         shell: pwsh
         run: |
-          nuget restore N_m3u8DL-CLI.sln
-          msbuild N_m3u8DL-CLI.sln /p:Configuration=Release /p:DebugSymbols=false /p:DebugType=None
+          nuget restore cli/N_m3u8DL-CLI.sln
+          msbuild cli/N_m3u8DL-CLI.sln /p:Configuration=Release /p:DebugSymbols=false /p:DebugType=None
           $ffmpeg = (Get-Command ffmpeg).Source
           Push-Location m3u8-queue-downloader
-          node scripts/stage-bundled-resources.mjs --cli ../N_m3u8DL-CLI/bin/Release/N_m3u8DL-CLI.exe --ffmpeg $ffmpeg
+          node scripts/stage-bundled-resources.mjs --cli ../cli/N_m3u8DL-CLI/bin/Release/N_m3u8DL-CLI.exe --ffmpeg $ffmpeg
           node scripts/validate-bundled-resources.mjs
           Pop-Location
 
