@@ -1,0 +1,237 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  beginTerminalStateLoad,
+  buildTerminalView,
+  capRenderedTerminalLines,
+  closeCliConsole,
+  createTerminalCommittedLineMerger,
+  createCliConsoleState,
+  createTerminalLoadState,
+  findCliConsoleTask,
+  findCommittedLineOverlap,
+  mergeTerminalCommittedLines,
+  openCliConsole,
+  resolveTerminalActiveLine,
+  shouldApplyCliOutputPageResponse,
+  shouldApplyTerminalResponse,
+  shouldReloadTerminalState,
+  shouldStartTerminalStateLoad,
+} from './cli-console.js';
+
+test('openCliConsole opens the panel for a task id', () => {
+  const state = openCliConsole(createCliConsoleState(), 'task-1');
+
+  assert.deepEqual(state, {
+    open: true,
+    taskId: 'task-1',
+  });
+});
+
+test('closeCliConsole clears the selected task', () => {
+  const state = closeCliConsole({
+    open: true,
+    taskId: 'task-1',
+  });
+
+  assert.deepEqual(state, {
+    open: false,
+    taskId: null,
+  });
+});
+
+test('findCliConsoleTask resolves a task from active and historical lists', () => {
+  const state = openCliConsole(createCliConsoleState(), 'task-2');
+  const task = findCliConsoleTask(state, {
+    tasks: [{ id: 'task-1' }],
+    completedTasks: [{ id: 'task-2' }],
+    failedTasks: [{ id: 'task-3' }],
+  });
+
+  assert.deepEqual(task, { id: 'task-2' });
+});
+
+test('buildTerminalView separates committed lines from active line', () => {
+  const view = buildTerminalView({
+    terminalCommittedLines: ['Starting download', 'Connecting...'],
+    terminalActiveLine: 'Progress: 50/100 (50.00%)',
+  });
+
+  assert.deepEqual(view.committedLines, ['Starting download', 'Connecting...']);
+  assert.equal(view.activeLine, 'Progress: 50/100 (50.00%)');
+});
+
+test('buildTerminalView returns empty state for null task', () => {
+  const view = buildTerminalView(null);
+
+  assert.deepEqual(view.committedLines, []);
+  assert.equal(view.activeLine, '');
+});
+
+test('buildTerminalView handles task with no active line', () => {
+  const view = buildTerminalView({
+    terminalCommittedLines: ['line-1', 'line-2'],
+  });
+
+  assert.deepEqual(view.committedLines, ['line-1', 'line-2']);
+  assert.equal(view.activeLine, '');
+});
+
+test('capRenderedTerminalLines keeps only the newest render window', () => {
+  const lines = ['line-1', 'line-2', 'line-3', 'line-4'];
+
+  assert.deepEqual(capRenderedTerminalLines(lines, 2), ['line-3', 'line-4']);
+});
+
+test('mergeTerminalCommittedLines removes persisted/live boundary overlap', () => {
+  assert.deepEqual(
+    mergeTerminalCommittedLines(
+      ['line-1', 'line-2', 'line-3'],
+      ['line-2', 'line-3', 'line-4'],
+    ),
+    ['line-1', 'line-2', 'line-3', 'line-4'],
+  );
+});
+
+test('findCommittedLineOverlap scans linearly for suffix-prefix overlap', () => {
+  const persisted = Array.from({ length: 200 }, (_, index) => `persisted-${index}`);
+  const live = ['persisted-198', 'persisted-199', 'live-1'];
+
+  assert.equal(findCommittedLineOverlap(persisted, live), 2);
+});
+
+test('createTerminalCommittedLineMerger reuses overlap while live lines append', () => {
+  let overlapChecks = 0;
+  const merge = createTerminalCommittedLineMerger({
+    findOverlap() {
+      overlapChecks += 1;
+      return 2;
+    },
+  });
+  const persisted = ['line-1', 'line-2', 'line-3'];
+  const firstLive = ['line-2', 'line-3', 'line-4'];
+  const appendedLive = ['line-2', 'line-3', 'line-4', 'line-5'];
+
+  assert.deepEqual(merge(persisted, firstLive), ['line-1', 'line-2', 'line-3', 'line-4']);
+  assert.deepEqual(merge(persisted, appendedLive), [
+    'line-1',
+    'line-2',
+    'line-3',
+    'line-4',
+    'line-5',
+  ]);
+  assert.equal(overlapChecks, 1);
+
+  assert.deepEqual(merge(['older', ...persisted], appendedLive), [
+    'older',
+    'line-1',
+    'line-2',
+    'line-3',
+    'line-4',
+    'line-5',
+  ]);
+  assert.equal(overlapChecks, 2);
+});
+
+test('createTerminalCommittedLineMerger computes overlap when live lines first arrive', () => {
+  const merge = createTerminalCommittedLineMerger();
+  const persisted = ['line-1', 'line-2', 'line-3'];
+
+  assert.deepEqual(merge(persisted, []), persisted);
+  assert.deepEqual(merge(persisted, ['line-3', 'line-4']), [
+    'line-1',
+    'line-2',
+    'line-3',
+    'line-4',
+  ]);
+});
+
+test('resolveTerminalActiveLine shows loaded active line when live field is still empty', () => {
+  const activeLine = resolveTerminalActiveLine(
+    { id: 'task-1', terminalActiveLine: '' },
+    'Progress: 126/1095 (11.51%)'
+  );
+
+  assert.equal(activeLine, 'Progress: 126/1095 (11.51%)');
+});
+
+test('resolveTerminalActiveLine falls back when live field is absent', () => {
+  const activeLine = resolveTerminalActiveLine(
+    { id: 'task-1' },
+    'Progress: 126/1095 (11.51%)'
+  );
+
+  assert.equal(activeLine, 'Progress: 126/1095 (11.51%)');
+});
+
+test('shouldReloadTerminalState reloads when task id changes', () => {
+  assert.equal(
+    shouldReloadTerminalState({ id: 'task-2', status: 'downloading' }, 'task-1', 'downloading'),
+    true
+  );
+});
+
+test('shouldReloadTerminalState reloads when same task changes status', () => {
+  assert.equal(
+    shouldReloadTerminalState({ id: 'task-1', status: 'completed' }, 'task-1', 'downloading'),
+    true
+  );
+});
+
+test('shouldReloadTerminalState skips reload when task id and status are unchanged', () => {
+  assert.equal(
+    shouldReloadTerminalState({ id: 'task-1', status: 'downloading' }, 'task-1', 'downloading'),
+    false
+  );
+});
+
+test('shouldApplyTerminalResponse accepts only the latest request token', () => {
+  assert.equal(shouldApplyTerminalResponse(3, 3), true);
+  assert.equal(shouldApplyTerminalResponse(2, 3), false);
+});
+
+test('shouldApplyCliOutputPageResponse rejects stale task or request responses', () => {
+  assert.equal(
+    shouldApplyCliOutputPageResponse({
+      responseTaskId: 'task-1',
+      currentTaskId: 'task-1',
+      requestId: 3,
+      activeRequestId: 3,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldApplyCliOutputPageResponse({
+      responseTaskId: 'task-1',
+      currentTaskId: 'task-2',
+      requestId: 3,
+      activeRequestId: 3,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldApplyCliOutputPageResponse({
+      responseTaskId: 'task-1',
+      currentTaskId: 'task-1',
+      requestId: 2,
+      activeRequestId: 3,
+    }),
+    false,
+  );
+});
+
+test('terminal load state marks an in-flight task as already requested', () => {
+  const task = { id: 'task-1', status: 'downloading' };
+  let loadState = createTerminalLoadState();
+
+  assert.equal(shouldStartTerminalStateLoad(task, loadState), true);
+
+  loadState = beginTerminalStateLoad(loadState, task);
+
+  assert.equal(shouldStartTerminalStateLoad(task, loadState), false);
+  assert.equal(
+    shouldStartTerminalStateLoad({ ...task, status: 'completed' }, loadState),
+    true,
+  );
+  assert.equal(loadState.requestId, 1);
+});

@@ -1,0 +1,16 @@
+pub(crate) mod app_bootstrap;
+pub(crate) mod dependency_graph;
+pub(crate) mod diagnostics_facade;
+pub(crate) mod download_directory_command_facade;
+pub(crate) mod event_handlers;
+pub(crate) mod exit_command_facade;
+pub(crate) mod history_command_facade;
+pub(crate) mod pending_history_facade;
+pub(crate) mod pending_history_worker;
+pub(crate) mod queue_command_facade;
+pub(crate) mod read_model_query_facade;
+pub(crate) mod runtime_facade;
+pub(crate) mod settings_command_facade;
+pub(crate) mod tauri_commands;
+pub(crate) mod tray;
+pub(crate) mod window_close;

@@ -1,0 +1,15 @@
+# rustfmt configuration
+#
+# This file exists to make the project's formatting choice explicit and stable
+# across contributors and toolchains, rather than relying on the implicit
+# rustfmt defaults. New code should be run through `cargo fmt`.
+#
+# Values below mirror the existing code's conventions (max_width=100 default,
+# grouped `use {..}` imports, edition 2021). No options here change how the
+# already-committed code is formatted — they only lock in the current style so
+# drift is caught by `cargo fmt --check` going forward.
+
+edition = "2021"
+
+# Omit the field name when it matches the local variable: `Foo { x }` not `Foo { x: x }`.
+use_field_init_shorthand = true

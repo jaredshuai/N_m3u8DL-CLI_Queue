@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /m3u8-queue-downloader
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directory: /m3u8-queue-downloader/src-tauri
+    schedule:
+      interval: weekly
