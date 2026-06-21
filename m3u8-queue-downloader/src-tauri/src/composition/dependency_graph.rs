@@ -4,11 +4,9 @@ use crate::application::history_orchestrator::HistoryPorts;
 use crate::application::queue_mutation_orchestrator::QueueMutationPorts;
 use crate::application::queue_query_orchestrator::QueueQueryPorts;
 use crate::application::queue_scheduling_orchestrator::QueueSchedulingPorts;
-use crate::application::queue_start_orchestrator::QueueStartPorts;
 use crate::application::settings_orchestrator::SettingsPorts;
 use crate::application::settings_query_orchestrator::SettingsQueryPorts;
 use crate::application::task_creation_orchestrator::TaskCreationPorts;
-use crate::application::task_lifecycle_orchestrator::TaskLifecyclePorts;
 use crate::application::task_output_event_orchestrator::TaskOutputEventPorts;
 use crate::application::terminal_history_orchestrator::TerminalHistoryPorts;
 use crate::application::terminal_output_orchestrator::TerminalOutputPorts;
@@ -97,15 +95,6 @@ impl DependencyGraph {
         )
     }
 
-    pub(in crate::composition) fn queue_start_orchestrator<'a>(
-        &'a self,
-        events: &'a dyn FrontendEventPublisher,
-        process_runner: &'a dyn TaskProcessRunner,
-    ) -> QueueStartPorts<'a> {
-        let scheduling_ports = self.queue_scheduling_orchestrator(events, process_runner);
-        QueueStartPorts::new(scheduling_ports, self.shutdown_scheduler.as_ref(), events)
-    }
-
     pub(in crate::composition) fn queue_mutation_orchestrator<'a>(
         &'a self,
         events: &'a dyn FrontendEventPublisher,
@@ -150,15 +139,6 @@ impl DependencyGraph {
 
     pub(in crate::composition) fn terminal_output_orchestrator(&self) -> TerminalOutputPorts {
         TerminalOutputPorts::new(self.terminal_output_repository.clone())
-    }
-
-    pub(in crate::composition) fn task_lifecycle_orchestrator<'a>(
-        &'a self,
-        events: &'a dyn FrontendEventPublisher,
-        process_runner: &'a dyn TaskProcessRunner,
-    ) -> TaskLifecyclePorts<'a> {
-        let scheduling_ports = self.queue_scheduling_orchestrator(events, process_runner);
-        TaskLifecyclePorts::new(scheduling_ports)
     }
 
     pub(in crate::composition) fn settings_orchestrator<'a>(

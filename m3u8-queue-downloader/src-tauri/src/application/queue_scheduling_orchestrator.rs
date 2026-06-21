@@ -10,7 +10,9 @@ use crate::application::queue_scheduler_outcomes::{
     ExitedChildFailureOutcome, ScheduleNextOutcome, ScheduleNextRequest, StartFailureOutcome,
 };
 use crate::application::settings::AppSettings;
-use crate::application::shutdown_scheduler_outcomes::ShutdownCountdownStartDecision;
+use crate::application::shutdown_scheduler_outcomes::{
+    ShutdownCountdownStartDecision, ShutdownResetOutcome,
+};
 use crate::application::task_creation_orchestrator::TaskCreationPorts;
 use crate::application::task_process_start_request::TaskProcessStartRequest;
 use crate::application::task_snapshot::TaskSnapshot;
@@ -392,9 +394,14 @@ impl<'a> QueueSchedulingPorts<'a> {
         !self.has_live_work().await
     }
 
-    /// High-level queue-start intent that owns start/pause sequencing, scheduling,
-    /// and queue-state notification.
     pub(crate) async fn handle_queue_start(&self) -> AppResult<()> {
+        let outcome = self.shutdown_scheduler.reset_for_new_run()?;
+        match outcome {
+            ShutdownResetOutcome::CountdownCancelled => {
+                self.events.shutdown_countdown_cancelled();
+            }
+            ShutdownResetOutcome::NoCountdown => {}
+        }
         self.drive_queue_start().await
     }
 

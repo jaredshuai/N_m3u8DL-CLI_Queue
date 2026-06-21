@@ -66,7 +66,6 @@ mod tests {
     use crate::application::shutdown_scheduler_outcomes::{
         ShutdownCountdownStartDecision, ShutdownResetOutcome,
     };
-    use crate::application::task_lifecycle_orchestrator::TaskLifecyclePorts;
     use crate::application::task_output_event_orchestrator::TaskOutputEventPorts;
     use crate::application::task_process_events::TaskOutputEvent;
     use crate::application::task_process_start_request::TaskProcessStartRequest;
@@ -1056,9 +1055,7 @@ mod tests {
             &diagnostics,
             &events,
         );
-        let lifecycle_ports = TaskLifecyclePorts::new(scheduling_ports);
-
-        lifecycle_ports
+        scheduling_ports
             .handle_completed_child_exit(&task.id, "D:/Videos/test.mp4")
             .await;
 

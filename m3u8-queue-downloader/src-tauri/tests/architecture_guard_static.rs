@@ -124,10 +124,6 @@ fn application_sources() -> Vec<(&'static str, &'static str)> {
             include_str!("../src/application/queue_scheduling_orchestrator.rs"),
         ),
         (
-            "application/queue_start_orchestrator.rs",
-            include_str!("../src/application/queue_start_orchestrator.rs"),
-        ),
-        (
             "application/queue_state_snapshot.rs",
             include_str!("../src/application/queue_state_snapshot.rs"),
         ),
@@ -154,10 +150,6 @@ fn application_sources() -> Vec<(&'static str, &'static str)> {
         (
             "application/task_creation_orchestrator.rs",
             include_str!("../src/application/task_creation_orchestrator.rs"),
-        ),
-        (
-            "application/task_lifecycle_orchestrator.rs",
-            include_str!("../src/application/task_lifecycle_orchestrator.rs"),
         ),
         (
             "application/task_output_event_orchestrator.rs",
@@ -616,13 +608,7 @@ fn dependency_graph_is_owned_by_composition_layer() {
             && !queue_command_facade_source.contains("queue_repository.as_ref()"),
         "dependency graph should centralize queue mutation port wiring"
     );
-    assert!(
-        dependency_graph_source.contains("fn queue_start_orchestrator")
-            && dependency_graph_source.contains("QueueStartPorts::new")
-            && queue_command_facade_source.contains("queue_start_orchestrator")
-            && !queue_command_facade_source.contains("shutdown_scheduler.as_ref()"),
-        "dependency graph should centralize queue start port wiring"
-    );
+
     assert!(
         dependency_graph_source.contains("fn queue_query_orchestrator")
             && dependency_graph_source.contains("QueueQueryPorts::new"),
@@ -639,21 +625,7 @@ fn dependency_graph_is_owned_by_composition_layer() {
             && dependency_graph_source.contains("TerminalOutputPorts::new"),
         "dependency graph should centralize terminal output query port wiring"
     );
-    assert!(
-        dependency_graph_source.contains("fn task_lifecycle_orchestrator")
-            && dependency_graph_source.contains("TaskLifecyclePorts::new")
-            && !runtime_facade_source.contains("TaskLifecyclePorts::new")
-            && !runtime_facade_source.contains("terminal_output_repository.as_ref()")
-            && !runtime_facade_source.contains("shutdown_scheduler.as_ref()"),
-        "dependency graph should centralize task lifecycle port wiring"
-    );
-    assert!(
-        dependency_graph_source.contains("TaskLifecyclePorts::new(scheduling_ports)")
-            && !dependency_graph_source.contains(
-                "TaskLifecyclePorts::new(scheduling_ports, self.shutdown_scheduler.as_ref())"
-            ),
-        "TaskLifecyclePorts wiring should not receive ShutdownScheduler directly; QueueSchedulingPorts owns terminal failure marking"
-    );
+
     assert!(
         dependency_graph_source.contains("fn settings_orchestrator")
             && dependency_graph_source.contains("SettingsPorts::new")
@@ -733,9 +705,9 @@ fn dependency_graph_is_owned_by_composition_layer() {
         "read model query facade should own adapter-facing query wiring"
     );
     assert!(
-        runtime_facade_source.contains("TaskLifecyclePorts")
+        runtime_facade_source.contains("QueueSchedulingPorts")
             && runtime_facade_source.contains("TaskOutputEventPorts")
-            && runtime_facade_source.contains("task_lifecycle_orchestrator")
+            && runtime_facade_source.contains("queue_scheduling_orchestrator")
             && runtime_facade_source.contains("task_output_event_orchestrator"),
         "runtime facade should own adapter-facing runtime port wiring"
     );
@@ -815,11 +787,7 @@ fn command_and_tray_adapters_delegate_queue_commands_to_queue_command_facade() {
             && dependency_graph_source.contains("TaskCreationPorts::new"),
         "queue command facade should obtain task creation dependencies through the centralized DependencyGraph port bundle"
     );
-    assert!(
-        queue_command_facade_source.contains("queue_start_orchestrator")
-            && dependency_graph_source.contains("QueueStartPorts::new"),
-        "queue command facade should obtain start dependencies through the centralized DependencyGraph port bundle"
-    );
+
     assert!(
         !dependency_graph_source.contains("pub(crate) async fn add_task"),
         "DependencyGraph should only provide queue wiring, not adapter-facing add_task"
@@ -1076,7 +1044,7 @@ fn event_handlers_delegate_runtime_use_cases_to_runtime_facade() {
     );
     assert!(event_handlers_source.contains("handle_task_lifecycle_event"));
     assert!(event_handlers_source.contains("handle_task_output_event"));
-    assert!(runtime_facade_source.contains("TaskLifecyclePorts"));
+    assert!(runtime_facade_source.contains("QueueSchedulingPorts"));
     assert!(runtime_facade_source.contains("TaskOutputEventPorts"));
     assert!(
         !dependency_graph_source.contains("pub(crate) async fn handle_task_lifecycle_event"),
@@ -1733,25 +1701,7 @@ fn queue_scheduling_owns_task_error_event() {
     );
 }
 
-#[test]
-fn task_lifecycle_orchestrator_no_low_level_child_failure_outcome() {
-    let lifecycle_ports_source = include_str!("../src/application/task_lifecycle_orchestrator.rs");
-    // TaskLifecyclePorts should not import ExitedChildFailureOutcome
-    assert!(
-        !lifecycle_ports_source.contains("ExitedChildFailureOutcome"),
-        "TaskLifecyclePorts must not contain ExitedChildFailureOutcome"
-    );
-}
 
-#[test]
-fn task_lifecycle_orchestrator_uses_queue_scheduling_semantic_intent() {
-    let lifecycle_ports_source = include_str!("../src/application/task_lifecycle_orchestrator.rs");
-    // TaskLifecyclePorts should call the failed child-exit continuation intent.
-    assert!(
-        lifecycle_ports_source.contains(".handle_failed_child_exit(task_id, error_message)"),
-        "TaskLifecyclePorts should call the new task-lifecycle semantic intent method"
-    );
-}
 
 #[test]
 fn queue_scheduling_owns_failed_child_exit_matching() {
@@ -1911,21 +1861,10 @@ fn queue_scheduling_owns_history_task_added_event() {
 fn queue_scheduling_owns_shutdown_countdown_events() {
     let scheduling_ports_source =
         include_str!("../src/application/queue_scheduling_orchestrator.rs");
-    let queue_start_orchestrator_source =
-        include_str!("../src/application/queue_start_orchestrator.rs");
 
     assert!(
-        queue_start_orchestrator_source.contains("fn mark_queue_start_shutdown_countdown_cancelled"),
-        "QueueStartPorts should own queue-start shutdown-countdown-cancelled through a semantic marker"
-    );
-    assert!(
-        !queue_start_orchestrator_source
-            .contains("pub(crate) fn mark_queue_start_shutdown_countdown_cancelled"),
-        "QueueStartPorts should not expose mark_queue_start_shutdown_countdown_cancelled"
-    );
-    assert!(
-        !scheduling_ports_source.contains("self.events.shutdown_countdown_cancelled()"),
-        "QueueSchedulingPorts should not publish queue-start shutdown-countdown-cancelled directly"
+        scheduling_ports_source.contains("self.events.shutdown_countdown_cancelled()"),
+        "QueueSchedulingPorts should publish queue-start shutdown-countdown-cancelled directly"
     );
     assert!(
         !scheduling_ports_source.contains("fn shutdown_countdown_cancelled(&self"),
@@ -2279,14 +2218,6 @@ fn queue_scheduling_owns_terminal_active_line_event() {
     assert!(
         !app_mod_source.contains("pub(crate) mod queue_run_ports;"),
         "application/mod.rs must not declare pub(crate) mod queue_run_ports"
-    );
-    // TaskLifecyclePorts should use completed/failed child-exit intent methods
-    // instead of calling the active-line clear helper directly.
-    let lifecycle_ports_source = include_str!("../src/application/task_lifecycle_orchestrator.rs");
-    assert!(
-        !lifecycle_ports_source
-            .contains(".clear_child_exit_terminal_active_line_for_task_lifecycle"),
-        "TaskLifecyclePorts should not call clear_child_exit_terminal_active_line_for_task_lifecycle directly"
     );
 }
 

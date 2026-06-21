@@ -1,4 +1,4 @@
-use crate::application::task_lifecycle_orchestrator::TaskLifecyclePorts;
+use crate::application::queue_scheduling_orchestrator::QueueSchedulingPorts;
 use crate::application::task_output_event_orchestrator::TaskOutputEventPorts;
 use crate::application::task_process_events::{TaskLifecycleEvent, TaskOutputEvent};
 use crate::composition::dependency_graph::DependencyGraph;
@@ -14,13 +14,13 @@ impl RuntimeFacade {
         Self { dependencies }
     }
 
-    fn task_lifecycle_orchestrator<'a>(
+    fn queue_scheduling_orchestrator<'a>(
         &'a self,
         events: &'a dyn FrontendEventPublisher,
         process_runner: &'a dyn TaskProcessRunner,
-    ) -> TaskLifecyclePorts<'a> {
+    ) -> QueueSchedulingPorts<'a> {
         self.dependencies
-            .task_lifecycle_orchestrator(events, process_runner)
+            .queue_scheduling_orchestrator(events, process_runner)
     }
 
     fn task_output_event_orchestrator<'a>(
@@ -36,15 +36,15 @@ impl RuntimeFacade {
         event: TaskLifecycleEvent,
     ) {
         let process_runner = self.dependencies.create_task_process_runner();
-        let lifecycle_ports = self.task_lifecycle_orchestrator(events, process_runner.as_ref());
+        let scheduling_ports = self.queue_scheduling_orchestrator(events, process_runner.as_ref());
         match event {
             TaskLifecycleEvent::Completed { id, output_path } => {
-                lifecycle_ports
+                scheduling_ports
                     .handle_completed_child_exit(&id, &output_path)
                     .await;
             }
             TaskLifecycleEvent::Failed { id, error_message } => {
-                lifecycle_ports
+                scheduling_ports
                     .handle_failed_child_exit(&id, &error_message)
                     .await;
             }

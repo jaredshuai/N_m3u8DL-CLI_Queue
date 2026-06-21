@@ -77,7 +77,7 @@ impl QueueCommandFacade {
         let process_runner = self.dependencies.create_task_process_runner();
         let ports = self
             .dependencies
-            .queue_start_orchestrator(events, process_runner.as_ref());
+            .queue_scheduling_orchestrator(events, process_runner.as_ref());
         ports.handle_queue_start().await
     }
 
