@@ -1,4 +1,5 @@
 use crate::adapters::cli_output_store::CliOutputStore;
+use crate::adapters::filesystem_artifact_inventory::FilesystemArtifactInventory;
 use crate::adapters::history_store::HistoryStore;
 use crate::adapters::persistence::Persistence;
 use crate::adapters::queue_manager::QueueManager;
@@ -43,6 +44,7 @@ pub(crate) fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::
         task_process_runner_factory,
         Arc::new(UuidTaskIdGenerator),
         Arc::new(SystemClock),
+        Arc::new(FilesystemArtifactInventory::new()),
         Arc::new(StderrDiagnostics),
     );
 

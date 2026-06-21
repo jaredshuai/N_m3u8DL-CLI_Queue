@@ -52,6 +52,18 @@ fn application_sources() -> Vec<(&'static str, &'static str)> {
             include_str!("../src/application/app_error.rs"),
         ),
         (
+            "application/artifact_inventory.rs",
+            include_str!("../src/application/artifact_inventory.rs"),
+        ),
+        (
+            "application/artifact_location.rs",
+            include_str!("../src/application/artifact_location.rs"),
+        ),
+        (
+            "application/artifact_resolution.rs",
+            include_str!("../src/application/artifact_resolution.rs"),
+        ),
+        (
             "application/close_policy.rs",
             include_str!("../src/application/close_policy.rs"),
         ),
@@ -218,6 +230,10 @@ fn port_sources() -> Vec<(&'static str, &'static str)> {
         (
             "ports/application_control.rs",
             include_str!("../src/ports/application_control.rs"),
+        ),
+        (
+            "ports/artifact_inventory.rs",
+            include_str!("../src/ports/artifact_inventory.rs"),
         ),
         ("ports/clock.rs", include_str!("../src/ports/clock.rs")),
         (

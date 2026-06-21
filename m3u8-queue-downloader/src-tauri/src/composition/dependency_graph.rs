@@ -11,6 +11,7 @@ use crate::application::task_output_event_orchestrator::TaskOutputEventPorts;
 use crate::application::terminal_history_orchestrator::TerminalHistoryPorts;
 use crate::application::terminal_output_orchestrator::TerminalOutputPorts;
 use crate::ports::application_control::ApplicationControl;
+use crate::ports::artifact_inventory::ArtifactInventory;
 use crate::ports::clock::Clock;
 use crate::ports::diagnostics::Diagnostics;
 use crate::ports::directory_opener::DirectoryOpener;
@@ -41,6 +42,7 @@ pub struct DependencyGraph {
     pub(in crate::composition) task_process_runner_factory: Arc<dyn TaskProcessRunnerFactory>,
     pub(in crate::composition) task_id_generator: Arc<dyn TaskIdGenerator>,
     pub(in crate::composition) clock: Arc<dyn Clock>,
+    pub(in crate::composition) artifact_inventory: Arc<dyn ArtifactInventory>,
     pub(in crate::composition) diagnostics: Arc<dyn Diagnostics>,
 }
 
@@ -58,6 +60,7 @@ impl DependencyGraph {
         task_process_runner_factory: Arc<dyn TaskProcessRunnerFactory>,
         task_id_generator: Arc<dyn TaskIdGenerator>,
         clock: Arc<dyn Clock>,
+        artifact_inventory: Arc<dyn ArtifactInventory>,
         diagnostics: Arc<dyn Diagnostics>,
     ) -> Self {
         Self {
@@ -73,6 +76,7 @@ impl DependencyGraph {
             task_process_runner_factory,
             task_id_generator,
             clock,
+            artifact_inventory,
             diagnostics,
         }
     }

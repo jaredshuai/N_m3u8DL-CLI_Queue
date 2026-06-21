@@ -56,6 +56,25 @@ impl From<StoredTaskStatus> for TaskStatusSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum StoredArtifactDiagnosticKind {
+    PermissionDenied,
+    NotDirectory,
+    Interrupted,
+    Other,
+}
+
+/// Adapter-layer mirror of `application::artifact_resolution::ArtifactDiagnostic`.
+/// Isolates serde attributes from the application type; carries the stable
+/// kind + message persisted alongside `StoredTask.output_path: None`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StoredArtifactDiagnostic {
+    pub kind: StoredArtifactDiagnosticKind,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StoredTask {
@@ -69,6 +88,8 @@ pub(crate) struct StoredTask {
     pub speed: String,
     pub threads: String,
     pub output_path: Option<String>,
+    #[serde(default)]
+    pub artifact_diagnostic: Option<StoredArtifactDiagnostic>,
     pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -86,6 +107,7 @@ impl From<&Task> for StoredTask {
             speed: String::new(),
             threads: String::new(),
             output_path: None,
+            artifact_diagnostic: None,
             error_message: task.error_message.clone(),
             created_at: task.created_at,
         }
@@ -105,6 +127,10 @@ impl From<&TaskSnapshot> for StoredTask {
             speed: task.speed.clone(),
             threads: task.threads.clone(),
             output_path: task.output_path.clone(),
+            // TaskSnapshot does not yet carry artifact_diagnostic (ADR-0005
+            // stage 4 adds it); for now mirror as None. Old history JSON
+            // without this field deserializes to None via #[serde(default)].
+            artifact_diagnostic: None,
             error_message: task.error_message.clone(),
             created_at: task.created_at,
         }
