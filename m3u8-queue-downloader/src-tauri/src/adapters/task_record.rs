@@ -127,10 +127,7 @@ impl From<&TaskSnapshot> for StoredTask {
             speed: task.speed.clone(),
             threads: task.threads.clone(),
             output_path: task.output_path.clone(),
-            // TaskSnapshot does not yet carry artifact_diagnostic (ADR-0005
-            // stage 4 adds it); for now mirror as None. Old history JSON
-            // without this field deserializes to None via #[serde(default)].
-            artifact_diagnostic: None,
+            artifact_diagnostic: task.artifact_diagnostic.as_ref().map(Into::into),
             error_message: task.error_message.clone(),
             created_at: task.created_at,
         }
@@ -165,8 +162,43 @@ impl From<StoredTask> for TaskSnapshot {
             speed: task.speed,
             threads: task.threads,
             output_path: task.output_path,
+            artifact_diagnostic: task.artifact_diagnostic.map(Into::into),
             error_message: task.error_message,
             created_at: task.created_at,
+        }
+    }
+}
+
+// ---- ArtifactDiagnostic ↔ StoredArtifactDiagnostic mirror conversions ----
+
+impl From<&crate::application::artifact_resolution::ArtifactDiagnostic> for StoredArtifactDiagnostic {
+    fn from(diag: &crate::application::artifact_resolution::ArtifactDiagnostic) -> Self {
+        use crate::application::artifact_resolution::ArtifactDiagnosticKind;
+        let kind = match diag.kind {
+            ArtifactDiagnosticKind::PermissionDenied => StoredArtifactDiagnosticKind::PermissionDenied,
+            ArtifactDiagnosticKind::NotDirectory => StoredArtifactDiagnosticKind::NotDirectory,
+            ArtifactDiagnosticKind::Interrupted => StoredArtifactDiagnosticKind::Interrupted,
+            ArtifactDiagnosticKind::Other => StoredArtifactDiagnosticKind::Other,
+        };
+        Self {
+            kind,
+            message: diag.message.clone(),
+        }
+    }
+}
+
+impl From<StoredArtifactDiagnostic> for crate::application::artifact_resolution::ArtifactDiagnostic {
+    fn from(stored: StoredArtifactDiagnostic) -> Self {
+        use crate::application::artifact_resolution::ArtifactDiagnosticKind;
+        let kind = match stored.kind {
+            StoredArtifactDiagnosticKind::PermissionDenied => ArtifactDiagnosticKind::PermissionDenied,
+            StoredArtifactDiagnosticKind::NotDirectory => ArtifactDiagnosticKind::NotDirectory,
+            StoredArtifactDiagnosticKind::Interrupted => ArtifactDiagnosticKind::Interrupted,
+            StoredArtifactDiagnosticKind::Other => ArtifactDiagnosticKind::Other,
+        };
+        Self {
+            kind,
+            message: stored.message,
         }
     }
 }

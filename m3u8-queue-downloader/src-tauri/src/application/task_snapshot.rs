@@ -1,3 +1,4 @@
+use crate::application::artifact_resolution::ArtifactDiagnostic;
 use crate::domain::task::TaskStatus;
 use chrono::{DateTime, Utc};
 
@@ -34,6 +35,11 @@ pub(crate) struct TaskSnapshot {
     pub(crate) speed: String,
     pub(crate) threads: String,
     pub(crate) output_path: Option<String>,
+    /// Why `output_path` is `None` for a completed task, when the artifact
+    /// inventory itself failed (permission denied / IO error / ...).
+    /// `None` for non-completed tasks or completed-with-path. Persisted via
+    /// `StoredArtifactDiagnostic` mirror. See ADR-0005 decision 6.
+    pub(crate) artifact_diagnostic: Option<ArtifactDiagnostic>,
 }
 
 impl From<&crate::domain::task::Task> for TaskSnapshot {
@@ -51,6 +57,7 @@ impl From<&crate::domain::task::Task> for TaskSnapshot {
             speed: String::new(),
             threads: String::new(),
             output_path: None,
+            artifact_diagnostic: None,
         }
     }
 }
@@ -79,6 +86,7 @@ impl TaskSnapshot {
             speed: runtime.speed.clone(),
             threads: runtime.threads.clone(),
             output_path: runtime.output_path.clone(),
+            artifact_diagnostic: None,
         }
     }
 
@@ -97,6 +105,7 @@ impl TaskSnapshot {
             speed: String::new(),
             threads: String::new(),
             output_path: None,
+            artifact_diagnostic: None,
         }
     }
 
@@ -115,6 +124,7 @@ impl TaskSnapshot {
             speed: String::new(),
             threads: String::new(),
             output_path: None,
+            artifact_diagnostic: None,
         }
     }
 
@@ -133,6 +143,7 @@ impl TaskSnapshot {
             speed: String::new(),
             threads: String::new(),
             output_path: Some(output_path.to_string()),
+            artifact_diagnostic: None,
         }
     }
 }
