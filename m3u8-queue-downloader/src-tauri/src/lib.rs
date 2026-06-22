@@ -54,11 +54,14 @@ mod tests {
     use crate::adapters::shutdown::ShutdownManager;
     use crate::adapters::task_runner::TaskRunner;
     use crate::application::app_error::{AppError, AppResult};
+    use crate::application::artifact_inventory::ArtifactDir;
     use crate::application::download_directory::DownloadDirectory;
     use crate::application::process_runner_outcomes::ProcessRunnerShutdownStatus;
     use crate::application::queue_mutation_orchestrator::QueueMutationPorts;
-    use crate::application::queue_repository_outcomes::{
-        PrepareTaskFailureOutcome, QueueRunStatus, TaskFailureTransition,
+    use crate::application::ArtifactInventory;
+    use crate::application::Clock;
+    use chrono::{DateTime, TimeZone, Utc};
+    use crate::application::queue_repository_outcomes::{        PrepareTaskFailureOutcome, QueueRunStatus, TaskFailureTransition,
     };
     use crate::application::queue_requests::AddTaskPayload;
     use crate::application::queue_scheduling_orchestrator::QueueSchedulingPorts;
@@ -127,10 +130,6 @@ mod tests {
         diagnostics: &'a dyn Diagnostics,
         events: &'a dyn FrontendEventPublisher,
     ) -> QueueSchedulingPorts<'a> {
-        static SETTINGS: StaticSettingsRepository = StaticSettingsRepository;
-        static DIR_RESOLVER: StaticDownloadDirectoryResolver = StaticDownloadDirectoryResolver;
-        static TERMINAL_OUTPUT: NoopTerminalOutputRepository = NoopTerminalOutputRepository;
-        static SHUTDOWN_SCHEDULER: NoopShutdownScheduler = NoopShutdownScheduler;
         QueueSchedulingPorts::new(
             queue_repository,
             &SETTINGS,
@@ -139,6 +138,8 @@ mod tests {
             &TERMINAL_OUTPUT,
             &SHUTDOWN_SCHEDULER,
             process_runner,
+            &ARTIFACT_INVENTORY,
+            &CLOCK,
             diagnostics,
             events,
         )
@@ -170,6 +171,88 @@ mod tests {
 
     impl Diagnostics for NoopDiagnostics {
         fn warn(&self, _message: &str) {}
+    }
+
+    /// Test Clock stub returning a fixed moment. Keeps scheduling tests
+    /// deterministic; the artifact-location freshness comparison uses this.
+    struct FixedTestClock;
+
+    impl Clock for FixedTestClock {
+        fn now(&self) -> DateTime<Utc> {
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()
+        }
+    }
+
+    /// Test ArtifactInventory stub returning a missing-directory snapshot.
+    /// Most scheduling tests don't exercise artifact location, so the policy
+    /// returns `None` and `output_path` stays unset.
+    struct NoopArtifactInventory;
+
+    impl ArtifactInventory for NoopArtifactInventory {
+        fn snapshot<'a>(
+            &'a self,
+            dir: &'a crate::application::artifact_inventory::ArtifactDir,
+        ) -> crate::ports::artifact_inventory::ArtifactInventoryFuture<
+            'a,
+            Result<
+                crate::application::artifact_inventory::ArtifactDirectorySnapshot,
+                crate::application::artifact_inventory::ArtifactInventoryError,
+            >,
+        > {
+            use crate::application::artifact_inventory::{
+                ArtifactDirectoryPresence, ArtifactDirectorySnapshot,
+            };
+            let dir = dir.clone();
+            Box::pin(async move {
+                Ok(ArtifactDirectorySnapshot {
+                    dir,
+                    presence: ArtifactDirectoryPresence::Missing,
+                    entries: Vec::new(),
+                    skipped_entry_count: 0,
+                })
+            })
+        }
+    }
+
+    /// Test ArtifactInventory stub returning a present snapshot with a single
+    /// `test.mp4` entry. For the regression test that asserts `output_path`
+    /// is persisted — the policy's exact match (`{save_name}.mp4`) resolves
+    /// to `test.mp4` when `save_name = Some("test")`.
+    struct LocatedArtifactInventory;
+
+    impl ArtifactInventory for LocatedArtifactInventory {
+        fn snapshot<'a>(
+            &'a self,
+            dir: &'a crate::application::artifact_inventory::ArtifactDir,
+        ) -> crate::ports::artifact_inventory::ArtifactInventoryFuture<
+            'a,
+            Result<
+                crate::application::artifact_inventory::ArtifactDirectorySnapshot,
+                crate::application::artifact_inventory::ArtifactInventoryError,
+            >,
+        > {
+            use crate::application::artifact_inventory::{
+                ArtifactDirectoryPresence, ArtifactDirectorySnapshot, ArtifactEntryKind,
+                ArtifactModifiedAt, ArtifactPath, ObservedArtifactEntry,
+            };
+            let dir = dir.clone();
+            // mtime aligned with FixedTestClock (2026-01-01 00:00:00) so the
+            // freshness-window fallback also admits it.
+            let at = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+            Box::pin(async move {
+                Ok(ArtifactDirectorySnapshot {
+                    dir,
+                    presence: ArtifactDirectoryPresence::Present,
+                    entries: vec![ObservedArtifactEntry {
+                        name: "test.mp4".to_string(),
+                        path: ArtifactPath::new("D:/Videos/test.mp4".to_string()),
+                        modified_at: ArtifactModifiedAt::new(at),
+                        kind: ArtifactEntryKind::File,
+                    }],
+                    skipped_entry_count: 0,
+                })
+            })
+        }
     }
 
     struct NoopProcessRunner;
@@ -598,6 +681,16 @@ mod tests {
         }
     }
 
+    // Module-level test fixtures shared by the queue_scheduling_orchestrator
+    // helper and the tests that construct QueueSchedulingPorts directly.
+    // (ArtifactInventory + Clock were added by ADR-0005 stage 4.1.)
+    static SETTINGS: StaticSettingsRepository = StaticSettingsRepository;
+    static DIR_RESOLVER: StaticDownloadDirectoryResolver = StaticDownloadDirectoryResolver;
+    static TERMINAL_OUTPUT: NoopTerminalOutputRepository = NoopTerminalOutputRepository;
+    static SHUTDOWN_SCHEDULER: NoopShutdownScheduler = NoopShutdownScheduler;
+    static CLOCK: FixedTestClock = FixedTestClock;
+    static ARTIFACT_INVENTORY: NoopArtifactInventory = NoopArtifactInventory;
+
     async fn add_queue_manager_task(
         queue_manager: &Arc<QueueManager>,
         payload: AddTaskPayload,
@@ -690,11 +783,17 @@ mod tests {
             &NoopTerminalOutputRepository,
             shutdown_manager.as_ref(),
             &process_runner,
+            &ARTIFACT_INVENTORY,
+            &CLOCK,
             &diagnostics,
             &events,
         );
         scheduling_ports
-            .handle_completed_child_exit(&task.id, "D:/Videos/test.mp4")
+            .handle_completed_child_exit(
+                &task.id,
+                &ArtifactDir::new("D:/Videos".to_string()),
+                Some("test"),
+            )
             .await;
 
         assert_eq!(
@@ -927,12 +1026,18 @@ mod tests {
             &NoopTerminalOutputRepository,
             &shutdown_manager,
             &process_runner,
+            &ARTIFACT_INVENTORY,
+            &CLOCK,
             &diagnostics,
             &events,
         );
 
         scheduling_ports
-            .handle_completed_child_exit(&completed_task.id, "D:/Videos/test.mp4")
+            .handle_completed_child_exit(
+                &completed_task.id,
+                &ArtifactDir::new("D:/Videos".to_string()),
+                Some("test"),
+            )
             .await;
 
         let state = queue_manager.get_state().await;
@@ -992,12 +1097,18 @@ mod tests {
             &NoopTerminalOutputRepository,
             &shutdown_scheduler,
             &process_runner,
+            &ARTIFACT_INVENTORY,
+            &CLOCK,
             &diagnostics,
             &events,
         );
 
         scheduling_ports
-            .handle_completed_child_exit(&task.id, "D:/Videos/test.mp4")
+            .handle_completed_child_exit(
+                &task.id,
+                &ArtifactDir::new("D:/Videos".to_string()),
+                Some("test"),
+            )
             .await;
 
         assert!(
@@ -1044,6 +1155,7 @@ mod tests {
             .expect("scheduled task");
         cli_output_store.set_active_line(&task.id, "Progress: 50%".to_string());
 
+        let located_inventory = LocatedArtifactInventory;
         let scheduling_ports = QueueSchedulingPorts::new(
             queue_manager.as_ref(),
             &settings_repository,
@@ -1052,11 +1164,17 @@ mod tests {
             &cli_output_store,
             &shutdown_manager,
             &process_runner,
+            &located_inventory,
+            &CLOCK,
             &diagnostics,
             &events,
         );
         scheduling_ports
-            .handle_completed_child_exit(&task.id, "D:/Videos/test.mp4")
+            .handle_completed_child_exit(
+                &task.id,
+                &ArtifactDir::new("D:/Videos".to_string()),
+                Some("test"),
+            )
             .await;
 
         assert!(matches!(
@@ -1620,6 +1738,8 @@ mod tests {
             &terminal_output_repository,
             &shutdown_manager,
             &process_runner,
+            &ARTIFACT_INVENTORY,
+            &CLOCK,
             &diagnostics,
             &events,
         );

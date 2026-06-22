@@ -191,11 +191,7 @@ impl QueueTasks {
         }
     }
 
-    fn stage_task_completion(
-        &mut self,
-        id: &str,
-        _output_path: &str,
-    ) -> StageTaskCompletionOutcome {
+    fn stage_task_completion(&mut self, id: &str) -> StageTaskCompletionOutcome {
         let Some(position) = self.tasks.iter().position(|task| task.id == id) else {
             return StageTaskCompletionOutcome::Missing;
         };
@@ -413,12 +409,8 @@ impl QueueAggregate {
         transition
     }
 
-    pub(crate) fn stage_task_completion(
-        &mut self,
-        id: &str,
-        output_path: &str,
-    ) -> StageTaskCompletionOutcome {
-        match self.tasks.stage_task_completion(id, output_path) {
+    pub(crate) fn stage_task_completion(&mut self, id: &str) -> StageTaskCompletionOutcome {
+        match self.tasks.stage_task_completion(id) {
             StageTaskCompletionOutcome::Staged(task) => {
                 self.clear_current_task_if_matches(id);
                 self.push_pending_history_task(task.clone());
@@ -867,7 +859,7 @@ mod tests {
         };
 
         let StageTaskCompletionOutcome::Staged(completed) =
-            state.stage_task_completion("task-1", "D:/Videos/test.mp4")
+            state.stage_task_completion("task-1")
         else {
             panic!("completion should stage");
         };
@@ -885,7 +877,7 @@ mod tests {
         let mut state = QueueAggregate::default();
 
         assert!(matches!(
-            state.stage_task_completion("missing", "out.mp4"),
+            state.stage_task_completion("missing"),
             StageTaskCompletionOutcome::Missing
         ));
         assert!(state.pending_history_tasks().is_empty());

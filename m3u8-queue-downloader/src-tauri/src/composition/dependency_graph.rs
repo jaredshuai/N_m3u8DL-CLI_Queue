@@ -94,6 +94,8 @@ impl DependencyGraph {
             self.terminal_output_repository.as_ref(),
             self.shutdown_scheduler.as_ref(),
             process_runner,
+            self.artifact_inventory.as_ref(),
+            self.clock.as_ref(),
             self.diagnostics.as_ref(),
             events,
         )
