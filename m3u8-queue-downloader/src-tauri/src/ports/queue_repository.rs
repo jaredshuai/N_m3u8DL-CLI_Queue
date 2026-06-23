@@ -9,16 +9,17 @@ use std::sync::Arc;
 
 pub(crate) type QueueRepositoryFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Read-only snapshot and status queries (≤7 methods).
-pub(crate) trait QueueStateReader: Send + Sync {
+/// Repository for queue state, mutations, and run lifecycle (19 methods).
+/// Merged from the earlier narrow-trait split (QueueStateReader / QueueMutation / QueueRunLifecycle)
+/// per ADR-0006, since no external consumer ever used the narrow traits directly.
+pub(crate) trait QueueRepository: Send + Sync {
+    // ---- reader (ex-QueueStateReader) ----
     fn get_state_snapshot<'a>(&'a self) -> QueueRepositoryFuture<'a, QueueStateSnapshot>;
     fn live_work_status<'a>(&'a self) -> QueueRepositoryFuture<'a, bool>;
     fn shutdown_status<'a>(&'a self) -> QueueRepositoryFuture<'a, bool>;
     fn pending_history_tasks<'a>(&'a self) -> QueueRepositoryFuture<'a, Vec<TaskSnapshot>>;
-}
 
-/// Queue structural mutations (add/remove/retry/reorder/run-status) (≤7 methods).
-pub(crate) trait QueueMutation: Send + Sync {
+    // ---- mutation (ex-QueueMutation) ----
     fn add_task<'a>(&'a self, task: Task) -> QueueRepositoryFuture<'a, AppResult<bool>>;
     fn remove_task<'a>(&'a self, id: &'a str) -> QueueRepositoryFuture<'a, AppResult<()>>;
     fn retry_task<'a>(&'a self, id: &'a str) -> QueueRepositoryFuture<'a, AppResult<TaskSnapshot>>;
@@ -36,10 +37,8 @@ pub(crate) trait QueueMutation: Send + Sync {
         id: &'a str,
         save_name: Option<String>,
     ) -> QueueRepositoryFuture<'a, AppResult<()>>;
-}
 
-/// Run lifecycle, scheduling and per-task run-time staging (≤8 methods).
-pub(crate) trait QueueRunLifecycle: Send + Sync {
+    // ---- lifecycle (ex-QueueRunLifecycle) ----
     fn prepare_for_exit<'a>(&'a self) -> QueueRepositoryFuture<'a, AppResult<()>>;
     fn schedule_next<'a>(&'a self) -> QueueRepositoryFuture<'a, AppResult<Option<TaskSnapshot>>>;
     fn prepare_task_failure<'a>(
@@ -74,24 +73,9 @@ pub(crate) trait QueueRunLifecycle: Send + Sync {
     ) -> QueueRepositoryFuture<'a, AppResult<bool>>;
 }
 
-/// Sum trait for backward compatibility.
-/// Code using `&dyn QueueRepository` or `Arc<dyn QueueRepository>` continues to work.
-pub(crate) trait QueueRepository:
-    QueueStateReader + QueueMutation + QueueRunLifecycle + Send + Sync
-{
-}
-
-impl<T> QueueRepository for T where
-    T: QueueStateReader + QueueMutation + QueueRunLifecycle + Send + Sync
-{
-}
-
-// ---- Arc<T> forwarding for narrow traits (explicit, to guarantee late-bound lifetimes match trait defs) ----
-// No 18-method hand-written block for the old god trait. Macro removed to avoid early-bound lifetime issues.
-
-impl<T> QueueStateReader for Arc<T>
+impl<T> QueueRepository for Arc<T>
 where
-    T: QueueStateReader + ?Sized,
+    T: QueueRepository + ?Sized,
 {
     fn get_state_snapshot<'a>(&'a self) -> QueueRepositoryFuture<'a, QueueStateSnapshot> {
         self.as_ref().get_state_snapshot()
@@ -105,12 +89,6 @@ where
     fn pending_history_tasks<'a>(&'a self) -> QueueRepositoryFuture<'a, Vec<TaskSnapshot>> {
         self.as_ref().pending_history_tasks()
     }
-}
-
-impl<T> QueueMutation for Arc<T>
-where
-    T: QueueMutation + ?Sized,
-{
     fn add_task<'a>(&'a self, task: Task) -> QueueRepositoryFuture<'a, AppResult<bool>> {
         self.as_ref().add_task(task)
     }
@@ -142,12 +120,6 @@ where
     ) -> QueueRepositoryFuture<'a, AppResult<()>> {
         self.as_ref().update_save_name(id, save_name)
     }
-}
-
-impl<T> QueueRunLifecycle for Arc<T>
-where
-    T: QueueRunLifecycle + ?Sized,
-{
     fn prepare_for_exit<'a>(&'a self) -> QueueRepositoryFuture<'a, AppResult<()>> {
         self.as_ref().prepare_for_exit()
     }
@@ -199,6 +171,3 @@ where
         self.as_ref().clear_pending_history_task(id)
     }
 }
-
-// No more 18-method hand-written `impl<T> QueueRepository for Arc<T>` block.
-// Arc<T> forwarding for the narrow traits is provided by the three explicit impl blocks above.

@@ -1500,12 +1500,16 @@ fn terminal_history_uses_queue_repository_port() {
         "terminal history use cases should not consume domain task entities from pending-history reads"
     );
     assert!(port_source.contains("trait QueueRepository"));
-    // After split: QueueManager implements the narrow traits (no monolithic hand-written `impl QueueRepository for QueueManager`).
+    // ADR-0006: single impl block, no narrow-trait split
     assert!(
-        adapter_source.contains("impl QueueStateReader for QueueManager")
-            && adapter_source.contains("impl QueueMutation for QueueManager")
-            && adapter_source.contains("impl QueueRunLifecycle for QueueManager"),
-        "QueueManager should implement the narrow Queue* traits that compose the repository"
+        adapter_source.contains("impl QueueRepository for QueueManager"),
+        "QueueManager should implement QueueRepository directly (per ADR-0006)"
+    );
+    assert!(
+        !(adapter_source.contains("impl QueueStateReader for QueueManager")
+            || adapter_source.contains("impl QueueMutation for QueueManager")
+            || adapter_source.contains("impl QueueRunLifecycle for QueueManager")),
+        "QueueManager must NOT have narrow-trait impl blocks (removed per ADR-0006)"
     );
     // New boundary checks: use cases should not import staging outcome types
     for forbidden in [
