@@ -50,6 +50,28 @@ pub(crate) struct QueueSchedulingPorts<'a> {
     events: &'a dyn FrontendEventPublisher,
 }
 
+/// Identifies which queue mutation triggered a `schedule_next + queue_state_changed` tail.
+/// Carries scenario identity for future diagnostics/metrics hooks.
+/// Per ADR-0008: private to this file, only used for the homogeneous QueueAdd-Retry tail pattern.
+enum QueueMutationScenario {
+    QueueAdd,
+    RetryFromHistory,
+    RetryExisting,
+}
+
+impl QueueMutationScenario {
+    /// Emit queue-state-changed event for this scenario.
+    /// Currently identical across scenarios; the discriminant is preserved as
+    /// a future metrics/telemetry hook point (consumed via match, not dead weight).
+    fn emit_queue_changed(self, events: &dyn FrontendEventPublisher) {
+        match self {
+            QueueMutationScenario::QueueAdd
+            | QueueMutationScenario::RetryFromHistory
+            | QueueMutationScenario::RetryExisting => events.queue_state_changed(),
+        }
+    }
+}
+
 impl<'a> QueueSchedulingPorts<'a> {
     pub(crate) fn new(
         queue_repository: &'a dyn QueueRepository,
@@ -376,6 +398,19 @@ impl<'a> QueueSchedulingPorts<'a> {
             ScheduleNextRequest::Requested => self.schedule_next_internal().await,
             ScheduleNextRequest::NotRequested => Ok(()),
         }
+    }
+
+    /// Tail helper for queue-mutation scenarios (add / retry-from-history / retry-existing).
+    /// Schedules next task if requested and emits queue-state-changed with scenario identity.
+    /// Per ADR-0008: consolidates the 3 homogeneous `schedule_next + queue_state_changed` tails.
+    async fn complete_queue_mutation_scheduling(
+        &self,
+        request: ScheduleNextRequest,
+        scenario: QueueMutationScenario,
+    ) -> AppResult<()> {
+        self.schedule_next_if_requested(request).await?;
+        scenario.emit_queue_changed(self.events);
+        Ok(())
     }
 
     async fn add_task(&self, task: Task) -> AppResult<bool> {
@@ -766,31 +801,6 @@ impl<'a> QueueSchedulingPorts<'a> {
         self.events.terminal_active_line(task_id, "");
     }
 
-    /// Internal helper for queue-add that schedules next and marks queue-add scheduling completion.
-    async fn complete_queue_add_scheduling(&self, add_outcome: bool) -> AppResult<()> {
-        self.schedule_next_if_requested(add_outcome.into()).await?;
-        self.mark_queue_add_scheduling_completed();
-        Ok(())
-    }
-
-    fn mark_queue_add_scheduling_completed(&self) {
-        self.events.queue_state_changed();
-    }
-
-    /// Internal helper for queue-retry-history that schedules next and marks retry-history scheduling completion.
-    async fn schedule_next_for_add_outcome_and_mark_history(
-        &self,
-        add_outcome: bool,
-    ) -> AppResult<()> {
-        self.schedule_next_if_requested(add_outcome.into()).await?;
-        self.mark_queue_retry_history_scheduling_completed();
-        Ok(())
-    }
-
-    fn mark_queue_retry_history_scheduling_completed(&self) {
-        self.events.queue_state_changed();
-    }
-
     /// High-level queue-add intent that owns task creation, repository add, scheduling,
     /// and queue-state notification.
     /// Returns TaskSnapshot derived from the queued task.
@@ -823,27 +833,38 @@ impl<'a> QueueSchedulingPorts<'a> {
     async fn add_queue_add_task_and_schedule(&self, task: Task) -> AppResult<TaskSnapshot> {
         let snapshot = TaskSnapshot::from(&task);
         let add_outcome = self.add_task(task).await?;
-        self.complete_queue_add_scheduling(add_outcome).await?;
+        self.complete_queue_mutation_scheduling(
+            add_outcome.into(),
+            QueueMutationScenario::QueueAdd,
+        )
+        .await?;
         Ok(snapshot)
     }
 
     /// High-level intent method for queue-retry fallback to add a history task and schedule next if requested.
-    /// Encapsulates: add_task, schedule_next_for_add_outcome_and_mark_history.
+    /// Encapsulates: add_task, complete_queue_mutation_scheduling (retry-from-history scenario).
     /// Returns TaskSnapshot derived from the queued task.
     async fn add_retry_history_task_queue_retry(&self, task: Task) -> AppResult<TaskSnapshot> {
         let snapshot = TaskSnapshot::from(&task);
         let add_outcome = self.add_task(task).await?;
-        self.schedule_next_for_add_outcome_and_mark_history(add_outcome)
-            .await?;
+        self.complete_queue_mutation_scheduling(
+            add_outcome.into(),
+            QueueMutationScenario::RetryFromHistory,
+        )
+        .await?;
         Ok(snapshot)
     }
 
     /// High-level intent method for queue-retry to retry an existing queue task and schedule next if requested.
-    /// Encapsulates: retry_task, schedule_next_for_existing_task_retry.
+    /// Encapsulates: retry_task, complete_queue_mutation_scheduling (retry-existing scenario).
     /// Returns TaskSnapshot from the retried task.
     async fn retry_existing_task_queue_retry(&self, task_id: &str) -> AppResult<TaskSnapshot> {
         let task = self.retry_task(task_id).await?;
-        self.schedule_next_for_existing_task_retry().await?;
+        self.complete_queue_mutation_scheduling(
+            ScheduleNextRequest::Requested,
+            QueueMutationScenario::RetryExisting,
+        )
+        .await?;
         Ok(task)
     }
 
@@ -899,17 +920,6 @@ impl<'a> QueueSchedulingPorts<'a> {
         history_task: &TaskSnapshot,
     ) -> Task {
         task_creation_orchestrator.create_queued_task_from_history_retry(history_task)
-    }
-
-    async fn schedule_next_for_existing_task_retry(&self) -> AppResult<()> {
-        self.schedule_next_if_requested(ScheduleNextRequest::Requested)
-            .await?;
-        self.mark_queue_retry_existing_scheduling_completed();
-        Ok(())
-    }
-
-    fn mark_queue_retry_existing_scheduling_completed(&self) {
-        self.events.queue_state_changed();
     }
 
     /// Internal helper that drives the schedule-and-start loop for a resolved download directory.
