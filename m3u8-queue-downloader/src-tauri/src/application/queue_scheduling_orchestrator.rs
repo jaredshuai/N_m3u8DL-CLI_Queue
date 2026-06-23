@@ -385,12 +385,8 @@ impl<'a> QueueSchedulingPorts<'a> {
 
     /// Internal queue-scheduler helper that drives the schedule-and-start loop
     /// for current settings while external callers use semantic intent methods.
-    async fn schedule_next_and_start(&self) -> AppResult<ScheduleNextOutcome> {
-        self.try_schedule_next_and_start().await
-    }
-
     async fn schedule_next_internal(&self) -> AppResult<()> {
-        self.schedule_next_and_start().await.map(|_| ())
+        self.try_schedule_next_and_start().await.map(|_| ())
     }
 
     async fn schedule_next_if_requested(&self, request: ScheduleNextRequest) -> AppResult<()> {
