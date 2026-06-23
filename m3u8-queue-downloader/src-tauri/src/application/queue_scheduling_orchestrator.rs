@@ -260,16 +260,14 @@ impl<'a> QueueSchedulingPorts<'a> {
         &self,
         task_id: &str,
         output_path: Option<&str>,
+        artifact_diagnostic: Option<&crate::application::artifact_resolution::ArtifactDiagnostic>,
     ) {
         // Downstream history chain expects a `&str` (legacy contract, where
         // empty string means "no artifact located"). None → "" preserves
-        // that contract; ADR-0005 stage 4 keeps downstream unchanged and
-        // only the entry point (handle_completed_child_exit) knows about
-        // Option semantics. (The artifact_diagnostic projection onto
-        // TaskSnapshot is a follow-up concern.)
+        // that contract; ADR-0005 stage 4 keeps downstream unchanged.
         let output_path_str = output_path.unwrap_or("");
         match self
-            .handle_completed_task_history(task_id, output_path_str)
+            .handle_completed_task_history(task_id, output_path_str, artifact_diagnostic)
             .await
         {
             Ok(TerminalHistoryRecordOutcome::Recorded(task)) => {
@@ -297,9 +295,15 @@ impl<'a> QueueSchedulingPorts<'a> {
         &self,
         task_id: &str,
         output_path: &str,
+        artifact_diagnostic: Option<&crate::application::artifact_resolution::ArtifactDiagnostic>,
     ) -> AppResult<TerminalHistoryRecordOutcome> {
-        handle_completed_task_history(&self.terminal_history_orchestrator(), task_id, output_path)
-            .await
+        handle_completed_task_history(
+            &self.terminal_history_orchestrator(),
+            task_id,
+            output_path,
+            artifact_diagnostic,
+        )
+        .await
     }
 
     fn current_settings(&self) -> AppSettings {
@@ -562,12 +566,18 @@ impl<'a> QueueSchedulingPorts<'a> {
             }
             _ => None,
         };
-        self.complete_child_exit(task_id, output_path.as_deref()).await;
-        // NOTE: artifact_diagnostic projection onto TaskSnapshot is a follow-up.
-        // Currently `InventoryUnavailable` is recorded via diagnostics warn above;
-        // the TaskSnapshot.artifact_diagnostic field is in place (stage 4.4) but
-        // not yet wired to receive the resolution's diagnostic — that requires
-        // threading the diagnostic through the stage_task_completion port chain.
+        // Project the resolution's diagnostic onto TaskSnapshot (ADR-0005 stage 4.4 follow-up):
+        // - Located → no diagnostic (artifact was found)
+        // - NotFound → no diagnostic (normal "no match" outcome, not a failure worth recording)
+        // - InventoryUnavailable → carry the diagnostic so history can explain why output_path is None
+        let artifact_diagnostic = match &resolution {
+            crate::application::artifact_resolution::ArtifactResolution::InventoryUnavailable(
+                err,
+            ) => Some(crate::application::artifact_resolution::ArtifactDiagnostic::from(err)),
+            _ => None,
+        };
+        self.complete_child_exit(task_id, output_path.as_deref(), artifact_diagnostic)
+            .await;
     }
 
     /// Resolve the artifact for a completed task. Returns the full
@@ -610,12 +620,21 @@ impl<'a> QueueSchedulingPorts<'a> {
         }
     }
 
-    async fn complete_child_exit(&self, task_id: &str, output_path: Option<&str>) {
+    async fn complete_child_exit(
+        &self,
+        task_id: &str,
+        output_path: Option<&str>,
+        artifact_diagnostic: Option<crate::application::artifact_resolution::ArtifactDiagnostic>,
+    ) {
         let output_path_owned = output_path.map(|s| s.to_string());
         self.clear_child_exit_terminal_active_line(task_id);
         self.continue_child_exit_unless_shutting_down(|| async {
-            self.handle_completed_child_exit_history(task_id, output_path_owned.as_deref())
-                .await;
+            self.handle_completed_child_exit_history(
+                task_id,
+                output_path_owned.as_deref(),
+                artifact_diagnostic.as_ref(),
+            )
+            .await;
             self.drive_child_exit_queue_and_handle_shutdown_countdown("completion")
                 .await;
         })

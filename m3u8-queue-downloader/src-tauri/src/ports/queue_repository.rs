@@ -62,6 +62,7 @@ pub(crate) trait QueueRepository: Send + Sync {
         &'a self,
         id: &'a str,
         output_path: &'a str,
+        artifact_diagnostic: Option<&'a crate::application::artifact_resolution::ArtifactDiagnostic>,
     ) -> QueueRepositoryFuture<'a, AppResult<Option<TaskSnapshot>>>;
     fn stage_terminal_history_task<'a>(
         &'a self,
@@ -155,8 +156,10 @@ where
         &'a self,
         id: &'a str,
         output_path: &'a str,
+        artifact_diagnostic: Option<&'a crate::application::artifact_resolution::ArtifactDiagnostic>,
     ) -> QueueRepositoryFuture<'a, AppResult<Option<TaskSnapshot>>> {
-        self.as_ref().stage_task_completion(id, output_path)
+        self.as_ref()
+            .stage_task_completion(id, output_path, artifact_diagnostic)
     }
     fn stage_terminal_history_task<'a>(
         &'a self,

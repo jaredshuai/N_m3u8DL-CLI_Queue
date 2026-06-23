@@ -24,8 +24,12 @@ impl<'a> TerminalHistoryPorts<'a> {
         &self,
         task_id: &str,
         output_path: &str,
+        artifact_diagnostic: Option<&crate::application::artifact_resolution::ArtifactDiagnostic>,
     ) -> AppResult<Option<TaskSnapshot>> {
-        let task = match self.stage_task_completion(task_id, output_path).await? {
+        let task = match self
+            .stage_task_completion(task_id, output_path, artifact_diagnostic)
+            .await?
+        {
             Some(task) => task,
             None => return Ok(None),
         };
@@ -83,9 +87,10 @@ impl<'a> TerminalHistoryPorts<'a> {
         &self,
         task_id: &str,
         output_path: &str,
+        artifact_diagnostic: Option<&crate::application::artifact_resolution::ArtifactDiagnostic>,
     ) -> AppResult<Option<TaskSnapshot>> {
         self.queue_repository
-            .stage_task_completion(task_id, output_path)
+            .stage_task_completion(task_id, output_path, artifact_diagnostic)
             .await
     }
 

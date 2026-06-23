@@ -127,6 +127,7 @@ impl QueueManager {
         &self,
         id: &str,
         output_path: &str,
+        artifact_diagnostic: Option<&crate::application::artifact_resolution::ArtifactDiagnostic>,
     ) -> AppResult<Option<TaskSnapshot>> {
         let snapshot_opt = self
             .store
@@ -149,12 +150,16 @@ impl QueueManager {
                 .await;
         }
 
-        // domain Task 无 output_path 字段，From<Task> 转出的 snapshot 该字段为 None。
-        // 这里用真实的 output_path 回填，确保历史记录能持久化下载产物路径。
+        // domain Task 无 output_path / artifact_diagnostic 字段，From<Task> 转出的 snapshot
+        // 这两个字段均为 None。这里用 application 层计算出的真实值回填，确保历史记录
+        // 能持久化下载产物路径以及定位失败时的诊断信息（ADR-0005 stage 4.4 follow-up）。
         let mut snapshot_opt = snapshot_opt;
         if let Some(snapshot) = &mut snapshot_opt {
             if !output_path.is_empty() {
                 snapshot.output_path = Some(output_path.to_string());
+            }
+            if let Some(diag) = artifact_diagnostic {
+                snapshot.artifact_diagnostic = Some(diag.clone());
             }
         }
 
@@ -420,8 +425,11 @@ impl QueueRepository for QueueManager {
         &'a self,
         id: &'a str,
         output_path: &'a str,
+        artifact_diagnostic: Option<&'a crate::application::artifact_resolution::ArtifactDiagnostic>,
     ) -> QueueRepositoryFuture<'a, AppResult<Option<TaskSnapshot>>> {
-        Box::pin(async move { QueueManager::stage_task_completion(self, id, output_path).await })
+        Box::pin(async move {
+            QueueManager::stage_task_completion(self, id, output_path, artifact_diagnostic).await
+        })
     }
 
     fn stage_terminal_history_task<'a>(
