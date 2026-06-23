@@ -524,24 +524,39 @@ impl<'a> QueueSchedulingPorts<'a> {
         download_dir: &crate::application::artifact_inventory::ArtifactDir,
         save_name: Option<&str>,
     ) {
-        let output_path = self.resolve_completed_artifact_path(download_dir, save_name).await;
+        let resolution = self.resolve_completed_artifact(download_dir, save_name).await;
+        let output_path = match &resolution {
+            crate::application::artifact_resolution::ArtifactResolution::Located(path) => {
+                Some(path.as_str().to_string())
+            }
+            _ => None,
+        };
         self.complete_child_exit(task_id, output_path.as_deref()).await;
+        // NOTE: artifact_diagnostic projection onto TaskSnapshot is a follow-up.
+        // Currently `InventoryUnavailable` is recorded via diagnostics warn above;
+        // the TaskSnapshot.artifact_diagnostic field is in place (stage 4.4) but
+        // not yet wired to receive the resolution's diagnostic — that requires
+        // threading the diagnostic through the stage_task_completion port chain.
     }
 
-    /// Resolve the artifact path for a completed task. Returns:
-    /// - `Some(path)` when `locate_artifact` finds a candidate,
-    /// - `None` when the directory is missing / no candidate matches / the
-    ///   inventory itself failed (a diagnostic warn is recorded in the latter
-    ///   case so history can later explain the empty `output_path`).
-    async fn resolve_completed_artifact_path(
+    /// Resolve the artifact for a completed task. Returns the full
+    /// `ArtifactResolution` so callers can distinguish:
+    /// - `Located(path)` — artifact found, path persisted as `output_path`
+    /// - `NotFound` — directory missing/empty, or no entry matched policy
+    /// - `InventoryUnavailable(err)` — inventory IO failed; a warn is logged
+    ///
+    /// Keeping the full resolution (rather than collapsing to `Option<String>`)
+    /// preserves the diagnostic for future projection onto `TaskSnapshot`.
+    async fn resolve_completed_artifact(
         &self,
         download_dir: &crate::application::artifact_inventory::ArtifactDir,
         save_name: Option<&str>,
-    ) -> Option<String> {
+    ) -> crate::application::artifact_resolution::ArtifactResolution {
         use crate::application::artifact_location::{
             locate_artifact, ArtifactLocatePolicy, ArtifactLocateRequest,
         };
         use crate::application::artifact_inventory::InventoryMoment;
+        use crate::application::artifact_resolution::ArtifactResolution;
 
         let snapshot = match self.artifact_inventory.snapshot(download_dir).await {
             Ok(s) => s,
@@ -551,7 +566,7 @@ impl<'a> QueueSchedulingPorts<'a> {
                     save_name.unwrap_or("(no save_name)"),
                     err.message
                 ));
-                return None;
+                return ArtifactResolution::InventoryUnavailable(err);
             }
         };
 
@@ -559,8 +574,8 @@ impl<'a> QueueSchedulingPorts<'a> {
         let policy = ArtifactLocatePolicy::default_for_n_m3u8dl_cli();
         let request = ArtifactLocateRequest::new(save_name.map(|s| s.to_string()));
         match locate_artifact(&snapshot, &request, &policy, now) {
-            Some(path) => Some(path.into_string()),
-            None => None,
+            Some(path) => ArtifactResolution::Located(path),
+            None => ArtifactResolution::NotFound,
         }
     }
 
