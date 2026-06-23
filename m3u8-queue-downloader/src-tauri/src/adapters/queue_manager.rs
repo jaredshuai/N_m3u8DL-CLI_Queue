@@ -18,9 +18,7 @@ use crate::application::task_snapshot::TaskSnapshot;
 #[cfg(test)]
 use crate::domain::queue::QueueAggregate;
 use crate::domain::task::Task;
-use crate::ports::queue_repository::{
-    QueueMutation, QueueRepositoryFuture, QueueRunLifecycle, QueueStateReader,
-};
+use crate::ports::queue_repository::{QueueRepository, QueueRepositoryFuture};
 use std::path::PathBuf;
 
 pub struct QueueManager {
@@ -322,7 +320,8 @@ impl QueueManager {
     }
 }
 
-impl QueueStateReader for QueueManager {
+impl QueueRepository for QueueManager {
+    // ---- reader (ex-QueueStateReader) ----
     fn get_state_snapshot<'a>(&'a self) -> QueueRepositoryFuture<'a, QueueStateSnapshot> {
         Box::pin(async move { QueueManager::get_queue_state_snapshot(self).await })
     }
@@ -338,9 +337,8 @@ impl QueueStateReader for QueueManager {
     fn pending_history_tasks<'a>(&'a self) -> QueueRepositoryFuture<'a, Vec<TaskSnapshot>> {
         Box::pin(async move { QueueManager::pending_history_tasks(self).await })
     }
-}
 
-impl QueueMutation for QueueManager {
+    // ---- mutation (ex-QueueMutation) ----
     fn add_task<'a>(&'a self, task: Task) -> QueueRepositoryFuture<'a, AppResult<bool>> {
         Box::pin(async move { QueueManager::add_task(self, task).await })
     }
@@ -378,9 +376,8 @@ impl QueueMutation for QueueManager {
     ) -> QueueRepositoryFuture<'a, AppResult<()>> {
         Box::pin(async move { QueueManager::update_save_name(self, id, save_name).await })
     }
-}
 
-impl QueueRunLifecycle for QueueManager {
+    // ---- lifecycle (ex-QueueRunLifecycle) ----
     fn prepare_for_exit<'a>(&'a self) -> QueueRepositoryFuture<'a, AppResult<()>> {
         Box::pin(async move { QueueManager::prepare_for_exit(self).await })
     }
@@ -442,8 +439,7 @@ impl QueueRunLifecycle for QueueManager {
     }
 }
 
-// QueueManager automatically implements the sum trait QueueRepository via the blanket impl
-// once it implements the three narrow traits above. No hand-written forwarding of 18 methods needed.
+// ADR-0006: QueueManager directly implements QueueRepository (no more narrow-trait split).
 
 #[cfg(test)]
 mod tests {
