@@ -40,9 +40,6 @@ impl ArtifactPath {
     pub(crate) fn new(path: String) -> Self {
         Self(path)
     }
-    pub(crate) fn into_string(self) -> String {
-        self.0
-    }
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
