@@ -14,8 +14,8 @@
 //! a whitelisted extension.
 
 use crate::application::artifact_inventory::{
-    ArtifactDirectoryPresence, ArtifactDirectorySnapshot, ArtifactEntryKind, ArtifactModifiedAt,
-    ArtifactPath, InventoryMoment, ObservedArtifactEntry,
+    ArtifactDirectoryPresence, ArtifactDirectorySnapshot, ArtifactEntryKind, ArtifactPath,
+    InventoryMoment, ObservedArtifactEntry,
 };
 use chrono::Duration;
 
@@ -234,8 +234,10 @@ fn has_extension(name_lower: &str, ext: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::artifact_inventory::{ArtifactDir, InventoryMoment};
-    use chrono::{TimeZone, Utc};
+    use crate::application::artifact_inventory::{
+        ArtifactDir, ArtifactModifiedAt, InventoryMoment,
+    };
+    use chrono::Utc;
 
     fn present_snapshot(entries: Vec<ObservedArtifactEntry>) -> ArtifactDirectorySnapshot {
         ArtifactDirectorySnapshot {
