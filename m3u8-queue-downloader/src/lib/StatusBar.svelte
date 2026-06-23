@@ -17,6 +17,12 @@
         : `下载中 (${downloadingCount})`
       : '空闲'
   );
+
+  // Live speed of the currently downloading task (only one runs at a time).
+  // Empty when no download is active or before the first progress event arrives.
+  let currentSpeed = $derived(
+    $tasks.find(t => t.status === 'downloading')?.speed ?? ''
+  );
 </script>
 
 <div class="status-bar">
@@ -41,6 +47,12 @@
       失败: {failedCount}
     </span>
   </div>
+  {#if currentSpeed}
+    <div class="status-meta">
+      <span class="dot down"></span>
+      {currentSpeed}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -73,6 +85,15 @@
     color: var(--color-text-disabled);
     font-size: 11px;
     margin: 0 4px;
+  }
+
+  .status-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    flex-shrink: 0;
   }
 
   .dot {
