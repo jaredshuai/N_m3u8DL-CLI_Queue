@@ -255,6 +255,35 @@ mod tests {
         }
     }
 
+    /// Test ArtifactInventory stub that always fails with a PermissionDenied error.
+    /// Used to verify artifact_diagnostic projection onto TaskSnapshot (ADR-0005 stage 4.4).
+    struct FailingArtifactInventory;
+
+    impl ArtifactInventory for FailingArtifactInventory {
+        fn snapshot<'a>(
+            &'a self,
+            dir: &'a crate::application::artifact_inventory::ArtifactDir,
+        ) -> crate::ports::artifact_inventory::ArtifactInventoryFuture<
+            'a,
+            Result<
+                crate::application::artifact_inventory::ArtifactDirectorySnapshot,
+                crate::application::artifact_inventory::ArtifactInventoryError,
+            >,
+        > {
+            use crate::application::artifact_inventory::{
+                ArtifactDir as Dir, ArtifactInventoryError, ArtifactInventoryErrorKind,
+            };
+            let dir_clone = Dir::new(dir.as_str().to_string());
+            Box::pin(async move {
+                Err(ArtifactInventoryError::new(
+                    dir_clone,
+                    ArtifactInventoryErrorKind::PermissionDenied,
+                    "permission denied (test stub)".to_string(),
+                ))
+            })
+        }
+    }
+
     struct NoopProcessRunner;
 
     impl TaskProcessRunner for NoopProcessRunner {
@@ -1207,6 +1236,102 @@ mod tests {
         let _ = std::fs::remove_dir_all(cli_output_path);
     }
 
+    /// Regression test for ADR-0005 stage 4.4 follow-up:
+    /// when the artifact inventory itself fails (e.g. permission denied),
+    /// the completed task's history record must persist the diagnostic
+    /// (kind + message) on `artifact_diagnostic`, and `output_path` stays None.
+    #[tokio::test]
+    async fn task_completion_with_inventory_failure_persists_diagnostic() {
+        let queue_path = temp_persistence_path();
+        let queue_manager = Arc::new(QueueManager::new(queue_path.clone()));
+        let history_path = std::env::temp_dir().join(format!("history-{}", Uuid::new_v4()));
+        let history_store = Arc::new(HistoryStore::new(history_path.clone()));
+        let cli_output_path = std::env::temp_dir().join(format!("cli-output-{}", Uuid::new_v4()));
+        let cli_output_store = CliOutputStore::new(cli_output_path.clone());
+        let settings_repository = StaticSettingsRepository;
+        let download_directory_resolver = StaticDownloadDirectoryResolver;
+        let process_runner = SuccessfulProcessRunner::default();
+        let shutdown_manager = ShutdownManager::new();
+        let diagnostics = NoopDiagnostics;
+        let events = CapturingFrontendEvents::default();
+        let payload = AddTaskPayload {
+            url: "https://example.com/test.m3u8".to_string(),
+            save_name: None,
+            headers: None,
+        };
+        let (task, _) = add_queue_manager_task(&queue_manager, payload).await;
+
+        queue_manager
+            .set_run_status(QueueRunStatus::Running)
+            .await
+            .expect("set running");
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("scheduled task");
+
+        let failing_inventory = FailingArtifactInventory;
+        let scheduling_ports = QueueSchedulingPorts::new(
+            queue_manager.as_ref(),
+            &settings_repository,
+            &download_directory_resolver,
+            history_store.as_ref(),
+            &cli_output_store,
+            &shutdown_manager,
+            &process_runner,
+            &failing_inventory,
+            &CLOCK,
+            &diagnostics,
+            &events,
+        );
+        scheduling_ports
+            .handle_completed_child_exit(
+                &task.id,
+                &ArtifactDir::new("D:/Videos".to_string()),
+                Some("test"),
+            )
+            .await;
+
+        let completed_page = history_store
+            .get_page(crate::domain::history::HistoryStatus::Completed, 0, 10)
+            .expect("history page");
+        let completed_task = completed_page
+            .tasks
+            .iter()
+            .find(|t| t.id == task.id)
+            .expect("completed task in history");
+
+        // output_path must be None: inventory failed, no artifact located.
+        assert_eq!(
+            completed_task.output_path, None,
+            "output_path must be None when artifact inventory fails"
+        );
+
+        // artifact_diagnostic must be persisted with the inventory failure classification.
+        let diagnostic = completed_task
+            .artifact_diagnostic
+            .as_ref()
+            .expect("artifact_diagnostic must be persisted when inventory fails");
+        assert!(
+            matches!(
+                diagnostic.kind,
+                crate::application::artifact_resolution::ArtifactDiagnosticKind::PermissionDenied
+            ),
+            "diagnostic kind must be PermissionDenied, got {:?}",
+            diagnostic.kind
+        );
+        assert!(
+            diagnostic.message.contains("permission denied"),
+            "diagnostic message must preserve inventory error text, got: {}",
+            diagnostic.message
+        );
+
+        let _ = std::fs::remove_file(queue_path);
+        let _ = std::fs::remove_dir_all(history_path);
+        let _ = std::fs::remove_dir_all(cli_output_path);
+    }
+
     #[tokio::test]
     async fn handle_start_failure_persists_terminal_task_to_history() {
         let queue_manager = Arc::new(QueueManager::new(temp_persistence_path()));
@@ -1418,7 +1543,7 @@ mod tests {
         let terminal_ports =
             terminal_history_orchestrator(queue_manager.as_ref(), blocked_history_store.as_ref());
         let result =
-            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4").await;
+            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None).await;
         assert!(result.is_err());
 
         std::fs::remove_file(&history_path).expect("unblock history path");
@@ -1472,7 +1597,7 @@ mod tests {
         let terminal_ports =
             terminal_history_orchestrator(queue_manager.as_ref(), blocked_history_store.as_ref());
         let result =
-            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4").await;
+            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None).await;
         assert!(result.is_err());
 
         std::fs::remove_file(&history_path).expect("unblock history path");
@@ -1787,7 +1912,7 @@ mod tests {
         let terminal_ports =
             terminal_history_orchestrator(queue_manager.as_ref(), history_store.as_ref());
         let result =
-            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4").await;
+            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None).await;
         assert!(result.is_err());
 
         let state = queue_manager.get_state().await;
@@ -1832,7 +1957,7 @@ mod tests {
         let terminal_ports =
             terminal_history_orchestrator(queue_manager.as_ref(), history_store.as_ref());
         let result =
-            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4").await;
+            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None).await;
 
         assert!(result.is_err());
         let page = history_store

@@ -1,7 +1,21 @@
 # ADR-0005：产物定位策略下沉至 application 层，引入 ArtifactInventory port
 
-- **状态**：已采纳（2026-06-21，经五轮独立 AI 审计 + 用户终审通过）
+- **状态**：已采纳（2026-06-21，经五轮独立 AI 审计 + 用户终审通过；2026-06-23 stage 4.4 follow-up 完成收尾）
 - **决策依据**：候选 1（产物定位 / 完成事件构造泄漏穿过 adapter seam）的 grilling 设计树
+
+## Stage 4.4 follow-up（2026-06-23 完成）
+
+stage 4.4 加了 `TaskSnapshot.artifact_diagnostic` 字段 + `StoredArtifactDiagnostic` 持久化镜像，但当时**填充逻辑未接线**——`resolve_completed_artifact` 返回完整 `ArtifactResolution`，`handle_completed_child_exit` 只取 `Located` 的 path，丢弃了 `InventoryUnavailable` 的诊断。
+
+**收尾实施**（commit 待填）把 diagnostic 真正贯通到 `TaskSnapshot`：
+
+- 扩展 `QueueRepository::stage_task_completion` port signature 加 `artifact_diagnostic: Option<&ArtifactDiagnostic>` 参数
+- `handle_completed_child_exit` 从 resolution 构造 diagnostic（仅 `InventoryUnavailable` → `Some`），穿过 `complete_child_exit` → `handle_completed_child_exit_history` → `handle_completed_task_history` → `stage_task_completion` 五层
+- adapter `QueueManager::stage_task_completion` 在已有的 output_path 回填旁边加 diagnostic 回填
+- 持久化路径已就绪（`StoredArtifactDiagnostic` 双向 From 在 stage 4.4 已加）
+- 新测试 `task_completion_with_inventory_failure_persists_diagnostic` 验证 inventory 失败时 history 记录里 `output_path=None` 且 `artifact_diagnostic=Some(PermissionDenied, ...)`
+
+设计选择：`NotFound`（目录存在但无匹配条目）**不**记录 diagnostic——这是"正常没找到"而非故障；只有 `InventoryUnavailable`（盘点本身失败）才记录。
 
 ## 问题在哪
 

@@ -19,9 +19,10 @@ pub(crate) async fn handle_completed_task_history(
     ports: &TerminalHistoryPorts<'_>,
     task_id: &str,
     output_path: &str,
+    artifact_diagnostic: Option<&crate::application::artifact_resolution::ArtifactDiagnostic>,
 ) -> AppResult<TerminalHistoryRecordOutcome> {
     let task = ports
-        .handle_completed_task_history(task_id, output_path)
+        .handle_completed_task_history(task_id, output_path, artifact_diagnostic)
         .await?;
     match task {
         Some(task) => Ok(TerminalHistoryRecordOutcome::Recorded(task)),
