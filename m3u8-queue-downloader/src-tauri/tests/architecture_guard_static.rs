@@ -4,6 +4,53 @@
 //! Static counterpart to architecture_guard.rs (runtime fs::read_dir layer rules).
 //! Moved out of src/lib.rs; these guards have zero runtime coupling to lib internals.
 
+//!
+//! # Naming conventions (ADR-0007)
+//!
+//! - Architecture-level names (Ports/Facade/Outcome/Port trait/DTO): hardcoded in asserts, rename breaks them
+//! - Implementation-level internal method names: extracted as const below, rename only needs one const value update
+//! - Each assert has an intent comment
+
+// ---- Implementation-level method names (ADR-0007 const extraction) ----
+// These names are implementation details; renaming them does not change architecture seams.
+
+const HANDLE_QUEUE_ADD: &str = "handle_queue_add";
+const HANDLE_TASK_REMOVAL: &str = "handle_task_removal";
+const HANDLE_TASKS_REORDER: &str = "handle_tasks_reorder";
+const HANDLE_QUEUE_RETRY: &str = "handle_queue_retry";
+const HANDLE_QUEUE_START: &str = "handle_queue_start";
+const HANDLE_QUEUE_PAUSE: &str = "handle_queue_pause";
+const CREATE_TASK_PROCESS_RUNNER: &str = "create_task_process_runner";
+const CREATE_PROCESS_RUNNER: &str = "create_process_runner";
+const TASK_CREATION_ORCHESTRATOR: &str = "task_creation_orchestrator";
+const QUEUE_SCHEDULING_ORCHESTRATOR: &str = "queue_scheduling_orchestrator";
+const QUEUE_MUTATION_ORCHESTRATOR: &str = "queue_mutation_orchestrator";
+const QUEUE_QUERY_ORCHESTRATOR: &str = "queue_query_orchestrator";
+const TASK_OUTPUT_EVENT_ORCHESTRATOR: &str = "task_output_event_orchestrator";
+const TERMINAL_OUTPUT_ORCHESTRATOR: &str = "terminal_output_orchestrator";
+const HISTORY_ORCHESTRATOR: &str = "history_orchestrator";
+const TERMINAL_HISTORY_ORCHESTRATOR: &str = "terminal_history_orchestrator";
+const SETTINGS_QUERY_ORCHESTRATOR: &str = "settings_query_orchestrator";
+const HISTORY_REPOSITORY_HANDLE: &str = "history_repository_handle";
+const RUNTIME_STATES: &str = "runtime_states";
+const ON_TERMINAL: &str = "on_terminal";
+const UPDATE_SETTINGS_AND_HANDLE_AUTO_ACTION_CHANGE: &str = "update_settings_and_handle_auto_action_change";
+const RECORD_COMPLETED_TASK_TO_HISTORY: &str = "record_completed_task_to_history";
+const RECORD_TERMINAL_FAILURE_TASK_TO_HISTORY: &str = "record_terminal_failure_task_to_history";
+const HANDLE_FAILED_CHILD_EXIT_INTERNAL: &str = "handle_failed_child_exit_internal";
+const FLUSH_PENDING_HISTORY_TASKS_TO_HISTORY: &str = "flush_pending_history_tasks_to_history";
+const TASK_PROCESS_RUNNER_FACTORY: &str = "task_process_runner_factory";
+const HANDLE_TASK_OUTPUT_EVENT: &str = "handle_task_output_event";
+const HANDLE_TASK_LIFECYCLE_EVENT: &str = "handle_task_lifecycle_event";
+const SPAWN_PENDING_HISTORY_FLUSH: &str = "spawn_pending_history_flush";
+const CREATE_QUEUED_TASK_FROM_HISTORY_RETRY: &str = "create_queued_task_from_history_retry";
+const PUSH_PENDING_HISTORY_TASK: &str = "push_pending_history_task";
+const PARSE_HISTORY_STATUS: &str = "parse_history_status";
+const HISTORY_STATUS_SLUG: &str = "history_status_slug";
+const FLUSH_PENDING_HISTORY_TASKS: &str = "flush_pending_history_tasks";
+const QUEUE_REPOSITORY_MAPPERS: &str = "queue_repository_mappers";
+const QUEUE_MANAGER: &str = "queue_manager";
+
 use std::collections::BTreeSet;
 
 fn domain_sources() -> Vec<(&'static str, &'static str)> {
@@ -467,7 +514,9 @@ fn runtime_adapters_route_warnings_through_diagnostics_port() {
         }
     }
     assert!(pending_history_worker_source.contains("DiagnosticsFacade::new"));
+        // wiring: verify component wiring
     assert!(tray_source.contains("DiagnosticsFacade::new"));
+        // wiring: verify component wiring
 }
 
 #[test]
@@ -620,7 +669,7 @@ fn dependency_graph_is_owned_by_composition_layer() {
     assert!(
         dependency_graph_source.contains("fn queue_mutation_orchestrator")
             && dependency_graph_source.contains("QueueMutationPorts::new")
-            && queue_command_facade_source.contains("queue_mutation_orchestrator")
+            && queue_command_facade_source.contains(QUEUE_MUTATION_ORCHESTRATOR)
             && !queue_command_facade_source.contains("queue_repository.as_ref()"),
         "dependency graph should centralize queue mutation port wiring"
     );
@@ -666,18 +715,18 @@ fn dependency_graph_is_owned_by_composition_layer() {
         );
     }
     assert!(
-        queue_command_facade_source.contains("handle_queue_add")
-            && queue_command_facade_source.contains("handle_task_removal")
-            && queue_command_facade_source.contains("handle_tasks_reorder")
-            && queue_command_facade_source.contains("handle_queue_retry")
-            && queue_command_facade_source.contains("handle_queue_start")
-            && queue_command_facade_source.contains("handle_queue_pause"),
+        queue_command_facade_source.contains(HANDLE_QUEUE_ADD)
+            && queue_command_facade_source.contains(HANDLE_TASK_REMOVAL)
+            && queue_command_facade_source.contains(HANDLE_TASKS_REORDER)
+            && queue_command_facade_source.contains(HANDLE_QUEUE_RETRY)
+            && queue_command_facade_source.contains(HANDLE_QUEUE_START)
+            && queue_command_facade_source.contains(HANDLE_QUEUE_PAUSE),
         "queue command facade should wire split queue use cases directly"
     );
     assert!(
         dependency_graph_source.contains("fn task_creation_orchestrator")
             && dependency_graph_source.contains("TaskCreationPorts::new")
-            && queue_command_facade_source.contains("task_creation_orchestrator")
+            && queue_command_facade_source.contains(TASK_CREATION_ORCHESTRATOR)
             && !queue_command_facade_source.contains("task_id_generator.as_ref()")
             && !queue_command_facade_source.contains("clock.as_ref()"),
         "dependency graph should centralize task creation port wiring"
@@ -714,8 +763,8 @@ fn dependency_graph_is_owned_by_composition_layer() {
         "pending history facade should own pending terminal-history flush wiring"
     );
     assert!(
-        read_model_query_facade_source.contains("queue_query_orchestrator")
-            && read_model_query_facade_source.contains("settings_query_orchestrator")
+        read_model_query_facade_source.contains(QUEUE_QUERY_ORCHESTRATOR)
+            && read_model_query_facade_source.contains(SETTINGS_QUERY_ORCHESTRATOR)
             && read_model_query_facade_source.contains("HistoryUseCases::new")
             && read_model_query_facade_source.contains("TerminalOutputUseCases::new"),
         "read model query facade should own adapter-facing query wiring"
@@ -723,12 +772,12 @@ fn dependency_graph_is_owned_by_composition_layer() {
     assert!(
         runtime_facade_source.contains("QueueSchedulingPorts")
             && runtime_facade_source.contains("TaskOutputEventPorts")
-            && runtime_facade_source.contains("queue_scheduling_orchestrator")
-            && runtime_facade_source.contains("task_output_event_orchestrator"),
+            && runtime_facade_source.contains(QUEUE_SCHEDULING_ORCHESTRATOR)
+            && runtime_facade_source.contains(TASK_OUTPUT_EVENT_ORCHESTRATOR),
         "runtime facade should own adapter-facing runtime port wiring"
     );
     assert!(
-        settings_command_facade_source.contains("update_settings_and_handle_auto_action_change"),
+        settings_command_facade_source.contains(UPDATE_SETTINGS_AND_HANDLE_AUTO_ACTION_CHANGE),
         "settings command facade should own adapter-facing settings port wiring"
     );
 }
@@ -782,24 +831,30 @@ fn command_and_tray_adapters_delegate_queue_commands_to_queue_command_facade() {
         "tray.rs should route queue mutations through QueueCommandFacade"
     );
     let queue_command_facade_source = include_str!("../src/composition/queue_command_facade.rs");
-    assert!(queue_command_facade_source.contains("handle_queue_add"));
-    assert!(queue_command_facade_source.contains("handle_task_removal"));
-    assert!(queue_command_facade_source.contains("handle_tasks_reorder"));
-    assert!(queue_command_facade_source.contains("handle_queue_retry"));
-    assert!(queue_command_facade_source.contains("handle_queue_start"));
-    assert!(queue_command_facade_source.contains("handle_queue_pause"));
+    assert!(queue_command_facade_source.contains(HANDLE_QUEUE_ADD));
+        // wiring: verify component wiring
+    assert!(queue_command_facade_source.contains(HANDLE_TASK_REMOVAL));
+        // wiring: verify component wiring
+    assert!(queue_command_facade_source.contains(HANDLE_TASKS_REORDER));
+        // wiring: verify component wiring
+    assert!(queue_command_facade_source.contains(HANDLE_QUEUE_RETRY));
+        // wiring: verify component wiring
+    assert!(queue_command_facade_source.contains(HANDLE_QUEUE_START));
+        // wiring: verify component wiring
+    assert!(queue_command_facade_source.contains(HANDLE_QUEUE_PAUSE));
+        // wiring: verify component wiring
     assert!(
-        queue_command_facade_source.contains("queue_scheduling_orchestrator")
+        queue_command_facade_source.contains(QUEUE_SCHEDULING_ORCHESTRATOR)
             && dependency_graph_source.contains("QueueSchedulingPorts::new"),
         "queue command facade should obtain scheduling dependencies through the centralized DependencyGraph port bundle"
     );
     assert!(
-        queue_command_facade_source.contains("queue_mutation_orchestrator")
+        queue_command_facade_source.contains(QUEUE_MUTATION_ORCHESTRATOR)
             && dependency_graph_source.contains("QueueMutationPorts::new"),
         "queue command facade should obtain mutation dependencies through the centralized DependencyGraph port bundle"
     );
     assert!(
-        queue_command_facade_source.contains("task_creation_orchestrator")
+        queue_command_facade_source.contains(TASK_CREATION_ORCHESTRATOR)
             && dependency_graph_source.contains("TaskCreationPorts::new"),
         "queue command facade should obtain task creation dependencies through the centralized DependencyGraph port bundle"
     );
@@ -828,7 +883,8 @@ fn command_and_tray_adapters_delegate_queue_commands_to_queue_command_facade() {
         !dependency_graph_source.contains("pub(crate) async fn pause_queue"),
         "DependencyGraph should only provide queue wiring, not adapter-facing pause_queue"
     );
-    assert!(queue_command_facade_source.contains("create_task_process_runner"));
+    assert!(queue_command_facade_source.contains(CREATE_TASK_PROCESS_RUNNER));
+        // wiring: verify component wiring
 }
 
 #[test]
@@ -867,28 +923,32 @@ fn tauri_commands_delegate_read_model_queries_to_read_model_query_facade() {
         );
     }
 
-    assert!(read_model_query_facade_source.contains("queue_query_orchestrator"));
+    assert!(read_model_query_facade_source.contains(QUEUE_QUERY_ORCHESTRATOR));
+        // wiring: verify component wiring
     assert!(
-        read_model_query_facade_source.contains("queue_query_orchestrator")
+        read_model_query_facade_source.contains(QUEUE_QUERY_ORCHESTRATOR)
             && !read_model_query_facade_source.contains("queue_repository.as_ref()"),
         "read model query facade should obtain queue query dependencies through DependencyGraph"
     );
-    assert!(read_model_query_facade_source.contains("settings_query_orchestrator"));
+    assert!(read_model_query_facade_source.contains(SETTINGS_QUERY_ORCHESTRATOR));
+        // wiring: verify component wiring
     assert!(
-        read_model_query_facade_source.contains("settings_query_orchestrator")
+        read_model_query_facade_source.contains(SETTINGS_QUERY_ORCHESTRATOR)
             && !read_model_query_facade_source.contains("settings_repository.as_ref()"),
         "read model query facade should obtain settings query dependencies through DependencyGraph"
     );
     assert!(read_model_query_facade_source.contains("HistoryUseCases::new"));
+        // wiring: verify component wiring
     assert!(
-        read_model_query_facade_source.contains("history_orchestrator")
-            && !read_model_query_facade_source.contains("history_repository_handle")
+        read_model_query_facade_source.contains(HISTORY_ORCHESTRATOR)
+            && !read_model_query_facade_source.contains(HISTORY_REPOSITORY_HANDLE)
             && !read_model_query_facade_source.contains("HistoryPorts::new"),
         "read model query facade should obtain owned history query dependencies through DependencyGraph"
     );
     assert!(read_model_query_facade_source.contains("TerminalOutputUseCases::new"));
+        // wiring: verify component wiring
     assert!(
-        read_model_query_facade_source.contains("terminal_output_orchestrator")
+        read_model_query_facade_source.contains(TERMINAL_OUTPUT_ORCHESTRATOR)
             && !read_model_query_facade_source.contains("terminal_output_repository"),
         "read model query facade should obtain owned terminal output query dependencies through DependencyGraph"
     );
@@ -926,11 +986,12 @@ fn tauri_commands_delegate_history_commands_to_history_command_facade() {
         "DependencyGraph should only expose history dependencies, not an adapter-facing history use-case factory"
     );
     assert!(
-        history_command_facade_source.contains("history_orchestrator")
+        history_command_facade_source.contains(HISTORY_ORCHESTRATOR)
             && dependency_graph_source.contains("HistoryPorts::new"),
         "HistoryCommandFacade should obtain history dependency wiring from DependencyGraph"
     );
     assert!(history_command_facade_source.contains("HistoryUseCases::new"));
+        // wiring: verify component wiring
 }
 
 #[test]
@@ -997,7 +1058,7 @@ fn tauri_commands_delegate_settings_commands_to_settings_command_facade() {
         "DependencyGraph should only expose settings dependencies, not an adapter-facing settings use-case factory"
     );
     assert!(
-        settings_command_facade_source.contains("update_settings_and_handle_auto_action_change")
+        settings_command_facade_source.contains(UPDATE_SETTINGS_AND_HANDLE_AUTO_ACTION_CHANGE)
     );
 }
 
@@ -1058,10 +1119,14 @@ fn event_handlers_delegate_runtime_use_cases_to_runtime_facade() {
         event_handlers_source.contains("RuntimeFacade::new"),
         "event handlers should delegate runtime orchestration through RuntimeFacade"
     );
-    assert!(event_handlers_source.contains("handle_task_lifecycle_event"));
-    assert!(event_handlers_source.contains("handle_task_output_event"));
+    assert!(event_handlers_source.contains(HANDLE_TASK_LIFECYCLE_EVENT));
+        // wiring: verify component wiring
+    assert!(event_handlers_source.contains(HANDLE_TASK_OUTPUT_EVENT));
+        // wiring: verify component wiring
     assert!(runtime_facade_source.contains("QueueSchedulingPorts"));
+        // wiring: verify component wiring
     assert!(runtime_facade_source.contains("TaskOutputEventPorts"));
+        // wiring: verify component wiring
     assert!(
         !dependency_graph_source.contains("pub(crate) async fn handle_task_lifecycle_event"),
         "DependencyGraph should only provide wiring, not adapter-facing lifecycle orchestration"
@@ -1103,16 +1168,16 @@ fn runtime_process_runners_are_created_through_composition_facades() {
     let runtime_facade_source = include_str!("../src/composition/runtime_facade.rs");
     assert!(
         dependency_graph_source.contains("fn create_task_process_runner")
-            && dependency_graph_source.contains("create_process_runner"),
+            && dependency_graph_source.contains(CREATE_PROCESS_RUNNER),
         "DependencyGraph should centralize process runner factory wiring"
     );
     assert!(
-        !queue_command_facade_source.contains("task_process_runner_factory")
-            && queue_command_facade_source.contains("create_task_process_runner")
+        !queue_command_facade_source.contains(TASK_PROCESS_RUNNER_FACTORY)
+            && queue_command_facade_source.contains(CREATE_TASK_PROCESS_RUNNER)
     );
     assert!(
-        !runtime_facade_source.contains("task_process_runner_factory")
-            && runtime_facade_source.contains("create_task_process_runner")
+        !runtime_facade_source.contains(TASK_PROCESS_RUNNER_FACTORY)
+            && runtime_facade_source.contains(CREATE_TASK_PROCESS_RUNNER)
     );
 
     for (name, source) in [
@@ -1127,7 +1192,7 @@ fn runtime_process_runners_are_created_through_composition_facades() {
         ),
     ] {
         assert!(
-            !source.contains("create_process_runner"),
+            !source.contains(CREATE_PROCESS_RUNNER),
             "{name} should delegate process runner creation to composition facades"
         );
     }
@@ -1182,6 +1247,7 @@ fn queue_scheduler_starts_processes_through_port() {
     }
 
     assert!(port_source.contains("trait TaskProcessRunner"));
+        // wiring: verify component wiring
     assert!(
         request_source.contains("struct TaskProcessStartRequest"),
         "application layer should own the process start request"
@@ -1199,6 +1265,7 @@ fn queue_scheduler_starts_processes_through_port() {
         "process runner port should not expose the full domain Task entity"
     );
     assert!(adapter_source.contains("impl TaskProcessRunner for TauriTaskProcessRunner"));
+        // wiring: verify component wiring
 }
 
 #[test]
@@ -1334,7 +1401,9 @@ fn exit_paths_use_process_supervisor_port() {
         );
     }
     assert!(port_source.contains("trait TaskProcessSupervisor"));
+        // wiring: verify component wiring
     assert!(adapter_source.contains("impl TaskProcessSupervisor for TaskRunner"));
+        // wiring: verify component wiring
     assert!(
         exit_orchestrator_source.contains("pub(crate) async fn exit_application"),
         "ExitPorts should expose an exit_application intent method for ExitApplication action"
@@ -1449,7 +1518,9 @@ fn runtime_terminal_history_paths_use_history_repository_port() {
     let port_source = include_str!("../src/ports/history_repository.rs");
     let adapter_source = include_str!("../src/adapters/history_store.rs");
     assert!(port_source.contains("trait HistoryRepository"));
+        // wiring: verify component wiring
     assert!(adapter_source.contains("impl HistoryRepository for HistoryStore"));
+        // wiring: verify component wiring
 }
 
 #[test]
@@ -1486,7 +1557,7 @@ fn terminal_history_uses_queue_repository_port() {
         );
     }
     assert!(
-        !source.contains("queue_manager"),
+        !source.contains(QUEUE_MANAGER),
         "terminal_history should not depend on concrete queue manager storage"
     );
     assert!(
@@ -1500,6 +1571,7 @@ fn terminal_history_uses_queue_repository_port() {
         "terminal history use cases should not consume domain task entities from pending-history reads"
     );
     assert!(port_source.contains("trait QueueRepository"));
+        // wiring: verify component wiring
     // ADR-0006: single impl block, no narrow-trait split
     assert!(
         adapter_source.contains("impl QueueRepository for QueueManager"),
@@ -1548,7 +1620,7 @@ fn terminal_history_uses_queue_repository_port() {
         );
     }
     assert!(
-        !terminal_history_orchestrator_source.contains("flush_pending_history_tasks_to_history"),
+        !terminal_history_orchestrator_source.contains(FLUSH_PENDING_HISTORY_TASKS_TO_HISTORY),
         "TerminalHistoryPorts should hide history-persistence wording behind semantic intent"
     );
     assert!(
@@ -1561,7 +1633,7 @@ fn terminal_history_uses_queue_repository_port() {
         "TerminalHistoryPorts should hide queue repository failure-preparation wording behind semantic intent"
     );
     assert!(
-        !terminal_history_orchestrator_source.contains("record_completed_task_to_history"),
+        !terminal_history_orchestrator_source.contains(RECORD_COMPLETED_TASK_TO_HISTORY),
         "TerminalHistoryPorts should not retain record_completed_task_to_history; use terminal-history intent naming"
     );
     assert!(
@@ -1569,7 +1641,7 @@ fn terminal_history_uses_queue_repository_port() {
         "terminal_history_use_cases should not call record_completed_task_to_history; use terminal-history intent naming"
     );
     assert!(
-        !terminal_history_orchestrator_source.contains("record_terminal_failure_task_to_history"),
+        !terminal_history_orchestrator_source.contains(RECORD_TERMINAL_FAILURE_TASK_TO_HISTORY),
         "TerminalHistoryPorts should not retain record_terminal_failure_task_to_history; use terminal-history intent naming"
     );
     assert!(
@@ -1738,7 +1810,7 @@ fn queue_scheduling_owns_failed_child_exit_matching() {
     let method_region_compact = method_region.split_whitespace().collect::<String>();
 
     assert!(
-        method_region.contains("handle_failed_child_exit_internal"),
+        method_region.contains(HANDLE_FAILED_CHILD_EXIT_INTERNAL),
         "QueueSchedulingPorts should keep handle_failed_child_exit_internal as an internal method"
     );
     assert!(
@@ -1837,7 +1909,7 @@ fn queue_scheduling_owns_failed_child_exit_matching() {
         "handle_failed_child_exit_internal should mark terminal failure before recording failed history"
     );
     assert!(
-        !scheduling_ports_source.contains("on_terminal"),
+        !scheduling_ports_source.contains(ON_TERMINAL),
         "QueueSchedulingPorts should not accept a terminal callback; it owns terminal failure marking"
     );
     assert!(
@@ -2395,7 +2467,9 @@ fn dependency_graph_exposes_process_shutdown_as_supervisor_port() {
         "DependencyGraph should expose process capabilities through process runner ports"
     );
     assert!(source.contains("TaskProcessRunnerFactory"));
+        // wiring: verify component wiring
     assert!(source.contains("TaskProcessSupervisor"));
+        // wiring: verify component wiring
     assert!(
         source.contains("Arc<dyn TaskProcessSupervisor>"),
         "DependencyGraph should hold a process supervisor trait object"
@@ -2537,8 +2611,10 @@ fn terminal_history_core_has_no_tauri_worker_dependencies() {
     );
 
     let worker_source = include_str!("../src/composition/pending_history_worker.rs");
-    assert!(worker_source.contains("spawn_pending_history_flush"));
+    assert!(worker_source.contains(SPAWN_PENDING_HISTORY_FLUSH));
+        // wiring: verify component wiring
     assert!(worker_source.contains("TauriFrontendEventPublisher"));
+        // wiring: verify component wiring
 }
 
 #[test]
@@ -2551,12 +2627,14 @@ fn pending_history_worker_delegates_flush_to_pending_history_facade() {
 
     assert!(source.contains("composition::dependency_graph::DependencyGraph"));
     assert!(source.contains("composition::pending_history_facade::PendingHistoryFacade"));
+        // wiring: verify component wiring
     assert!(source.contains("PendingHistoryFacade::new"));
+        // wiring: verify component wiring
     assert!(bootstrap_source.contains("spawn_pending_history_flush(state.clone()"));
     assert!(pending_history_facade_source
         .contains("terminal_history_use_cases::flush_pending_history_tasks"));
     assert!(
-        pending_history_facade_source.contains("terminal_history_orchestrator")
+        pending_history_facade_source.contains(TERMINAL_HISTORY_ORCHESTRATOR)
             && dependency_graph_source.contains("TerminalHistoryPorts::new"),
         "PendingHistoryFacade should obtain terminal-history port wiring from DependencyGraph"
     );
@@ -2565,7 +2643,7 @@ fn pending_history_worker_delegates_flush_to_pending_history_facade() {
         "PendingHistoryFacade should not expose domain task entities to adapters"
     );
     assert!(
-        !dependency_graph_source.contains("flush_pending_history_tasks"),
+        !dependency_graph_source.contains(FLUSH_PENDING_HISTORY_TASKS),
         "DependencyGraph should not expose pending history use-case orchestration"
     );
     for forbidden in [
@@ -2654,7 +2732,7 @@ fn queue_manager_delegates_repository_outcome_mapping() {
     let mapper_source = include_str!("../src/adapters/queue_repository_mappers.rs");
 
     assert!(
-        production_source.contains("queue_repository_mappers"),
+        production_source.contains(QUEUE_REPOSITORY_MAPPERS),
         "QueueManager should delegate repository outcome mapping to an adapter mapper"
     );
     for mapper in [
@@ -2845,7 +2923,7 @@ fn runtime_states_are_managed_in_adapter_layer() {
     let queue_state_store_source = include_str!("../src/adapters/queue_state_store.rs");
 
     assert!(
-        queue_state_store_source.contains("runtime_states"),
+        queue_state_store_source.contains(RUNTIME_STATES),
         "QueueStateStore should store runtime_states"
     );
     assert!(
@@ -2899,8 +2977,8 @@ fn history_status_does_not_depend_on_serialization_details() {
 
     let adapter_codec_source = include_str!("../src/adapters/history_status_codec.rs");
     assert!(
-        adapter_codec_source.contains("parse_history_status")
-            && adapter_codec_source.contains("history_status_slug"),
+        adapter_codec_source.contains(PARSE_HISTORY_STATUS)
+            && adapter_codec_source.contains(HISTORY_STATUS_SLUG),
         "adapter layer should own history status string parsing and formatting"
     );
 }
@@ -2949,7 +3027,7 @@ fn queue_aggregate_is_owned_by_domain_layer() {
         "QueueState compatibility alias should be retired from the domain boundary"
     );
     assert!(
-        domain_queue_source.contains("push_pending_history_task"),
+        domain_queue_source.contains(PUSH_PENDING_HISTORY_TASK),
         "QueueAggregate should own pending history invariants"
     );
     assert!(
@@ -3109,8 +3187,11 @@ fn terminal_output_use_cases_depend_on_repository_port() {
     let adapter_source = include_str!("../src/adapters/cli_output_store.rs");
 
     assert!(source.contains("TerminalOutputPorts"));
+        // wiring: verify component wiring
     assert!(ports_source.contains("application::TerminalOutputRepository"));
+        // wiring: verify component wiring
     assert!(ports_source.contains("TerminalOutputRepository"));
+        // wiring: verify component wiring
     assert!(
         !ports_source.contains("pub(crate) terminal_output_repository"),
         "TerminalOutputPorts should encapsulate repository fields"
@@ -3120,6 +3201,7 @@ fn terminal_output_use_cases_depend_on_repository_port() {
         "TerminalOutputUseCases should call TerminalOutputPorts methods instead of reading repository fields"
     );
     assert!(source.contains("CliTerminalState"));
+        // wiring: verify component wiring
     assert!(
         page_source.contains("struct TerminalOutputPage"),
         "application layer should own terminal output page data"
@@ -3161,7 +3243,9 @@ fn history_use_cases_depend_on_repository_port() {
     let adapter_source = include_str!("../src/adapters/history_store.rs");
 
     assert!(source.contains("HistoryPorts"));
+        // wiring: verify component wiring
     assert!(history_orchestrator_source.contains("application::HistoryRepository"));
+        // wiring: verify component wiring
     assert!(
         !history_orchestrator_source.contains("pub(crate) history_repository"),
         "HistoryPorts should encapsulate repository fields"
@@ -3171,6 +3255,7 @@ fn history_use_cases_depend_on_repository_port() {
         "HistoryUseCases should call HistoryPorts methods instead of reading repository fields"
     );
     assert!(source.contains("HistoryPage"));
+        // wiring: verify component wiring
     assert!(
         page_source.contains("struct HistoryTaskPage"),
         "application layer should own history task page data"
@@ -3287,7 +3372,7 @@ fn history_repository_models_find_outcome_explicitly() {
     );
     assert!(
         task_creation_orchestrator_source
-            .contains("create_queued_task_from_history_retry")
+            .contains(CREATE_QUEUED_TASK_FROM_HISTORY_RETRY)
             && task_creation_orchestrator_source.contains("history_task: &TaskSnapshot"),
         "history retry task creation should consume application snapshots through TaskCreationPorts"
     );
