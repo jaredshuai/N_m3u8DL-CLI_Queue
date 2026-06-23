@@ -1,5 +1,6 @@
 pub(crate) mod app_error_conversions;
 pub(crate) mod cli_output_store;
+pub(crate) mod filesystem_artifact_inventory;
 pub(crate) mod frontend_dto;
 pub(crate) mod history_status_codec;
 pub(crate) mod history_store;

@@ -1,4 +1,5 @@
 pub(crate) mod application_control;
+pub(crate) mod artifact_inventory;
 pub(crate) mod clock;
 pub(crate) mod diagnostics;
 pub(crate) mod directory_opener;

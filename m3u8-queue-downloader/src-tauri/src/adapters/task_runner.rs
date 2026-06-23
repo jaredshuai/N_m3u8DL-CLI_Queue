@@ -1,6 +1,7 @@
 use crate::adapters::progress_parser::{parse_progress, parse_speed, parse_threads};
 use crate::adapters::terminal_parser::{decode_cli_bytes_lossy, TerminalBuffer};
 use crate::application::app_error::{AppError, AppResult};
+use crate::application::artifact_inventory::ArtifactDir;
 use crate::application::process_runner_outcomes::ProcessRunnerShutdownStatus;
 use crate::application::task_process_events::{TaskLifecycleEvent, TaskOutputEvent};
 use crate::application::task_process_start_request::TaskProcessStartRequest;
@@ -322,23 +323,27 @@ impl TaskRunner {
             let result = child.wait().await;
             cleanup_running_task(&running_processes, &task_id).await;
 
+            // ADR-0005: the adapter no longer locates the artifact. It only
+            // reports the raw facts (download_dir + save_name) and lets the
+            // application's handle_completed_child_exit do the snapshot +
+            // locate_artifact work.
             let event = match result {
+                Ok(exit_status) if exit_status.success() => {
+                    let download_dir_string = download_dir.to_string_lossy().to_string();
+                    TaskLifecycleEvent::Completed {
+                        id: task_id,
+                        download_dir: ArtifactDir::new(download_dir_string),
+                        save_name,
+                    }
+                }
                 Ok(exit_status) => {
-                    if exit_status.success() {
-                        let output_path = find_output_file(&download_dir, &save_name);
-                        TaskLifecycleEvent::Completed {
-                            id: task_id,
-                            output_path: output_path.unwrap_or_default(),
-                        }
-                    } else {
-                        let error_msg = format!(
-                            "Process exited with code: {}",
-                            exit_status.code().unwrap_or(-1)
-                        );
-                        TaskLifecycleEvent::Failed {
-                            id: task_id,
-                            error_message: error_msg,
-                        }
+                    let error_msg = format!(
+                        "Process exited with code: {}",
+                        exit_status.code().unwrap_or(-1)
+                    );
+                    TaskLifecycleEvent::Failed {
+                        id: task_id,
+                        error_message: error_msg,
                     }
                 }
                 Err(e) => {
@@ -383,7 +388,12 @@ impl TaskRunner {
                 let event = match result {
                     Ok(status) if status.success() => TaskLifecycleEvent::Completed {
                         id: task_id,
-                        output_path: String::new(),
+                        // Test helper: no real download_dir is available here.
+                        // The application-side test stub (NoopArtifactInventory)
+                        // returns a Missing snapshot, so the artifact resolves
+                        // to None — equivalent to the old empty-string behavior.
+                        download_dir: ArtifactDir::new(String::new()),
+                        save_name: None,
                     },
                     Ok(status) => TaskLifecycleEvent::Failed {
                         id: task_id,
@@ -624,86 +634,6 @@ fn send_output_event(
     if let Some(sender) = output_sender {
         let _ = sender.send(event);
     }
-}
-
-fn find_output_file(output_dir: &PathBuf, save_name: &Option<String>) -> Option<String> {
-    if !output_dir.exists() {
-        return None;
-    }
-
-    let extensions = ["mp4", "mkv", "ts", "flv", "mpg", "mpeg"];
-
-    if let Some(ref name) = save_name {
-        if !name.is_empty() {
-            for ext in &extensions {
-                let exact = output_dir.join(format!("{}.{}", name, ext));
-                if exact.exists() {
-                    return exact.to_str().map(|s| s.to_string());
-                }
-            }
-
-            if let Ok(entries) = std::fs::read_dir(output_dir) {
-                let mut matching: Vec<_> = entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| {
-                        let file_name = e.file_name();
-                        let file_name_str = file_name.to_string_lossy();
-                        file_name_str.starts_with(name)
-                            && extensions
-                                .iter()
-                                .any(|ext| file_name_str.ends_with(&format!(".{}", ext)))
-                    })
-                    .collect();
-
-                matching.sort_by(|a, b| {
-                    let a_time = a.metadata().ok().and_then(|m| m.modified().ok());
-                    let b_time = b.metadata().ok().and_then(|m| m.modified().ok());
-                    b_time.cmp(&a_time)
-                });
-
-                if let Some(first) = matching.first() {
-                    return first.path().to_str().map(|s| s.to_string());
-                }
-            }
-        }
-    }
-
-    if let Ok(entries) = std::fs::read_dir(output_dir) {
-        let now = std::time::SystemTime::now();
-        let mut recent: Vec<_> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                let file_name = e.file_name();
-                let file_name_str = file_name.to_string_lossy();
-                extensions
-                    .iter()
-                    .any(|ext| file_name_str.ends_with(&format!(".{}", ext)))
-            })
-            .filter(|e| {
-                e.metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map(|mod_time| {
-                        now.duration_since(mod_time)
-                            .unwrap_or(std::time::Duration::ZERO)
-                            < std::time::Duration::from_secs(60)
-                    })
-                    .unwrap_or(false)
-            })
-            .collect();
-
-        recent.sort_by(|a, b| {
-            let a_time = a.metadata().ok().and_then(|m| m.modified().ok());
-            let b_time = b.metadata().ok().and_then(|m| m.modified().ok());
-            b_time.cmp(&a_time)
-        });
-
-        if let Some(first) = recent.first() {
-            return first.path().to_str().map(|s| s.to_string());
-        }
-    }
-
-    None
 }
 
 async fn cleanup_running_task(

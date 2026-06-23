@@ -135,7 +135,7 @@ impl QueueManager {
             .update_and_persist_when(
                 |state| {
                     let o = application_task_completion_staging_outcome(
-                        state.stage_task_completion(id, output_path),
+                        state.stage_task_completion(id),
                     );
                     Ok(o)
                 },

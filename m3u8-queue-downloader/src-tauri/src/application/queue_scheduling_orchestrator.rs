@@ -22,6 +22,8 @@ use crate::application::terminal_history_use_cases::{
     TerminalHistoryRecordOutcome,
 };
 use crate::application::Diagnostics;
+use crate::application::ArtifactInventory;
+use crate::application::Clock;
 use crate::application::DownloadDirectoryResolver;
 use crate::application::FrontendEventPublisher;
 use crate::application::HistoryRepository;
@@ -42,6 +44,8 @@ pub(crate) struct QueueSchedulingPorts<'a> {
     terminal_output_repository: &'a dyn TerminalOutputRepository,
     shutdown_scheduler: &'a dyn ShutdownScheduler,
     process_runner: &'a dyn TaskProcessRunner,
+    artifact_inventory: &'a dyn ArtifactInventory,
+    clock: &'a dyn Clock,
     diagnostics: &'a dyn Diagnostics,
     events: &'a dyn FrontendEventPublisher,
 }
@@ -55,6 +59,8 @@ impl<'a> QueueSchedulingPorts<'a> {
         terminal_output_repository: &'a dyn TerminalOutputRepository,
         shutdown_scheduler: &'a dyn ShutdownScheduler,
         process_runner: &'a dyn TaskProcessRunner,
+        artifact_inventory: &'a dyn ArtifactInventory,
+        clock: &'a dyn Clock,
         diagnostics: &'a dyn Diagnostics,
         events: &'a dyn FrontendEventPublisher,
     ) -> Self {
@@ -66,6 +72,8 @@ impl<'a> QueueSchedulingPorts<'a> {
             terminal_output_repository,
             shutdown_scheduler,
             process_runner,
+            artifact_inventory,
+            clock,
             diagnostics,
             events,
         }
@@ -226,9 +234,20 @@ impl<'a> QueueSchedulingPorts<'a> {
     /// High-level intent method for completed-child-exit history recording and notification.
     /// Encapsulates: completed-task history handling, TerminalHistoryRecordOutcome matching,
     /// completed-history recorded event marking, completed-history record failure marking.
-    async fn handle_completed_child_exit_history(&self, task_id: &str, output_path: &str) {
+    async fn handle_completed_child_exit_history(
+        &self,
+        task_id: &str,
+        output_path: Option<&str>,
+    ) {
+        // Downstream history chain expects a `&str` (legacy contract, where
+        // empty string means "no artifact located"). None → "" preserves
+        // that contract; ADR-0005 stage 4 keeps downstream unchanged and
+        // only the entry point (handle_completed_child_exit) knows about
+        // Option semantics. (The artifact_diagnostic projection onto
+        // TaskSnapshot is a follow-up concern.)
+        let output_path_str = output_path.unwrap_or("");
         match self
-            .handle_completed_task_history(task_id, output_path)
+            .handle_completed_task_history(task_id, output_path_str)
             .await
         {
             Ok(TerminalHistoryRecordOutcome::Recorded(task)) => {
@@ -494,14 +513,77 @@ impl<'a> QueueSchedulingPorts<'a> {
 
     /// High-level completed child-exit intent that owns terminal cleanup, history
     /// recording, run-completion continuation, and queue-state notification.
-    pub(crate) async fn handle_completed_child_exit(&self, task_id: &str, output_path: &str) {
-        self.complete_child_exit(task_id, output_path).await;
+    ///
+    /// Per ADR-0005 decision 5, artifact location is computed here (not by the
+    /// adapter): the adapter only reports the raw facts (task_id + download_dir
+    /// + save_name); this method snapshots the directory via `ArtifactInventory`
+    /// and runs `locate_artifact` to resolve the artifact path.
+    pub(crate) async fn handle_completed_child_exit(
+        &self,
+        task_id: &str,
+        download_dir: &crate::application::artifact_inventory::ArtifactDir,
+        save_name: Option<&str>,
+    ) {
+        let resolution = self.resolve_completed_artifact(download_dir, save_name).await;
+        let output_path = match &resolution {
+            crate::application::artifact_resolution::ArtifactResolution::Located(path) => {
+                Some(path.as_str().to_string())
+            }
+            _ => None,
+        };
+        self.complete_child_exit(task_id, output_path.as_deref()).await;
+        // NOTE: artifact_diagnostic projection onto TaskSnapshot is a follow-up.
+        // Currently `InventoryUnavailable` is recorded via diagnostics warn above;
+        // the TaskSnapshot.artifact_diagnostic field is in place (stage 4.4) but
+        // not yet wired to receive the resolution's diagnostic — that requires
+        // threading the diagnostic through the stage_task_completion port chain.
     }
 
-    async fn complete_child_exit(&self, task_id: &str, output_path: &str) {
+    /// Resolve the artifact for a completed task. Returns the full
+    /// `ArtifactResolution` so callers can distinguish:
+    /// - `Located(path)` — artifact found, path persisted as `output_path`
+    /// - `NotFound` — directory missing/empty, or no entry matched policy
+    /// - `InventoryUnavailable(err)` — inventory IO failed; a warn is logged
+    ///
+    /// Keeping the full resolution (rather than collapsing to `Option<String>`)
+    /// preserves the diagnostic for future projection onto `TaskSnapshot`.
+    async fn resolve_completed_artifact(
+        &self,
+        download_dir: &crate::application::artifact_inventory::ArtifactDir,
+        save_name: Option<&str>,
+    ) -> crate::application::artifact_resolution::ArtifactResolution {
+        use crate::application::artifact_location::{
+            locate_artifact, ArtifactLocatePolicy, ArtifactLocateRequest,
+        };
+        use crate::application::artifact_inventory::InventoryMoment;
+        use crate::application::artifact_resolution::ArtifactResolution;
+
+        let snapshot = match self.artifact_inventory.snapshot(download_dir).await {
+            Ok(s) => s,
+            Err(err) => {
+                self.diagnostics.warn(&format!(
+                    "产物盘点失败，任务 {} 的产物路径将留空：{}",
+                    save_name.unwrap_or("(no save_name)"),
+                    err.message
+                ));
+                return ArtifactResolution::InventoryUnavailable(err);
+            }
+        };
+
+        let now = InventoryMoment::new(self.clock.now());
+        let policy = ArtifactLocatePolicy::default_for_n_m3u8dl_cli();
+        let request = ArtifactLocateRequest::new(save_name.map(|s| s.to_string()));
+        match locate_artifact(&snapshot, &request, &policy, now) {
+            Some(path) => ArtifactResolution::Located(path),
+            None => ArtifactResolution::NotFound,
+        }
+    }
+
+    async fn complete_child_exit(&self, task_id: &str, output_path: Option<&str>) {
+        let output_path_owned = output_path.map(|s| s.to_string());
         self.clear_child_exit_terminal_active_line(task_id);
         self.continue_child_exit_unless_shutting_down(|| async {
-            self.handle_completed_child_exit_history(task_id, output_path)
+            self.handle_completed_child_exit_history(task_id, output_path_owned.as_deref())
                 .await;
             self.drive_child_exit_queue_and_handle_shutdown_countdown("completion")
                 .await;

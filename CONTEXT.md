@@ -22,6 +22,12 @@
 | **队列（Queue）** | 一组排好序的任务，串行处理（同一时间只下载一个） |
 | **活跃任务** | 还没结束的任务——也就是"等待中"或"下载中"的。代码里叫 `is_live_work`，用来判断队列是不是"还活着" |
 | **历史（History）** | 已经到头的任务（完成或失败）留下的不可变记录 |
+| **产物（Artifact）** | 下载完成后落在磁盘上的视频文件。ADR-0005 采纳后目标类型是 `ArtifactPath`（application 层 newtype）。详见 `docs/adr/0005-*.md` |
+| **产物目录（Artifact Dir）** | 产物所在目录，ADR-0005 目标类型 `ArtifactDir`（application 层 newtype，absolute non-canonical）。和 `ArtifactPath` 配对：dir 是输入（要盘点的目录），path 是输出（找到的产物路径） |
+| **产物定位（Artifact Location）** | 下载子进程成功退出后，在下载目录里找到产物文件路径的业务策略——扩展名白名单、save_name 精确匹配、save_name 前缀匹配、新鲜度窗口、mtime 排序。策略是 application 层的纯函数 `locate_artifact`，文件系统访问走 `ArtifactInventory` port |
+| **产物盘点（Artifact Inventory）** | adapter 对下载目录做的一次只读快照，返回 `ArtifactDirectorySnapshot`（含 presence/entries/skipped_entry_count）。port 只报事实，不做策略判断 |
+| **产物解析（Artifact Resolution）** | application 收到"子进程完成"信号后，调用产物盘点 + 定位策略得到的三态结果：`Located(path)` / `NotFound` / `InventoryUnavailable(err)`。是 application 内部类型（不进事件 payload），由 `handle_completed_child_exit` 算出后投影到 `TaskSnapshot` |
+| **产物诊断（Artifact Diagnostic）** | 当产物解析为 `InventoryUnavailable` 时，随 `TaskSnapshot` 持久化的诊断信息（kind + message），解释 `output_path: None` 的原因。前端暂不展示 |
 | **端口（Port）** | 后端内部的一种约定（interface）：某一层声明"我需要别人提供什么能力"，比如"我需要一个时钟""我需要能存任务的仓库"。代码里是 `src/ports/` 下的各种 trait |
 | **适配器（Adapter）** | 端口的具体实现——真正去读系统时钟、写文件、启动子进程的代码。在 `src/adapters/` 下 |
 | **装配容器（DependencyGraph）** | 程序启动时把所有实现创建好、配好的地方，其它代码要用某个能力就向它要。在 `src/composition/dependency_graph.rs` |
@@ -33,6 +39,8 @@
 - 程序入口：`src-tauri/src/lib.rs`（Tauri 启动 + 注册命令）
 - 装配起点：`src-tauri/src/composition/app_bootstrap.rs` 和 `dependency_graph.rs`
 - 架构规则的"活文档"：`src-tauri/tests/architecture_guard_static.rs`（规则以测试形式存在，改架构会先在这里失败）
+- 产物盘点 port：`src-tauri/src/ports/artifact_inventory.rs`（拟新增，见 `docs/adr/0005-*.md`）
+- 产物定位策略：`src-tauri/src/application/artifact_location.rs`（拟新增，纯函数 `locate_artifact`）
 - 前端状态：`src/lib/stores.js`（Svelte 的 store）
 - 前端调用后端的封装：`src/lib/queue-store.js`、`settings-store.js`、`history-store.js`
 

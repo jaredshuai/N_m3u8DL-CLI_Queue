@@ -1,4 +1,7 @@
 pub(crate) mod app_error;
+pub(crate) mod artifact_inventory;
+pub(crate) mod artifact_location;
+pub(crate) mod artifact_resolution;
 pub(crate) mod close_policy;
 pub(crate) mod download_directory;
 pub(crate) mod download_directory_orchestrator;
@@ -41,6 +44,7 @@ pub(crate) mod terminal_output_use_cases;
 // allow callers to use `crate::application::Clock` instead of
 // `crate::ports::Clock`, establishing the correct dependency direction.
 pub(crate) use crate::ports::application_control::ApplicationControl;
+pub(crate) use crate::ports::artifact_inventory::ArtifactInventory;
 pub(crate) use crate::ports::clock::Clock;
 pub(crate) use crate::ports::diagnostics::Diagnostics;
 pub(crate) use crate::ports::directory_opener::DirectoryOpener;

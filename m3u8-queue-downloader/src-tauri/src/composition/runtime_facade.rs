@@ -38,9 +38,13 @@ impl RuntimeFacade {
         let process_runner = self.dependencies.create_task_process_runner();
         let scheduling_ports = self.queue_scheduling_orchestrator(events, process_runner.as_ref());
         match event {
-            TaskLifecycleEvent::Completed { id, output_path } => {
+            TaskLifecycleEvent::Completed {
+                id,
+                download_dir,
+                save_name,
+            } => {
                 scheduling_ports
-                    .handle_completed_child_exit(&id, &output_path)
+                    .handle_completed_child_exit(&id, &download_dir, save_name.as_deref())
                     .await;
             }
             TaskLifecycleEvent::Failed { id, error_message } => {
