@@ -266,7 +266,7 @@ impl TaskRunner {
             .await;
         });
 
-        self.spawn_wait_task(task_id, child, save_name, download_dir);
+        self.spawn_wait_task(task_id, child, save_name, download_dir, pid);
         Ok(())
     }
 
@@ -379,17 +379,19 @@ impl TaskRunner {
     fn spawn_wait_task(
         &self,
         task_id: String,
-        mut child: Child,
+        child: Child,
         save_name: Option<String>,
         download_dir: PathBuf,
+        expected_pid: u32,
     ) {
         let running_processes = Arc::clone(&self.running_processes);
         let lifecycle_sender = self.lifecycle_sender.clone();
         let cancelling = Arc::clone(&self.cancelling);
 
         tokio::spawn(async move {
+            let mut child = child;
             let result = child.wait().await;
-            cleanup_running_task(&running_processes, &task_id).await;
+            cleanup_running_task(&running_processes, &task_id, expected_pid).await;
 
             // If the task was explicitly cancelled via terminate_task, the
             // Cancelled event has already been sent. Skip the process exit
@@ -460,11 +462,12 @@ impl TaskRunner {
         let lifecycle_sender = self.lifecycle_sender.clone();
         let cancelling = Arc::clone(&self.cancelling);
         let task_id = task_id.to_string();
+        let expected_pid = child.id().expect("test child pid");
 
         tokio::spawn(async move {
             let mut child = child;
             let result = child.wait().await;
-            cleanup_running_task(&running_processes, &task_id).await;
+            cleanup_running_task(&running_processes, &task_id, expected_pid).await;
 
             // Mirror spawn_wait_task's cancelling guard so test paths also
             // honor terminate_task and skip the duplicate Failed event.
@@ -732,9 +735,15 @@ fn send_output_event(
 async fn cleanup_running_task(
     running_processes: &Arc<Mutex<StdHashMap<String, u32>>>,
     task_id: &str,
+    expected_pid: u32,
 ) {
     let mut processes = running_processes.lock().await;
-    processes.remove(task_id);
+    if processes.get(task_id) == Some(&expected_pid) {
+        processes.remove(task_id);
+    }
+    // If the PID changed (e.g. stop + immediate retry with same task_id),
+        // the new process must not be removed by the stale waiter. The old
+    // PID simply doesn't match so this is a no-op. See Codex P1 PR #13.
 }
 
 #[cfg(target_os = "windows")]

@@ -672,7 +672,10 @@ impl<'a> QueueSchedulingPorts<'a> {
         self.continue_child_exit_unless_shutting_down(|| async {
             self.diagnostics
                 .warn(&format!("Task {} cancelled by user", task_id));
-            self.drive_child_exit_queue_and_handle_shutdown_countdown("cancellation")
+            // Drive queue continuation (mark changed, schedule next, finish
+            // run if idle) but do NOT trigger auto-shutdown — cancellation
+            // by the user is not "all tasks completed". Codex P1 on PR #13.
+            self.drive_child_exit_queue_and_report_finished("cancellation")
                 .await;
         })
         .await;
