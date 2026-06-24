@@ -1,6 +1,7 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
   import { displayProgressPercent } from './progress.js';
+  import { loadQueueState } from './queue-store.js';
   import { appSettings, clearHistoryTask, trackSessionTask } from './stores.js';
 
   let { task, draggable = false, historical = false, onOpenCliConsole = null, cliConsoleActive = false } = $props();
@@ -35,6 +36,7 @@
 
   let editing = $state(false);
   let draftName = $state('');
+  let committing = $state(false);
 
   async function handleRemove() {
     try {
@@ -72,22 +74,31 @@
   }
 
   function cancelEdit() {
+    if (committing) return;
     editing = false;
   }
 
   async function commitEdit() {
-    if (!editing) return;
-    editing = false;
+    if (!editing || committing) return;
+    committing = true;
     const trimmed = draftName.trim();
     const current = task.saveName ?? '';
-    if (trimmed === current) return;
+    const unchanged = trimmed === current;
+    editing = false;
+    if (unchanged) {
+      committing = false;
+      return;
+    }
     try {
       await invoke('update_save_name', {
         taskId: task.id,
         saveName: trimmed === '' ? null : trimmed,
       });
+      await loadQueueState();
     } catch (err) {
       console.error('Failed to update save name:', err);
+    } finally {
+      committing = false;
     }
   }
 </script>
