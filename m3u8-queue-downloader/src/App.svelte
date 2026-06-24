@@ -7,7 +7,7 @@
   import TaskCard from './lib/TaskCard.svelte';
   import TitleBar from './lib/TitleBar.svelte';
   import StatusBar from './lib/StatusBar.svelte';
-  import { getTaskIdSignature, shouldSyncDndItems, toDndItems } from './lib/waiting-dnd.js';
+  import { getTaskIdSignature, toDndItems } from './lib/waiting-dnd.js';
   import {
     closeCliConsole,
     createCliConsoleState,
@@ -46,7 +46,13 @@
   });
   let cliConsole = $state(createCliConsoleState());
   let waitingTaskSignature = $derived(getTaskIdSignature(waitingTasks));
+  let waitingContentSignature = $derived(
+    waitingTasks.map(t => `${t.id}:${t.saveName ?? ''}`).join('|')
+  );
   let dndItemSignature = $derived(getTaskIdSignature(dndItems));
+  let dndContentSignature = $derived(
+    dndItems.map(t => `${t.id}:${t.saveName ?? ''}`).join('|')
+  );
 
   const dndOptions = {
     flipDurationMs: 150,
@@ -151,13 +157,9 @@
   $effect(() => {
     const _waitingSignature = waitingTaskSignature;
     const _dndSignature = dndItemSignature;
-    if (!shouldSyncDndItems({
-      waitingTasks,
-      dndItems,
-      syncLocked: dndSyncLocked,
-    })) {
-      return;
-    }
+    if (dndSyncLocked) return;
+    if (waitingTaskSignature === dndItemSignature &&
+        waitingContentSignature === dndContentSignature) return;
 
     dndItems = toDndItems(waitingTasks);
   });
