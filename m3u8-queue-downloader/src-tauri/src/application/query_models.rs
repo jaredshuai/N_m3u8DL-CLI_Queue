@@ -8,6 +8,7 @@ pub enum TaskStatusView {
     Downloading,
     Completed,
     Failed,
+    Cancelled,
 }
 
 impl From<TaskStatusSnapshot> for TaskStatusView {
@@ -17,6 +18,7 @@ impl From<TaskStatusSnapshot> for TaskStatusView {
             TaskStatusSnapshot::Downloading => Self::Downloading,
             TaskStatusSnapshot::Completed => Self::Completed,
             TaskStatusSnapshot::Failed => Self::Failed,
+            TaskStatusSnapshot::Cancelled => Self::Cancelled,
         }
     }
 }

@@ -10,7 +10,7 @@ use crate::domain::queue::{
     PrepareTaskFailureOutcome as DomainPrepareTaskFailureOutcome,
     QueueRunStatus as DomainQueueRunStatus, RemoveTaskResult, RetryTaskResult,
     ScheduleNextTaskOutcome, StageTaskCompletionOutcome as DomainStageTaskCompletionOutcome,
-    StageTerminalHistoryResult, TaskFailureTransition as DomainTaskFailureTransition,
+    StageTerminalHistoryResult, StopTaskResult, TaskFailureTransition as DomainTaskFailureTransition,
     UpdateSaveNameResult,
 };
 
@@ -122,6 +122,18 @@ pub(crate) fn application_retry_task_result(
         RetryTaskResult::Missing => Err(AppError::TaskNotFound { id: id.to_string() }),
         RetryTaskResult::InvalidStatus { status } => Err(AppError::InvalidTaskStatus {
             action: "retry",
+            id: id.to_string(),
+            status: format!("{:?}", status),
+        }),
+    }
+}
+
+pub(crate) fn application_stop_task_result(id: &str, result: StopTaskResult) -> AppResult<()> {
+    match result {
+        StopTaskResult::Stopped(_) => Ok(()),
+        StopTaskResult::Missing => Err(AppError::TaskNotFound { id: id.to_string() }),
+        StopTaskResult::NotDownloading { status } => Err(AppError::InvalidTaskStatus {
+            action: "stop",
             id: id.to_string(),
             status: format!("{:?}", status),
         }),

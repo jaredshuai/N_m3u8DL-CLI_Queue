@@ -52,6 +52,11 @@ impl RuntimeFacade {
                     .handle_failed_child_exit(&id, &error_message)
                     .await;
             }
+            TaskLifecycleEvent::Cancelled { id, error_message } => {
+                scheduling_ports
+                    .handle_cancelled_child_exit(&id, &error_message)
+                    .await;
+            }
         }
     }
 

@@ -2,9 +2,9 @@ use crate::adapters::queue_repository_mappers::{
     application_add_task_outcome, application_pending_history_clear_outcome,
     application_prepare_task_failure_outcome, application_remove_task_result,
     application_retry_task_result, application_run_finish_outcome,
-    application_schedule_next_outcome, application_task_completion_staging_outcome,
-    application_terminal_history_staging_outcome, application_update_save_name_result,
-    domain_run_status,
+    application_schedule_next_outcome, application_stop_task_result,
+    application_task_completion_staging_outcome, application_terminal_history_staging_outcome,
+    application_update_save_name_result, domain_run_status,
 };
 use crate::adapters::queue_shutdown_gate::QueueShutdownGate;
 use crate::adapters::queue_state_store::QueueStateStore;
@@ -56,6 +56,15 @@ impl QueueManager {
         self.store
             .update_and_persist(|state| {
                 application_update_save_name_result(id, state.update_save_name(id, save_name))?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn stop_task(&self, id: &str) -> AppResult<()> {
+        self.store
+            .update_and_persist(|state| {
+                application_stop_task_result(id, state.stop_task(id))?;
                 Ok(())
             })
             .await
@@ -380,6 +389,10 @@ impl QueueRepository for QueueManager {
         save_name: Option<String>,
     ) -> QueueRepositoryFuture<'a, AppResult<()>> {
         Box::pin(async move { QueueManager::update_save_name(self, id, save_name).await })
+    }
+
+    fn stop_task<'a>(&'a self, id: &'a str) -> QueueRepositoryFuture<'a, AppResult<()>> {
+        Box::pin(async move { QueueManager::stop_task(self, id).await })
     }
 
     // ---- lifecycle (ex-QueueRunLifecycle) ----

@@ -19,6 +19,13 @@ pub(crate) trait TaskProcessRunner: Send + Sync {
 pub(crate) trait TaskProcessSupervisor: Send + Sync {
     fn begin_shutdown<'a>(&'a self) -> ProcessRunnerFuture<'a, ()>;
     fn terminate_all_running_processes<'a>(&'a self) -> ProcessRunnerFuture<'a, AppResult<()>>;
+    /// Kill a single running child process by task id and emit a `Cancelled`
+    /// lifecycle event. Safe to call when the process has already exited
+    /// (returns Ok in that case). See ADR-0009.
+    fn terminate_task<'a>(
+        &'a self,
+        task_id: &'a str,
+    ) -> ProcessRunnerFuture<'a, AppResult<()>>;
 }
 
 pub(crate) trait TaskProcessRunnerFactory: Send + Sync {

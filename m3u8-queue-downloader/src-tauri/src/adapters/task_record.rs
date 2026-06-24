@@ -10,6 +10,7 @@ pub(crate) enum StoredTaskStatus {
     Downloading,
     Completed,
     Failed,
+    Cancelled,
 }
 
 impl From<&TaskStatus> for StoredTaskStatus {
@@ -19,6 +20,7 @@ impl From<&TaskStatus> for StoredTaskStatus {
             TaskStatus::Downloading => Self::Downloading,
             TaskStatus::Completed => Self::Completed,
             TaskStatus::Failed => Self::Failed,
+            TaskStatus::Cancelled => Self::Cancelled,
         }
     }
 }
@@ -30,6 +32,7 @@ impl From<&TaskStatusSnapshot> for StoredTaskStatus {
             TaskStatusSnapshot::Downloading => Self::Downloading,
             TaskStatusSnapshot::Completed => Self::Completed,
             TaskStatusSnapshot::Failed => Self::Failed,
+            TaskStatusSnapshot::Cancelled => Self::Cancelled,
         }
     }
 }
@@ -41,6 +44,7 @@ impl From<StoredTaskStatus> for TaskStatus {
             StoredTaskStatus::Downloading => Self::Downloading,
             StoredTaskStatus::Completed => Self::Completed,
             StoredTaskStatus::Failed => Self::Failed,
+            StoredTaskStatus::Cancelled => Self::Cancelled,
         }
     }
 }
@@ -52,6 +56,7 @@ impl From<StoredTaskStatus> for TaskStatusSnapshot {
             StoredTaskStatus::Downloading => Self::Downloading,
             StoredTaskStatus::Completed => Self::Completed,
             StoredTaskStatus::Failed => Self::Failed,
+            StoredTaskStatus::Cancelled => Self::Cancelled,
         }
     }
 }

@@ -33,6 +33,7 @@
 
   let waitingTasks = $derived($tasks.filter(t => t.status === 'waiting'));
   let activeTasks = $derived($tasks.filter(t => t.status === 'downloading'));
+  let cancelledTasks = $derived($tasks.filter(t => t.status === 'cancelled'));
   let completedTasks = $derived($completedHistory.tasks);
   let failedTasks = $derived($failedHistory.tasks);
   let completedHasMore = $derived($completedHistory.hasMore);
@@ -245,6 +246,20 @@
               </div>
             {/each}
           </div>
+        {/if}
+
+        {#if cancelledTasks.length > 0}
+          <div class="section-label cancelled-label">已停止</div>
+          {#each cancelledTasks as task (task.id)}
+            <div class="fade-in">
+              <TaskCard
+                {task}
+                draggable={false}
+                onOpenCliConsole={handleOpenCliConsole}
+                cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
+              />
+            </div>
+          {/each}
         {/if}
 
         {#if failedTasks.length > 0}
