@@ -318,34 +318,45 @@ impl TaskRunner {
     /// Kill the running child for `task_id`, mark it as `cancelling`, and emit
     /// a `Cancelled` lifecycle event so the orchestrator skips the retry policy.
     ///
-    /// This method is always-OK from the caller's perspective. If the process
-    /// is already gone (no PID found), it still emits a Cancelled event to
-    /// prevent an in-flight Completed/Failed event from overwriting the
-    /// Cancelled queue state. See ADR-0009 and Codex P2 review on PR #13.
+    /// Always-OK from the caller's perspective. Without a live PID the method
+    /// emits Cancelled directly and returns — no stale marker is left behind
+    /// since there is no waiter to consume it. See cubic P1/P2 on PR #13.
     pub async fn terminate_task(&self, task_id: &str) -> AppResult<()> {
-        // 1. Always insert cancelling marker + emit Cancelled event,
-        //    regardless of whether a live process is found. This prevents
-        //    an in-flight Completed/Failed from overwriting the Cancelled
-        //    queue state set by the caller.
+        // 1. Look up PID atomically. No PID means child already exited.
+        let pid = {
+            let processes = self.running_processes.lock().await;
+            processes.get(task_id).copied()
+        };
+        let Some(pid) = pid else {
+            // Emit Cancelled without a marker to prevent in-flight
+            // Completed/Failed from overwriting queue state.
+            if let Some(sender) = &self.lifecycle_sender {
+                let _ = sender.send(TaskLifecycleEvent::Cancelled {
+                    id: task_id.to_string(),
+                    error_message: "Stopped by user".to_string(),
+                });
+            }
+            return Ok(());
+        };
+
+        // 2. Found a PID — there is guaranteed to be a spawn_wait_task
+        //    waiter that will consume this marker.
         {
             let mut cancelling = self.cancelling.lock().await;
             cancelling.insert(task_id.to_string());
         }
 
-        // 2. Look up PID. Best-effort kill if found.
-        let pid = {
-            let processes = self.running_processes.lock().await;
-            processes.get(task_id).copied()
-        };
+        // 3. Best-effort kill. On failure the marker stays so the waiter
+        //    does not send a confusing Completed/Failed.
+        let _ = kill_process(pid).await;
 
-        if let Some(pid) = pid {
-            let _ = kill_process(pid).await;
-        }
-
-        // 3. Clean up process tracking.
+        // 4. Remove the PID entry only if it still matches our PID.
+        //    If a retry already replaced it, don't delete the new entry.
         {
             let mut processes = self.running_processes.lock().await;
-            processes.remove(task_id);
+            if processes.get(task_id) == Some(&pid) {
+                processes.remove(task_id);
+            }
         }
 
         #[cfg(test)]
@@ -354,9 +365,7 @@ impl TaskRunner {
             pending.remove(task_id);
         }
 
-        // 4. Emit Cancelled event. A stale marker left behind (when no
-        //    waiter existed to consume it) is harmless — register_running_task
-        //    clears any old marker when a new process starts for this id.
+        // 5. Emit Cancelled event.
         if let Some(sender) = &self.lifecycle_sender {
             let _ = sender.send(TaskLifecycleEvent::Cancelled {
                 id: task_id.to_string(),
