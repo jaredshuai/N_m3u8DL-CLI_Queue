@@ -319,36 +319,30 @@ impl TaskRunner {
     /// a `Cancelled` lifecycle event so the orchestrator skips the retry policy.
     ///
     /// This method is always-OK from the caller's perspective. If the process
-    /// is already gone (no PID found), it is a no-op — the queue is already
-    /// marked Cancelled by the caller, and the natural Completed/Failed event
-    /// will flow normally. See ADR-0009 and Codex P2 review on PR #13.
+    /// is already gone (no PID found), it still emits a Cancelled event to
+    /// prevent an in-flight Completed/Failed event from overwriting the
+    /// Cancelled queue state. See ADR-0009 and Codex P2 review on PR #13.
     pub async fn terminate_task(&self, task_id: &str) -> AppResult<()> {
-        // 1. Look up PID first. If not found, the child has already exited
-        //    and its lifecycle event will flow normally — no cancelling
-        //    marker needed. The queue is already Cancelled.
-        let pid = {
-            let processes = self.running_processes.lock().await;
-            processes.get(task_id).copied()
-        };
-        let Some(pid) = pid else {
-            // Queue state is authoritative. The natural Completed/Failed
-            // event will arrive via the lifecycle channel.
-            return Ok(());
-        };
-
-        // 2. Only insert the cancelling marker when we found a live
-        //    process, so there is guaranteed to be a spawn_wait_task
-        //    waiter that will consume it. No orphan markers left behind.
+        // 1. Always insert cancelling marker + emit Cancelled event,
+        //    regardless of whether a live process is found. This prevents
+        //    an in-flight Completed/Failed from overwriting the Cancelled
+        //    queue state set by the caller.
         {
             let mut cancelling = self.cancelling.lock().await;
             cancelling.insert(task_id.to_string());
         }
 
-        // 3. Best-effort kill. On failure the marker stays — the process
-        //    will eventually exit and spawn_wait_task will consume it.
-        let _ = kill_process(pid).await;
+        // 2. Look up PID. Best-effort kill if found.
+        let pid = {
+            let processes = self.running_processes.lock().await;
+            processes.get(task_id).copied()
+        };
 
-        // 4. Clean up process tracking.
+        if let Some(pid) = pid {
+            let _ = kill_process(pid).await;
+        }
+
+        // 3. Clean up process tracking.
         {
             let mut processes = self.running_processes.lock().await;
             processes.remove(task_id);
@@ -360,8 +354,9 @@ impl TaskRunner {
             pending.remove(task_id);
         }
 
-        // 5. Always emit Cancelled event when we found and marked a
-        //    running process.
+        // 4. Emit Cancelled event. A stale marker left behind (when no
+        //    waiter existed to consume it) is harmless — register_running_task
+        //    clears any old marker when a new process starts for this id.
         if let Some(sender) = &self.lifecycle_sender {
             let _ = sender.send(TaskLifecycleEvent::Cancelled {
                 id: task_id.to_string(),
@@ -374,7 +369,12 @@ impl TaskRunner {
 
     async fn register_running_task(&self, task_id: String, pid: u32) {
         let mut processes = self.running_processes.lock().await;
-        processes.insert(task_id, pid);
+        processes.insert(task_id.clone(), pid);
+        // Clear any stale cancellation marker from a previous stop/retry
+        // cycle. A new child for the same task_id should not inherit an
+        // old marker. See Codex P1/P2 on PR #13.
+        let mut cancelling = self.cancelling.lock().await;
+        cancelling.remove(&task_id);
     }
 
     fn spawn_wait_task(
@@ -990,15 +990,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminate_task_is_noop_for_unknown_task_id() {
-        let (tx, _rx) = mpsc::unbounded_channel();
+    async fn terminate_task_emits_cancelled_even_without_live_process() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
         let runner = TaskRunner::with_lifecycle_sender(tx);
 
         let result = runner.terminate_task("nonexistent").await;
 
-        // No PID found — no cancelling marker, no Cancelled event.
-        // The queue is already Cancelled by the caller.
+        // always-OK. Cancelled event is emitted even without a live PID
+        // to prevent in-flight Completed/Failed from overwriting Cancelled.
         assert!(result.is_ok());
+
+        let event = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("lifecycle event timeout")
+            .expect("lifecycle event");
+        assert!(matches!(
+            event,
+            TaskLifecycleEvent::Cancelled { id, .. } if id == "nonexistent"
+        ));
     }
 
     #[test]
