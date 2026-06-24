@@ -335,7 +335,17 @@ impl TaskRunner {
             cancelling.insert(task_id.to_string());
         }
 
-        kill_process(pid).await?;
+        let kill_result = kill_process(pid).await;
+
+        // If the kill itself failed, remove the cancelling marker so the
+        // eventual child exit still produces a Failed event (enabling retry
+        // or queue recovery). The queue side is already marked Cancelled,
+        // but at least the lifecycle event won't be silently swallowed.
+        if kill_result.is_err() {
+            let mut cancelling = self.cancelling.lock().await;
+            cancelling.remove(task_id);
+        }
+        kill_result?;
 
         {
             let mut processes = self.running_processes.lock().await;
@@ -384,9 +394,11 @@ impl TaskRunner {
             // If the task was explicitly cancelled via terminate_task, the
             // Cancelled event has already been sent. Skip the process exit
             // result to avoid a duplicate Failed event. See ADR-0009.
+            // Consume the marker so a future retry with the same task_id
+            // is not permanently muted.
             {
-                let cancelling_set = cancelling.lock().await;
-                if cancelling_set.contains(&task_id) {
+                let mut cancelling_set = cancelling.lock().await;
+                if cancelling_set.remove(&task_id) {
                     return;
                 }
             }
@@ -456,9 +468,11 @@ impl TaskRunner {
 
             // Mirror spawn_wait_task's cancelling guard so test paths also
             // honor terminate_task and skip the duplicate Failed event.
+            // Consume the marker so a future retry with the same task_id
+            // is not permanently muted.
             {
-                let cancelling_set = cancelling.lock().await;
-                if cancelling_set.contains(&task_id) {
+                let mut cancelling_set = cancelling.lock().await;
+                if cancelling_set.remove(&task_id) {
                     return;
                 }
             }

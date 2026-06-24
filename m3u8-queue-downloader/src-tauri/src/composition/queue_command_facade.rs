@@ -96,11 +96,16 @@ impl QueueCommandFacade {
         //    Done first so the eventual Cancelled lifecycle event finds the
         //    queue already in the desired state.
         queue_repository.stop_task(task_id).await?;
-        // 2. Kill the process. Best-effort: if the process already exited
-        //    between step 1 and here, the queue is already correctly marked
-        //    Cancelled, so we treat an already-exited process as acceptable.
-        if let Err(_err) = process_supervisor.terminate_task(task_id).await {
-            // Process already exited — the queue state is authoritative.
+        // 2. Kill the process. Only the "no running process" race is
+        //    acceptable — it means the child exited naturally between step 1
+        //    and here, and the queue is already correctly marked Cancelled.
+        //    Any other kill failure (taskkill itself errored) is surfaced so
+        //    the user knows the process may still be running.
+        if let Err(err) = process_supervisor.terminate_task(task_id).await {
+            let message = err.to_string();
+            if !message.contains("No running process") {
+                return Err(err);
+            }
         }
         Ok(())
     }

@@ -670,15 +670,12 @@ impl<'a> QueueSchedulingPorts<'a> {
     ) {
         self.clear_child_exit_terminal_active_line(task_id);
         self.continue_child_exit_unless_shutting_down(|| async {
-            self.log_cancelled_and_schedule_next(task_id).await;
+            self.diagnostics
+                .warn(&format!("Task {} cancelled by user", task_id));
+            self.drive_child_exit_queue_and_handle_shutdown_countdown("cancellation")
+                .await;
         })
         .await;
-    }
-
-    async fn log_cancelled_and_schedule_next(&self, task_id: &str) {
-        self.diagnostics
-            .warn(&format!("Task {} cancelled by user", task_id));
-        self.schedule_next_after_child_exit("cancellation").await;
     }
 
     async fn acknowledge_shutdown_child_exit_if_needed(&self) -> bool {
