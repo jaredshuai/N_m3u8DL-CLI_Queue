@@ -47,11 +47,11 @@
   let cliConsole = $state(createCliConsoleState());
   let waitingTaskSignature = $derived(getTaskIdSignature(waitingTasks));
   let waitingContentSignature = $derived(
-    waitingTasks.map(t => `${t.id}:${t.saveName ?? ''}`).join('|')
+    waitingTasks.map(t => `${t.id}\x00${t.saveName ?? ''}`).join('|')
   );
   let dndItemSignature = $derived(getTaskIdSignature(dndItems));
   let dndContentSignature = $derived(
-    dndItems.map(t => `${t.id}:${t.saveName ?? ''}`).join('|')
+    dndItems.map(t => `${t.id}\x00${t.saveName ?? ''}`).join('|')
   );
 
   const dndOptions = {
