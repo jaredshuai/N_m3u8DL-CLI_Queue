@@ -106,17 +106,21 @@
     <div class="card-content">
       <div class="title-row">
         {#if statusKey === 'wait' && editing}
-          <input
-            class="save-name-input"
-            bind:value={draftName}
-            onkeydown={(e) => {
-              if (e.key === 'Enter') commitEdit();
-              else if (e.key === 'Escape') cancelEdit();
-            }}
-            onblur={commitEdit}
-            placeholder="留空则自动识别"
-            maxlength="120"
-          />
+          <div class="save-name-edit">
+            <input
+              class="save-name-input"
+              bind:value={draftName}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') commitEdit();
+                else if (e.key === 'Escape') cancelEdit();
+              }}
+              onblur={commitEdit}
+              placeholder="留空则自动识别"
+              maxlength="120"
+            />
+            <button type="button" class="edit-confirm" onclick={commitEdit} title="保存">✓</button>
+            <button type="button" class="edit-cancel" onclick={cancelEdit} title="取消">✕</button>
+          </div>
         {:else}
           <button
             type="button"
@@ -272,6 +276,52 @@
     flex: 1;
     outline: none;
     font-family: inherit;
+  }
+
+  .save-name-edit {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .edit-confirm,
+  .edit-cancel {
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    font-family: var(--font-stack);
+    transition: all 0.15s;
+  }
+
+  .edit-confirm {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--color-status-done);
+  }
+
+  .edit-confirm:hover {
+    background: rgba(16, 185, 129, 0.3);
+    border-color: var(--color-status-done);
+  }
+
+  .edit-cancel {
+    background: transparent;
+    color: var(--color-text-secondary);
+  }
+
+  .edit-cancel:hover {
+    color: var(--color-status-fail);
+    border-color: var(--color-status-fail);
   }
 
   .status-badge {
