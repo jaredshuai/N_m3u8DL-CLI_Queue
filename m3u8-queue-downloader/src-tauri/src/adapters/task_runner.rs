@@ -318,35 +318,35 @@ impl TaskRunner {
     /// Kill the running child for `task_id`, mark it as `cancelling`, and emit
     /// a `Cancelled` lifecycle event so the orchestrator skips the retry policy.
     ///
-    /// This method is always-OK from the caller's perspective — if the process
-    /// is already gone or `kill_process` fails, the `Cancelled` event is still
-    /// emitted and the cancelling marker stays in place until consumed by
-    /// `spawn_wait_task`. The queue side is authoritative for state recovery;
-    /// the life cycle event guarantees the orchestrator doesn't get stuck.
-    /// See ADR-0009 and cubic/codex reviews on PR #13.
+    /// This method is always-OK from the caller's perspective. If the process
+    /// is already gone (no PID found), it is a no-op — the queue is already
+    /// marked Cancelled by the caller, and the natural Completed/Failed event
+    /// will flow normally. See ADR-0009 and Codex P2 review on PR #13.
     pub async fn terminate_task(&self, task_id: &str) -> AppResult<()> {
-        // 1. Mark cancelling *before* kill to prevent spawn_wait_task from
-        //    sending a Failed event when the process exits.
+        // 1. Look up PID first. If not found, the child has already exited
+        //    and its lifecycle event will flow normally — no cancelling
+        //    marker needed. The queue is already Cancelled.
+        let pid = {
+            let processes = self.running_processes.lock().await;
+            processes.get(task_id).copied()
+        };
+        let Some(pid) = pid else {
+            // Queue state is authoritative. The natural Completed/Failed
+            // event will arrive via the lifecycle channel.
+            return Ok(());
+        };
+
+        // 2. Only insert the cancelling marker when we found a live
+        //    process, so there is guaranteed to be a spawn_wait_task
+        //    waiter that will consume it. No orphan markers left behind.
         {
             let mut cancelling = self.cancelling.lock().await;
             cancelling.insert(task_id.to_string());
         }
 
-        // 2. Look up PID. If not found (process already exited), skip kill.
-        let pid = {
-            let processes = self.running_processes.lock().await;
-            processes.get(task_id).copied()
-        };
-
-        if let Some(pid) = pid {
-            // 3. Best-effort kill. On failure we log and continue — the
-            //    Cancelled event + marker are the authoritative signals.
-            if let Err(err) = kill_process(pid).await {
-                // Swallow but warn: the process may or may not be alive, but
-                // the cancelling marker will suppress its eventual exit event.
-                let _ = err;
-            }
-        }
+        // 3. Best-effort kill. On failure the marker stays — the process
+        //    will eventually exit and spawn_wait_task will consume it.
+        let _ = kill_process(pid).await;
 
         // 4. Clean up process tracking.
         {
@@ -360,7 +360,8 @@ impl TaskRunner {
             pending.remove(task_id);
         }
 
-        // 5. Always emit Cancelled event, regardless of kill outcome.
+        // 5. Always emit Cancelled event when we found and marked a
+        //    running process.
         if let Some(sender) = &self.lifecycle_sender {
             let _ = sender.send(TaskLifecycleEvent::Cancelled {
                 id: task_id.to_string(),
@@ -989,24 +990,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminate_task_is_always_ok_and_emits_cancelled_for_unknown_id() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+    async fn terminate_task_is_noop_for_unknown_task_id() {
+        let (tx, _rx) = mpsc::unbounded_channel();
         let runner = TaskRunner::with_lifecycle_sender(tx);
 
         let result = runner.terminate_task("nonexistent").await;
 
-        // terminate_task is always-OK; on unknown task it emits Cancelled
-        // anyway (the cancelling marker is set, no kill attempted).
+        // No PID found — no cancelling marker, no Cancelled event.
+        // The queue is already Cancelled by the caller.
         assert!(result.is_ok());
-
-        let event = timeout(Duration::from_secs(2), rx.recv())
-            .await
-            .expect("lifecycle event timeout")
-            .expect("lifecycle event");
-        assert!(matches!(
-            event,
-            TaskLifecycleEvent::Cancelled { id, .. } if id == "nonexistent"
-        ));
     }
 
     #[test]
