@@ -52,14 +52,20 @@ jobs:
         working-directory: m3u8-queue-downloader
         run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
 
-      - name: Install ffmpeg
+      - name: Fetch ffmpeg from upstream release
         shell: pwsh
-        run: choco install ffmpeg --yes --no-progress
+        run: |
+          gh release download 3.0.2 --repo nilaoda/N_m3u8DL-CLI `
+            --pattern 'N_m3u8DL-CLI_v3.0.2_with_ffmpeg_and_SimpleG.zip' `
+            --output upstream-bundle.zip
+          Expand-Archive upstream-bundle.zip -DestinationPath upstream-bundle -Force
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build bundled legacy CLI
         shell: pwsh
         run: |
-          $ffmpeg = (Get-Command ffmpeg).Source
+          $ffmpeg = (Resolve-Path 'upstream-bundle/ffmpeg.exe').Path
           Push-Location m3u8-queue-downloader
           node scripts/stage-bundled-resources.mjs --ffmpeg $ffmpeg
           node scripts/validate-bundled-resources.mjs
