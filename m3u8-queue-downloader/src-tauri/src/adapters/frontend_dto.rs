@@ -12,6 +12,7 @@ pub enum TaskStatusDto {
     Downloading,
     Completed,
     Failed,
+    Cancelled,
 }
 
 impl From<TaskStatusView> for TaskStatusDto {
@@ -21,6 +22,7 @@ impl From<TaskStatusView> for TaskStatusDto {
             TaskStatusView::Downloading => Self::Downloading,
             TaskStatusView::Completed => Self::Completed,
             TaskStatusView::Failed => Self::Failed,
+            TaskStatusView::Cancelled => Self::Cancelled,
         }
     }
 }

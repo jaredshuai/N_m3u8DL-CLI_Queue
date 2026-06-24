@@ -119,7 +119,7 @@ impl QueueTasks {
             return RetryTaskResult::Missing;
         };
 
-        if !task.status.is_failed() {
+        if !task.status.is_failed() && !task.status.is_cancelled() {
             return RetryTaskResult::InvalidStatus {
                 status: task.status.clone(),
             };
@@ -128,6 +128,22 @@ impl QueueTasks {
         task.status = TaskStatus::Waiting;
         task.error_message = None;
         RetryTaskResult::Retried(task.clone())
+    }
+
+    fn stop_task(&mut self, id: &str) -> StopTaskResult {
+        let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) else {
+            return StopTaskResult::Missing;
+        };
+
+        if !task.status.is_downloading() {
+            return StopTaskResult::NotDownloading {
+                status: task.status.clone(),
+            };
+        }
+
+        task.status = TaskStatus::Cancelled;
+        task.error_message = Some("Stopped by user".to_string());
+        StopTaskResult::Stopped(task.clone())
     }
 
     fn update_save_name(&mut self, id: &str, save_name: Option<String>) -> UpdateSaveNameResult {
@@ -282,6 +298,12 @@ pub(crate) enum RetryTaskResult {
     InvalidStatus { status: TaskStatus },
 }
 
+pub(crate) enum StopTaskResult {
+    Stopped(Task),
+    Missing,
+    NotDownloading { status: TaskStatus },
+}
+
 pub(crate) enum UpdateSaveNameResult {
     Updated,
     Missing,
@@ -385,6 +407,14 @@ impl QueueAggregate {
 
     pub(crate) fn retry_task(&mut self, id: &str) -> RetryTaskResult {
         self.tasks.retry_task(id)
+    }
+
+    pub(crate) fn stop_task(&mut self, id: &str) -> StopTaskResult {
+        let result = self.tasks.stop_task(id);
+        if matches!(result, StopTaskResult::Stopped(_)) {
+            self.clear_current_task_if_matches(id);
+        }
+        result
     }
 
     pub(crate) fn update_save_name(
@@ -1103,6 +1133,81 @@ mod tests {
         assert!(matches!(
             state.retry_task("missing"),
             RetryTaskResult::Missing
+        ));
+        assert!(state.tasks().is_empty());
+    }
+
+    #[test]
+    fn retry_task_accepts_cancelled_status() {
+        let mut task = task_with_id("task-1");
+        task.status = TaskStatus::Cancelled;
+        task.error_message = Some("Stopped by user".to_string());
+        let mut state = QueueAggregate {
+            tasks: QueueTasks::from_tasks(vec![task]),
+            ..QueueAggregate::default()
+        };
+
+        let result = state.retry_task("task-1");
+
+        let RetryTaskResult::Retried(task) = result else {
+            panic!("cancelled task should retry");
+        };
+        assert_eq!(task.status, TaskStatus::Waiting);
+        assert!(task.error_message.is_none());
+        assert_eq!(state.tasks()[0].status, TaskStatus::Waiting);
+    }
+
+    #[test]
+    fn stop_task_marks_downloading_task_as_cancelled() {
+        let mut task = task_with_id("task-1");
+        task.status = TaskStatus::Downloading;
+        let mut state = QueueAggregate {
+            tasks: QueueTasks::from_tasks(vec![task]),
+            current_task: QueueCurrentTask::from_task_id(Some("task-1".to_string())),
+            run_status: QueueRunStatus::Running,
+            ..QueueAggregate::default()
+        };
+
+        let result = state.stop_task("task-1");
+
+        let StopTaskResult::Stopped(stopped) = result else {
+            panic!("downloading task should stop");
+        };
+        assert_eq!(stopped.status, TaskStatus::Cancelled);
+        assert_eq!(
+            stopped.error_message.as_deref(),
+            Some("Stopped by user")
+        );
+        assert!(state.current_task_id().is_none());
+        assert_eq!(state.tasks()[0].status, TaskStatus::Cancelled);
+    }
+
+    #[test]
+    fn stop_task_rejects_non_downloading_tasks_without_mutation() {
+        let waiting = task_with_id("task-1");
+        let mut state = QueueAggregate {
+            tasks: QueueTasks::from_tasks(vec![waiting]),
+            ..QueueAggregate::default()
+        };
+
+        let result = state.stop_task("task-1");
+
+        assert!(matches!(
+            result,
+            StopTaskResult::NotDownloading {
+                status: TaskStatus::Waiting
+            }
+        ));
+        assert_eq!(state.tasks()[0].status, TaskStatus::Waiting);
+    }
+
+    #[test]
+    fn stop_task_reports_missing_without_mutation() {
+        let mut state = QueueAggregate::default();
+
+        assert!(matches!(
+            state.stop_task("missing"),
+            StopTaskResult::Missing
         ));
         assert!(state.tasks().is_empty());
     }

@@ -186,4 +186,17 @@ impl DependencyGraph {
             events,
         )
     }
+
+    /// Exposes the queue repository + process supervisor pair used by
+    /// `stop_task`. The command facade orchestrates the two-step
+    /// (mark Cancelled → kill process) inline; no dedicated orchestrator
+    /// struct is warranted for this single intent. See ADR-0009.
+    pub(in crate::composition) fn stop_task_ports(
+        &self,
+    ) -> (&dyn QueueRepository, &dyn TaskProcessSupervisor) {
+        (
+            self.queue_repository.as_ref(),
+            self.task_process_supervisor.as_ref(),
+        )
+    }
 }

@@ -10,7 +10,7 @@ use crate::ports::process_runner::{
 };
 #[cfg(test)]
 use std::collections::HashMap;
-use std::collections::HashMap as StdHashMap;
+use std::collections::{HashMap as StdHashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{path::BaseDirectory, Manager};
@@ -22,6 +22,10 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 pub struct TaskRunner {
     running_processes: Arc<Mutex<StdHashMap<String, u32>>>,
     shutting_down: Arc<Mutex<bool>>,
+    /// Task ids currently being cancelled by an explicit `terminate_task` call.
+    /// `spawn_wait_task` checks this set to decide whether to emit `Cancelled`
+    /// (rather than `Failed`) when the process exits. See ADR-0009.
+    cancelling: Arc<Mutex<HashSet<String>>>,
     lifecycle_sender: Option<mpsc::UnboundedSender<TaskLifecycleEvent>>,
     output_sender: Option<mpsc::UnboundedSender<TaskOutputEvent>>,
     #[cfg(test)]
@@ -96,6 +100,10 @@ impl TaskProcessSupervisor for TaskRunner {
     fn terminate_all_running_processes<'a>(&'a self) -> ProcessRunnerFuture<'a, AppResult<()>> {
         Box::pin(async move { TaskRunner::terminate_all_running_processes(self).await })
     }
+
+    fn terminate_task<'a>(&'a self, task_id: &'a str) -> ProcessRunnerFuture<'a, AppResult<()>> {
+        Box::pin(async move { TaskRunner::terminate_task(self, task_id).await })
+    }
 }
 
 const MAX_CLI_SEARCH_DEPTH: usize = 8;
@@ -122,6 +130,7 @@ impl TaskRunner {
         Self {
             running_processes: Arc::new(Mutex::new(StdHashMap::new())),
             shutting_down: Arc::new(Mutex::new(false)),
+            cancelling: Arc::new(Mutex::new(HashSet::new())),
             lifecycle_sender: None,
             output_sender: None,
             #[cfg(test)]
@@ -134,6 +143,7 @@ impl TaskRunner {
         Self {
             running_processes: Arc::new(Mutex::new(StdHashMap::new())),
             shutting_down: Arc::new(Mutex::new(false)),
+            cancelling: Arc::new(Mutex::new(HashSet::new())),
             lifecycle_sender: Some(sender),
             output_sender: None,
             #[cfg(test)]
@@ -148,6 +158,7 @@ impl TaskRunner {
         Self {
             running_processes: Arc::new(Mutex::new(StdHashMap::new())),
             shutting_down: Arc::new(Mutex::new(false)),
+            cancelling: Arc::new(Mutex::new(HashSet::new())),
             lifecycle_sender: Some(lifecycle_sender),
             output_sender: Some(output_sender),
             #[cfg(test)]
@@ -304,6 +315,52 @@ impl TaskRunner {
         Ok(())
     }
 
+    /// Kill the running child for `task_id`, mark it as `cancelling`, and emit
+    /// a `Cancelled` lifecycle event so the orchestrator skips the retry policy.
+    pub async fn terminate_task(&self, task_id: &str) -> AppResult<()> {
+        let pid = {
+            let processes = self.running_processes.lock().await;
+            processes.get(task_id).copied()
+        };
+        let Some(pid) = pid else {
+            return Err(AppError::message(format!(
+                "No running process for task {task_id}"
+            )));
+        };
+
+        // Mark as cancelling *before* killing to prevent spawn_wait_task from
+        // sending a Failed event when the process exits.
+        {
+            let mut cancelling = self.cancelling.lock().await;
+            cancelling.insert(task_id.to_string());
+        }
+
+        kill_process(pid).await?;
+
+        {
+            let mut processes = self.running_processes.lock().await;
+            processes.remove(task_id);
+        }
+
+        #[cfg(test)]
+        {
+            let mut pending = self.pending_test_children.lock().await;
+            pending.remove(task_id);
+        }
+
+        // Reproduce the error_message logic from spawn_wait_task
+        // (non-zero exit after kill) for consistency.
+        let error_msg = "Stopped by user";
+        if let Some(sender) = &self.lifecycle_sender {
+            let _ = sender.send(TaskLifecycleEvent::Cancelled {
+                id: task_id.to_string(),
+                error_message: error_msg.to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
     async fn register_running_task(&self, task_id: String, pid: u32) {
         let mut processes = self.running_processes.lock().await;
         processes.insert(task_id, pid);
@@ -318,10 +375,21 @@ impl TaskRunner {
     ) {
         let running_processes = Arc::clone(&self.running_processes);
         let lifecycle_sender = self.lifecycle_sender.clone();
+        let cancelling = Arc::clone(&self.cancelling);
 
         tokio::spawn(async move {
             let result = child.wait().await;
             cleanup_running_task(&running_processes, &task_id).await;
+
+            // If the task was explicitly cancelled via terminate_task, the
+            // Cancelled event has already been sent. Skip the process exit
+            // result to avoid a duplicate Failed event. See ADR-0009.
+            {
+                let cancelling_set = cancelling.lock().await;
+                if cancelling_set.contains(&task_id) {
+                    return;
+                }
+            }
 
             // ADR-0005: the adapter no longer locates the artifact. It only
             // reports the raw facts (download_dir + save_name) and lets the
@@ -378,12 +446,23 @@ impl TaskRunner {
         };
         let running_processes = Arc::clone(&self.running_processes);
         let lifecycle_sender = self.lifecycle_sender.clone();
+        let cancelling = Arc::clone(&self.cancelling);
         let task_id = task_id.to_string();
 
         tokio::spawn(async move {
             let mut child = child;
             let result = child.wait().await;
             cleanup_running_task(&running_processes, &task_id).await;
+
+            // Mirror spawn_wait_task's cancelling guard so test paths also
+            // honor terminate_task and skip the duplicate Failed event.
+            {
+                let cancelling_set = cancelling.lock().await;
+                if cancelling_set.contains(&task_id) {
+                    return;
+                }
+            }
+
             if let Some(sender) = lifecycle_sender {
                 let event = match result {
                     Ok(status) if status.success() => TaskLifecycleEvent::Completed {
@@ -846,6 +925,53 @@ mod tests {
             event,
             TaskLifecycleEvent::Completed { id, .. } if id == task_id
         ));
+    }
+
+    #[tokio::test]
+    async fn terminate_task_sends_cancelled_event_and_skips_failed() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner = TaskRunner::with_lifecycle_sender(tx);
+        let task_id = "task-cancel".to_string();
+        let child = spawn_sleeping_child().await;
+
+        runner
+            .insert_running_task_for_test(task_id.clone(), child)
+            .await;
+        runner.begin_wait_for_test(&task_id).await;
+
+        runner
+            .terminate_task(&task_id)
+            .await
+            .expect("terminate task");
+
+        // terminate_task itself sends the Cancelled event synchronously.
+        let event = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("lifecycle event timeout")
+            .expect("lifecycle event");
+        assert!(matches!(
+            event,
+            TaskLifecycleEvent::Cancelled { id, .. } if id == task_id
+        ));
+
+        // spawn_wait_task should see the cancelling flag and NOT emit a
+        // second Failed event — the channel must now be drained / empty.
+        let leftover = timeout(Duration::from_secs(1), rx.recv()).await;
+        assert!(
+            leftover.is_err() || leftover.unwrap().is_none(),
+            "no duplicate lifecycle event expected after cancel"
+        );
+
+        assert!(!runner.is_task_running(&task_id).await);
+    }
+
+    #[tokio::test]
+    async fn terminate_task_errors_for_unknown_task_id() {
+        let runner = TaskRunner::new();
+
+        let result = runner.terminate_task("nonexistent").await;
+
+        assert!(result.is_err());
     }
 
     #[test]

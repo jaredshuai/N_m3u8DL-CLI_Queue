@@ -85,4 +85,23 @@ impl QueueCommandFacade {
         let ports = self.dependencies.queue_mutation_orchestrator(events);
         ports.handle_queue_pause().await
     }
+
+    /// Stop a running (downloading) task: mark it Cancelled on the queue side,
+    /// then kill the live child process. The kill emits a `Cancelled` lifecycle
+    /// event that the orchestrator handles separately (skipping the retry
+    /// policy). See ADR-0009.
+    pub(crate) async fn stop_task(&self, task_id: &str) -> AppResult<()> {
+        let (queue_repository, process_supervisor) = self.dependencies.stop_task_ports();
+        // 1. Mark Cancelled in queue state (also clears current_task).
+        //    Done first so the eventual Cancelled lifecycle event finds the
+        //    queue already in the desired state.
+        queue_repository.stop_task(task_id).await?;
+        // 2. Kill the process. Best-effort: if the process already exited
+        //    between step 1 and here, the queue is already correctly marked
+        //    Cancelled, so we treat an already-exited process as acceptable.
+        if let Err(_err) = process_supervisor.terminate_task(task_id).await {
+            // Process already exited — the queue state is authoritative.
+        }
+        Ok(())
+    }
 }

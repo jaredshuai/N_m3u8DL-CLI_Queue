@@ -12,6 +12,10 @@ pub(crate) enum TaskLifecycleEvent {
         save_name: Option<String>,
     },
     Failed { id: String, error_message: String },
+    /// Child process was killed by an explicit user-initiated stop.
+    /// Distinct from `Failed` so the orchestrator skips the retry policy
+    /// and transitions the task straight to `TaskStatus::Cancelled`. See ADR-0009.
+    Cancelled { id: String, error_message: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]

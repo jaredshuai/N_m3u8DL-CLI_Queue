@@ -38,6 +38,8 @@ pub(crate) trait QueueRepository: Send + Sync {
         save_name: Option<String>,
     ) -> QueueRepositoryFuture<'a, AppResult<()>>;
 
+    fn stop_task<'a>(&'a self, id: &'a str) -> QueueRepositoryFuture<'a, AppResult<()>>;
+
     // ---- lifecycle (ex-QueueRunLifecycle) ----
     fn prepare_for_exit<'a>(&'a self) -> QueueRepositoryFuture<'a, AppResult<()>>;
     fn schedule_next<'a>(&'a self) -> QueueRepositoryFuture<'a, AppResult<Option<TaskSnapshot>>>;
@@ -120,6 +122,9 @@ where
         save_name: Option<String>,
     ) -> QueueRepositoryFuture<'a, AppResult<()>> {
         self.as_ref().update_save_name(id, save_name)
+    }
+    fn stop_task<'a>(&'a self, id: &'a str) -> QueueRepositoryFuture<'a, AppResult<()>> {
+        self.as_ref().stop_task(id)
     }
     fn prepare_for_exit<'a>(&'a self) -> QueueRepositoryFuture<'a, AppResult<()>> {
         self.as_ref().prepare_for_exit()

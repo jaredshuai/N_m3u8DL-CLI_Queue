@@ -220,6 +220,15 @@ pub async fn pause_queue(
 }
 
 #[tauri::command]
+pub async fn stop_task(
+    state: State<'_, DependencyGraph>,
+    task_id: String,
+) -> Result<(), String> {
+    let queue_commands = QueueCommandFacade::new(state.inner().clone());
+    command_result(queue_commands.stop_task(&task_id).await)
+}
+
+#[tauri::command]
 pub fn minimize_main_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     command_result(window_actions::minimize_main_window(&app_handle))
 }

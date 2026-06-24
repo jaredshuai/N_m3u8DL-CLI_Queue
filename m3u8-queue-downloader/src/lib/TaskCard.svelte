@@ -1,7 +1,7 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
   import { displayProgressPercent } from './progress.js';
-  import { loadQueueState } from './queue-store.js';
+  import { loadQueueState, stopTask } from './queue-store.js';
   import { appSettings, clearHistoryTask, trackSessionTask } from './stores.js';
 
   let { task, draggable = false, historical = false, onOpenCliConsole = null, cliConsoleActive = false } = $props();
@@ -10,13 +10,15 @@
     task.status === 'downloading' ? 'down' :
     task.status === 'waiting' ? 'wait' :
     task.status === 'completed' ? 'done' :
-    task.status === 'failed' ? 'fail' : 'wait'
+    task.status === 'failed' ? 'fail' :
+    task.status === 'cancelled' ? 'cancel' : 'wait'
   );
 
   let borderColor = $derived(
     statusKey === 'down' ? 'var(--color-status-down)' :
     statusKey === 'done' ? 'var(--color-status-done)' :
     statusKey === 'fail' ? 'var(--color-status-fail)' :
+    statusKey === 'cancel' ? 'var(--color-status-wait)' :
     'var(--color-status-wait)'
   );
 
@@ -24,7 +26,8 @@
     task.status === 'downloading' ? '下载中' :
     task.status === 'waiting' ? '等待中' :
     task.status === 'completed' ? '已完成' :
-    task.status === 'failed' ? '失败' : task.status
+    task.status === 'failed' ? '失败' :
+    task.status === 'cancelled' ? '已停止' : task.status
   );
 
   let displayTitle = $derived(
@@ -32,11 +35,12 @@
   );
 
   let progressPct = $derived(displayProgressPercent(task.progress));
-  let canShowCliLive = $derived(statusKey === 'down' || statusKey === 'done' || statusKey === 'fail');
+  let canShowCliLive = $derived(statusKey === 'down' || statusKey === 'done' || statusKey === 'fail' || statusKey === 'cancel');
 
   let editing = $state(false);
   let draftName = $state('');
   let committing = $state(false);
+  let stopping = $state(false);
 
   async function handleRemove() {
     try {
@@ -52,6 +56,18 @@
       trackSessionTask(retriedTask.id);
     } catch (err) {
       console.error('Failed to retry task:', err);
+    }
+  }
+
+  async function handleStop() {
+    if (stopping) return;
+    stopping = true;
+    try {
+      await stopTask(task.id);
+    } catch (err) {
+      console.error('Failed to stop task:', err);
+    } finally {
+      stopping = false;
     }
   }
 
@@ -165,6 +181,10 @@
         <div class="error-msg">{task.errorMessage}</div>
       {/if}
 
+      {#if statusKey === 'cancel' && task.errorMessage}
+        <div class="error-msg cancel-msg">{task.errorMessage}</div>
+      {/if}
+
       {#if statusKey === 'done'}
         {#if task.outputPath}
           <div class="output-path" title={task.outputPath}>📁 {task.outputPath}</div>
@@ -179,9 +199,14 @@
             {cliConsoleActive ? '正在查看 CLI 终端' : '打开 CLI 终端'}
           </button>
         {/if}
+        {#if statusKey === 'down'}
+          <button class="action-btn danger" onclick={handleStop} disabled={stopping} title="停止">
+            {stopping ? '停止中...' : '⏹'}
+          </button>
+        {/if}
         {#if statusKey === 'wait'}
           <button class="action-btn danger" onclick={handleRemove} title="删除">✕</button>
-        {:else if statusKey === 'fail'}
+        {:else if statusKey === 'fail' || statusKey === 'cancel'}
           <button class="action-btn accent" onclick={handleRetry} title="重试">🔄</button>
           <button
             class="action-btn danger"
@@ -364,6 +389,11 @@
     color: var(--color-status-fail);
   }
 
+  .status-badge.cancel {
+    background: rgba(156, 163, 175, 0.15);
+    color: var(--color-text-secondary);
+  }
+
   .task-url {
     font-size: 12px;
     color: var(--color-text-secondary);
@@ -414,6 +444,11 @@
     border-radius: var(--radius-sm);
     margin-bottom: 6px;
     word-break: break-all;
+  }
+
+  .error-msg.cancel-msg {
+    color: var(--color-text-secondary);
+    background: rgba(156, 163, 175, 0.08);
   }
 
   .output-path {

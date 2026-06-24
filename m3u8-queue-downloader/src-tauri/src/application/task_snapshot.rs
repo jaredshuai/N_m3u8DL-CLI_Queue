@@ -8,6 +8,7 @@ pub(crate) enum TaskStatusSnapshot {
     Downloading,
     Completed,
     Failed,
+    Cancelled,
 }
 
 impl From<&TaskStatus> for TaskStatusSnapshot {
@@ -17,6 +18,7 @@ impl From<&TaskStatus> for TaskStatusSnapshot {
             TaskStatus::Downloading => Self::Downloading,
             TaskStatus::Completed => Self::Completed,
             TaskStatus::Failed => Self::Failed,
+            TaskStatus::Cancelled => Self::Cancelled,
         }
     }
 }

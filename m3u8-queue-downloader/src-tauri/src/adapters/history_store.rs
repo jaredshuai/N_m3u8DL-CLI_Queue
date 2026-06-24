@@ -320,7 +320,7 @@ fn history_status_from_snapshot(task: &TaskSnapshot) -> Option<HistoryStatus> {
     match &task.status {
         TaskStatusSnapshot::Completed => Some(HistoryStatus::Completed),
         TaskStatusSnapshot::Failed => Some(HistoryStatus::Failed),
-        TaskStatusSnapshot::Waiting | TaskStatusSnapshot::Downloading => None,
+        TaskStatusSnapshot::Waiting | TaskStatusSnapshot::Downloading | TaskStatusSnapshot::Cancelled => None,
     }
 }
 

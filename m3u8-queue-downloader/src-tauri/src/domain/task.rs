@@ -6,11 +6,12 @@ pub enum TaskStatus {
     Downloading,
     Completed,
     Failed,
+    Cancelled,
 }
 
 impl TaskStatus {
     pub(crate) fn can_remove_from_queue(&self) -> bool {
-        matches!(self, Self::Waiting | Self::Failed)
+        matches!(self, Self::Waiting | Self::Failed | Self::Cancelled)
     }
 
     pub(crate) fn is_failed(&self) -> bool {
@@ -27,6 +28,10 @@ impl TaskStatus {
 
     pub(crate) fn is_waiting(&self) -> bool {
         matches!(self, Self::Waiting)
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
     }
 }
 
@@ -71,6 +76,7 @@ mod tests {
     fn queue_removal_is_allowed_only_for_non_active_tasks() {
         assert!(TaskStatus::Waiting.can_remove_from_queue());
         assert!(TaskStatus::Failed.can_remove_from_queue());
+        assert!(TaskStatus::Cancelled.can_remove_from_queue());
         assert!(!TaskStatus::Downloading.can_remove_from_queue());
         assert!(!TaskStatus::Completed.can_remove_from_queue());
     }
@@ -81,6 +87,7 @@ mod tests {
         assert!(TaskStatus::Downloading.is_live_work());
         assert!(!TaskStatus::Completed.is_live_work());
         assert!(!TaskStatus::Failed.is_live_work());
+        assert!(!TaskStatus::Cancelled.is_live_work());
     }
 
     #[test]
@@ -88,9 +95,11 @@ mod tests {
         assert!(TaskStatus::Waiting.is_waiting());
         assert!(TaskStatus::Downloading.is_downloading());
         assert!(TaskStatus::Failed.is_failed());
+        assert!(TaskStatus::Cancelled.is_cancelled());
         assert!(!TaskStatus::Completed.is_waiting());
         assert!(!TaskStatus::Completed.is_downloading());
         assert!(!TaskStatus::Completed.is_failed());
+        assert!(!TaskStatus::Completed.is_cancelled());
     }
 
     #[test]

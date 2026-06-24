@@ -658,6 +658,29 @@ impl<'a> QueueSchedulingPorts<'a> {
         .await;
     }
 
+    /// High-level cancelled child-exit intent. The queue side has already been
+    /// transitioned to `Cancelled` by the command facade's `stop_task` call before
+    /// the process was killed, so the orchestrator only performs terminal cleanup,
+    /// acknowledges shutdown if needed, and drives queue continuation.
+    /// Distinct from `Failed`: skips the retry policy entirely. See ADR-0009.
+    pub(crate) async fn handle_cancelled_child_exit(
+        &self,
+        task_id: &str,
+        _error_message: &str,
+    ) {
+        self.clear_child_exit_terminal_active_line(task_id);
+        self.continue_child_exit_unless_shutting_down(|| async {
+            self.log_cancelled_and_schedule_next(task_id).await;
+        })
+        .await;
+    }
+
+    async fn log_cancelled_and_schedule_next(&self, task_id: &str) {
+        self.diagnostics
+            .warn(&format!("Task {} cancelled by user", task_id));
+        self.schedule_next_after_child_exit("cancellation").await;
+    }
+
     async fn acknowledge_shutdown_child_exit_if_needed(&self) -> bool {
         if self.queue_is_shutting_down().await {
             self.mark_shutdown_child_exit_acknowledged();

@@ -11,7 +11,7 @@ use composition::tauri_commands::{
     add_task, cancel_auto_shutdown, get_app_settings, get_cli_output_page, get_cli_output_tail,
     get_cli_terminal_state, get_history_page, get_queue_state, minimize_main_window,
     open_download_dir, pause_queue, remove_history_task, remove_task, reorder_tasks,
-    request_main_window_close, retry_task, start_queue, toggle_main_window_maximize,
+    request_main_window_close, retry_task, start_queue, stop_task, toggle_main_window_maximize,
     update_app_settings, update_save_name,
 };
 
@@ -35,6 +35,7 @@ pub fn run() {
             reorder_tasks,
             start_queue,
             pause_queue,
+            stop_task,
             update_save_name,
             minimize_main_window,
             toggle_main_window_maximize,
