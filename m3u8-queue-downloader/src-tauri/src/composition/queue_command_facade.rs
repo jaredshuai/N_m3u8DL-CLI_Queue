@@ -86,27 +86,19 @@ impl QueueCommandFacade {
         ports.handle_queue_pause().await
     }
 
-    /// Stop a running (downloading) task: mark it Cancelled on the queue side,
-    /// then kill the live child process. The kill emits a `Cancelled` lifecycle
-    /// event that the orchestrator handles separately (skipping the retry
-    /// policy). See ADR-0009.
+    /// Stop a running (downloading) task: kill the live child process first
+    /// (always-OK — even if the process is already gone or the kill fails,
+    /// the cancelling marker + Cancelled event are set), then mark it
+    /// Cancelled on the queue side. Order: kill first, mark second — if
+    /// the mark fails (e.g. persistence error) the process has already been
+    /// terminated but the queue slot is still occupied, avoiding a double-
+    /// schedule race. See ADR-0009.
     pub(crate) async fn stop_task(&self, task_id: &str) -> AppResult<()> {
         let (queue_repository, process_supervisor) = self.dependencies.stop_task_ports();
-        // 1. Mark Cancelled in queue state (also clears current_task).
-        //    Done first so the eventual Cancelled lifecycle event finds the
-        //    queue already in the desired state.
-        queue_repository.stop_task(task_id).await?;
-        // 2. Kill the process. Only the "no running process" race is
-        //    acceptable — it means the child exited naturally between step 1
-        //    and here, and the queue is already correctly marked Cancelled.
-        //    Any other kill failure (taskkill itself errored) is surfaced so
-        //    the user knows the process may still be running.
-        if let Err(err) = process_supervisor.terminate_task(task_id).await {
-            let message = err.to_string();
-            if !message.contains("No running process") {
-                return Err(err);
-            }
-        }
-        Ok(())
+        // 1. Kill the process. Always-OK: sets cancelling marker + emits
+        //    Cancelled event. The process is gone or will be on next exit.
+        process_supervisor.terminate_task(task_id).await?;
+        // 2. Mark Cancelled in queue state (also clears current_task).
+        queue_repository.stop_task(task_id).await
     }
 }
