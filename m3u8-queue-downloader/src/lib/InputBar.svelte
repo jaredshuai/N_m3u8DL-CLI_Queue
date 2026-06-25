@@ -122,6 +122,16 @@
     </div>
   {/if}
 
+  {#if saveNameCollision}
+    <div class="collision-warning" role="alert" aria-live="polite">
+      <span class="warning-icon">⚠</span>
+      <div class="warning-copy">
+        <strong>保存名称异常</strong>
+        <span>{saveNameCollision.message}</span>
+      </div>
+    </div>
+  {/if}
+
   <button class="advanced-toggle" onclick={toggleAdvanced}>
     {showAdvanced ? '▾ 高级选项' : '▸ 高级选项'}
   </button>
@@ -139,12 +149,6 @@
             class="field-input"
             class:field-input-error={saveNameCollision}
           />
-          {#if saveNameCollision}
-            <div class="field-warning" role="alert">
-              <span class="warning-icon">⚠</span>
-              <span>{saveNameCollision.message}</span>
-            </div>
-          {/if}
         </div>
 
         <div class="headers-section">
@@ -351,18 +355,17 @@
     border-color: var(--color-status-fail);
   }
 
-  .field-warning {
+  .collision-warning {
     display: flex;
     align-items: flex-start;
-    gap: 6px;
-    margin-top: 4px;
-    padding: 6px 10px;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 8px 10px;
     border: 1px solid rgba(248, 113, 113, 0.45);
     border-radius: var(--radius-sm);
     background: rgba(248, 113, 113, 0.1);
     color: var(--color-status-fail);
     font-size: 12px;
-    line-height: 1.4;
   }
 
   .headers-section {
