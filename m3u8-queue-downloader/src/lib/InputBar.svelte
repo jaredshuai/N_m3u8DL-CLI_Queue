@@ -3,6 +3,7 @@
   import { loadQueueState, tasks, queueRunning, trackSessionTask } from './stores.js';
   import { getQueueControlState, runQueueToggle } from './queue-controls.js';
   import { findDuplicateWarnings } from './duplicate-warnings.js';
+  import { detectSaveNameUrlCollision } from './save-name-sanity.js';
 
   let url = $state('');
   let saveName = $state('');
@@ -19,6 +20,10 @@
     saveName,
   }));
 
+  // Paster's pitfall guard: when saveName equals url, the user almost
+  // certainly failed to copy the real save name and re-pasted the link.
+  let saveNameCollision = $derived(detectSaveNameUrlCollision({ url, saveName }));
+
   let queueControl = $derived(getQueueControlState({
     tasks: $tasks,
     queueRunning: $queueRunning,
@@ -28,6 +33,9 @@
   async function handleAdd() {
     const trimmedUrl = url.trim();
     if (!trimmedUrl || adding) return;
+    // Block the classic paste-failure pitfall: saveName == url means the
+    // user re-pasted the link into the save-name field by mistake.
+    if (saveNameCollision) return;
 
     adding = true;
     try {
@@ -92,7 +100,7 @@
       class="url-input"
       disabled={adding}
     />
-    <button onclick={handleAdd} class="add-btn" disabled={!url.trim() || adding}>
+    <button onclick={handleAdd} class="add-btn" disabled={!url.trim() || adding || saveNameCollision}>
       {adding ? '添加中...' : '添加'}
     </button>
     <button
@@ -129,7 +137,14 @@
             bind:value={saveName}
             placeholder="可选，留空自动识别"
             class="field-input"
+            class:field-input-error={saveNameCollision}
           />
+          {#if saveNameCollision}
+            <div class="field-warning" role="alert">
+              <span class="warning-icon">⚠</span>
+              <span>{saveNameCollision.message}</span>
+            </div>
+          {/if}
         </div>
 
         <div class="headers-section">
@@ -326,6 +341,28 @@
 
   .field-input:focus {
     border-color: var(--color-accent);
+  }
+
+  .field-input-error {
+    border-color: var(--color-status-fail);
+  }
+
+  .field-input-error:focus {
+    border-color: var(--color-status-fail);
+  }
+
+  .field-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin-top: 4px;
+    padding: 6px 10px;
+    border: 1px solid rgba(248, 113, 113, 0.45);
+    border-radius: var(--radius-sm);
+    background: rgba(248, 113, 113, 0.1);
+    color: var(--color-status-fail);
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   .headers-section {
