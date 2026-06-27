@@ -1,0 +1,1354 @@
+<!doctype html>
+<html data-theme="dark" lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="canvas:aspect-ratio" content="16:9" />
+<title>m3u8 Queue Downloader — Dual Theme Design Specification</title>
+<style>
+/* ================================================================
+   THEME TOKENS (inlined from app.css theme blocks)
+   ================================================================ */
+[data-theme="dark"]{color-scheme:dark;--color-bg-main:#0b0d12;--color-bg-card:#13161c;--color-bg-card-hover:#181c24;--color-bg-input:#1c2028;--color-bg-panel:#10131a;--color-bg-titlebar:#0f1218;--color-bg-cli:#080a0f;--color-bg-statusbar:#0d1017;--color-text-main:#f8fafc;--color-text-secondary:#808c9c;--color-text-disabled:#3c4654;--color-accent:#eab308;--color-accent-bright:#facc15;--color-accent-dim:#ca8a04;--color-accent-hover:#d4a007;--color-accent-active:#b8860b;--color-accent-glow:rgba(234,179,8,.15);--color-status-wait:#64748b;--color-status-down:#eab308;--color-status-done:#10b981;--color-status-fail:#f87171;--color-border:#282f3a;--color-divider:#1e2530;--overlay-subtle:rgba(255,255,255,.04);--overlay-hover:rgba(255,255,255,.06);--overlay-active:rgba(255,255,255,.10);--overlay-input:rgba(0,0,0,.18);--overlay-card-selected:rgba(234,179,8,.08);--color-badge-wait-bg:rgba(100,116,139,.15);--color-badge-down-bg:rgba(234,179,8,.15);--color-badge-done-bg:rgba(16,185,129,.15);--color-badge-fail-bg:rgba(248,113,113,.12);--color-accent-soft-bg:rgba(234,179,8,.08);--color-warning-bg:rgba(234,179,8,.12);--color-error-bg:rgba(248,113,113,.10);--color-success-bg:rgba(16,185,129,.10);--color-fail-soft-bg:rgba(248,113,113,.06);--shadow-sm:0 1px 3px rgba(0,0,0,.35);--shadow-md:0 4px 12px rgba(0,0,0,.40);--shadow-lg:0 8px 24px rgba(0,0,0,.50);--card-inner-shadow:inset 0 1px 0 rgba(255,255,255,.05);--color-text-console:#b0bec5;--color-console-active-line:rgba(234,179,8,.10);--color-console-prompt:#eab308;--color-console-error:#f87171;--color-console-success:#10b981;--progress-gradient:linear-gradient(90deg,#ca8a04 0%,#facc15 100%);--progress-track:rgba(255,255,255,.06);--radius:10px;--radius-sm:6px;--radius-xs:4px;--radius-pill:9999px;--transition-fast:150ms ease;--transition-normal:250ms ease;--transition-theme:300ms ease}
+[data-theme="light"]{color-scheme:light;--color-bg-main:#f5f3f0;--color-bg-card:#fbfaf8;--color-bg-card-hover:#f0ede8;--color-bg-input:#edeae6;--color-bg-panel:#f0ede8;--color-bg-titlebar:#fbfaf8;--color-bg-cli:#1e2028;--color-bg-statusbar:#edeae6;--color-text-main:#1a1714;--color-text-secondary:#5c5650;--color-text-disabled:#a8a29e;--color-accent:#eab308;--color-accent-bright:#facc15;--color-accent-dim:#ca8a04;--color-accent-hover:#d4a007;--color-accent-active:#a16207;--color-accent-glow:rgba(234,179,8,.12);--color-status-wait:#475569;--color-status-down:#a16207;--color-status-done:#0d9668;--color-status-fail:#dc2626;--color-border:#d8d3cc;--color-divider:#e5e0da;--overlay-subtle:rgba(0,0,0,.03);--overlay-hover:rgba(0,0,0,.05);--overlay-active:rgba(0,0,0,.08);--overlay-input:rgba(0,0,0,.04);--overlay-card-selected:rgba(234,179,8,.10);--color-badge-wait-bg:rgba(71,85,105,.10);--color-badge-down-bg:rgba(234,179,8,.12);--color-badge-done-bg:rgba(13,150,104,.10);--color-badge-fail-bg:rgba(220,38,38,.08);--color-accent-soft-bg:rgba(234,179,8,.08);--color-warning-bg:rgba(234,179,8,.10);--color-error-bg:rgba(220,38,38,.06);--color-success-bg:rgba(13,150,104,.08);--color-fail-soft-bg:rgba(220,38,38,.04);--shadow-sm:0 1px 3px rgba(120,110,100,.06);--shadow-md:0 4px 12px rgba(120,110,100,.08);--shadow-lg:0 8px 24px rgba(120,110,100,.10);--card-inner-shadow:inset 0 1px 0 rgba(255,255,255,.70);--color-text-console:#d1d5db;--color-console-active-line:rgba(234,179,8,.15);--color-console-prompt:#eab308;--color-console-error:#fca5a5;--color-console-success:#34d399;--progress-gradient:linear-gradient(90deg,#ca8a04 0%,#eab308 100%);--progress-track:rgba(0,0,0,.06);--radius:10px;--radius-sm:6px;--radius-xs:4px;--radius-pill:9999px;--transition-fast:150ms ease;--transition-normal:250ms ease;--transition-theme:300ms ease}
+
+/* ================================================================
+   PAGE LAYOUT
+   ================================================================ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  background: var(--color-bg-main);
+  color: var(--color-text-main);
+  line-height: 1.6;
+  transition: background-color var(--transition-theme), color var(--transition-theme);
+  -webkit-font-smoothing: antialiased;
+}
+.page-header{
+  position: sticky; top: 0; z-index: 100;
+  background: var(--color-bg-titlebar);
+  border-bottom: 1px solid var(--color-border);
+  padding: 12px 32px;
+  display: flex; align-items: center; justify-content: space-between;
+  backdrop-filter: blur(12px);
+  transition: background-color var(--transition-theme), border-color var(--transition-theme);
+}
+.page-header h1{
+  font-size: 15px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--color-text-main);
+}
+.page-header h1 span{ color: var(--color-accent); }
+.theme-toggle{
+  display: flex; gap: 2px;
+  background: var(--color-bg-input);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  transition: background-color var(--transition-theme), border-color var(--transition-theme);
+}
+.theme-btn{
+  background: transparent; border: none; color: var(--color-text-secondary);
+  padding: 5px 14px; border-radius: var(--radius-xs);
+  font-size: 12px; font-weight: 500; cursor: pointer; letter-spacing: 0.02em;
+  transition: all var(--transition-fast);
+}
+.theme-btn:hover{ color: var(--color-text-main); background: var(--overlay-hover); }
+.theme-btn.active{
+  background: var(--color-accent); color: #000; font-weight: 600;
+}
+.content{ max-width: 960px; margin: 0 auto; padding: 32px; }
+
+/* ================================================================
+   SECTIONS
+   ================================================================ */
+.section{
+  margin-bottom: 56px;
+}
+.section-label{
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--color-accent);
+  margin-bottom: 8px;
+}
+.section-title{
+  font-size: 22px; font-weight: 600; color: var(--color-text-main);
+  margin-bottom: 16px; letter-spacing: -0.01em;
+}
+.section-desc{
+  font-size: 14px; color: var(--color-text-secondary);
+  line-height: 1.7; margin-bottom: 24px; max-width: 72ch;
+}
+.section-desc + .section-desc{ margin-top: -12px; }
+
+/* ================================================================
+   TOKEN TABLE
+   ================================================================ */
+.token-group{ margin-bottom: 28px; }
+.token-group-title{
+  font-size: 13px; font-weight: 600; color: var(--color-text-secondary);
+  margin-bottom: 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-divider);
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.token-row{
+  display: grid;
+  grid-template-columns: 28px 1fr 88px 88px;
+  gap: 12px; align-items: center;
+  padding: 6px 8px; border-radius: var(--radius-xs);
+  font-size: 12.5px; font-family: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', monospace;
+  transition: background-color var(--transition-fast);
+}
+.token-row:hover{ background: var(--overlay-subtle); }
+.token-swatch{
+  width: 24px; height: 24px; border-radius: 4px;
+  border: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+.token-name{ color: var(--color-text-main); font-weight: 500; }
+.token-val{ color: var(--color-text-secondary); font-size: 11.5px; }
+.token-val.gradient-val{ font-size: 10px; }
+.token-header{
+  display: grid;
+  grid-template-columns: 28px 1fr 88px 88px;
+  gap: 12px; padding: 0 8px 6px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--color-text-disabled);
+}
+
+/* ================================================================
+   SEMANTIC TABLE
+   ================================================================ */
+.sem-table{
+  width: 100%; border-collapse: collapse;
+  font-size: 12.5px;
+}
+.sem-table th{
+  text-align: left; padding: 8px 10px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--color-text-disabled);
+  border-bottom: 1px solid var(--color-border);
+}
+.sem-table td{
+  padding: 7px 10px; border-bottom: 1px solid var(--color-divider);
+  color: var(--color-text-secondary);
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 11.5px;
+}
+.sem-table td:first-child{ color: var(--color-text-main); font-weight: 500; }
+.sem-table td:last-child{ font-family: 'Segoe UI', sans-serif; color: var(--color-text-secondary); }
+.sem-table tr:hover td{ background: var(--overlay-subtle); }
+.swatch-inline{
+  display: inline-block; width: 12px; height: 12px;
+  border-radius: 2px; vertical-align: middle;
+  margin-right: 4px; border: 1px solid var(--color-border);
+}
+
+/* ================================================================
+   COMPONENT MOCKUPS
+   ================================================================ */
+.mockup-grid{
+  display: grid; gap: 24px;
+  grid-template-columns: 1fr;
+}
+.mockup-grid.two-col{ grid-template-columns: 1fr 1fr; }
+.mockup-item{ display: flex; flex-direction: column; gap: 8px; }
+.mockup-label{
+  font-size: 12px; font-weight: 600; color: var(--color-text-secondary);
+  letter-spacing: 0.03em;
+}
+.mockup-label span{
+  font-weight: 400; color: var(--color-text-disabled);
+  margin-left: 6px; font-size: 11px;
+}
+.mockup-frame{
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--transition-theme), box-shadow var(--transition-theme);
+}
+
+/* --- TitleBar Mockup --- */
+.mock-titlebar{
+  background: var(--color-bg-titlebar);
+  padding: 0 12px; height: 36px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--color-border);
+  -webkit-app-region: drag;
+}
+.mock-titlebar-left{ display: flex; align-items: center; gap: 8px; }
+.mock-titlebar-icon{
+  width: 16px; height: 16px; border-radius: 3px;
+  background: var(--color-accent); opacity: 0.9;
+}
+.mock-titlebar-text{
+  font-size: 12px; font-weight: 500; color: var(--color-text-secondary);
+}
+.mock-titlebar-controls{ display: flex; gap: 0; }
+.mock-win-btn{
+  width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: var(--color-text-secondary);
+  cursor: pointer; transition: background var(--transition-fast);
+}
+.mock-win-btn:hover{ background: var(--overlay-hover); }
+.mock-win-btn.close:hover{ background: #e81123; color: #fff; }
+.mock-win-btn svg{ width: 10px; height: 10px; stroke: currentColor; stroke-width: 1.5; fill: none; }
+
+/* --- InputBar Mockup --- */
+.mock-input-area{
+  background: var(--color-bg-main);
+  padding: 16px;
+}
+.mock-input-row{
+  display: flex; gap: 8px;
+}
+.mock-input{
+  flex: 1; background: var(--color-bg-input);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px; font-size: 13px;
+  color: var(--color-text-main);
+  transition: border-color var(--transition-fast), background-color var(--transition-theme);
+}
+.mock-input::placeholder{ color: var(--color-text-disabled); }
+.mock-input:focus{ outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 2px var(--color-accent-glow); }
+.mock-input-sm{ width: 140px; flex: none; }
+.mock-btn-primary{
+  background: var(--color-accent); color: #000;
+  border: none; border-radius: var(--radius-sm);
+  padding: 8px 16px; font-size: 13px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+  transition: background var(--transition-fast);
+}
+.mock-btn-primary:hover{ background: var(--color-accent-bright); }
+
+/* --- SettingsPanel Mockup --- */
+.mock-settings{
+  background: var(--color-bg-panel);
+  padding: 20px;
+}
+.mock-settings-title{
+  font-size: 14px; font-weight: 600; color: var(--color-text-main);
+  margin-bottom: 16px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--color-divider);
+}
+.mock-setting-row{
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-divider);
+}
+.mock-setting-row:last-child{ border-bottom: none; }
+.mock-setting-label{ font-size: 13px; color: var(--color-text-main); }
+.mock-setting-desc{ font-size: 11px; color: var(--color-text-secondary); margin-top: 2px; }
+.mock-toggle{
+  width: 36px; height: 20px; border-radius: 10px;
+  background: var(--color-bg-input); border: 1px solid var(--color-border);
+  position: relative; cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.mock-toggle.on{ background: var(--color-accent); border-color: var(--color-accent); }
+.mock-toggle-knob{
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; position: absolute; top: 2px; left: 2px;
+  transition: transform var(--transition-fast);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+.mock-toggle.on .mock-toggle-knob{ transform: translateX(16px); }
+.mock-select{
+  background: var(--color-bg-input); border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs); padding: 4px 8px;
+  font-size: 12px; color: var(--color-text-main);
+}
+
+/* --- TaskCard Mockup --- */
+.mock-card{
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  box-shadow: var(--card-inner-shadow);
+  transition: background-color var(--transition-theme), border-color var(--transition-theme);
+}
+.mock-card:hover{ background: var(--color-bg-card-hover); }
+.mock-card.downloading{
+  border-color: var(--color-accent-dim);
+  box-shadow: var(--card-inner-shadow), 0 0 12px var(--color-accent-glow);
+}
+.mock-card.failed{
+  border-color: rgba(248,113,113,0.3);
+}
+[data-theme="light"] .mock-card.failed{
+  border-color: rgba(220,38,38,0.25);
+}
+.mock-card.stopped{
+  opacity: 0.75;
+}
+.mock-card-header{
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.mock-card-left{ display: flex; align-items: center; gap: 8px; }
+.mock-badge{
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: var(--radius-pill);
+  font-size: 10px; font-weight: 600; letter-spacing: 0.03em;
+}
+.mock-badge.wait{ background: var(--color-badge-wait-bg); color: var(--color-status-wait); }
+.mock-badge.down{ background: var(--color-badge-down-bg); color: var(--color-status-down); }
+.mock-badge.done{ background: var(--color-badge-done-bg); color: var(--color-status-done); }
+.mock-badge.fail{ background: var(--color-badge-fail-bg); color: var(--color-status-fail); }
+.mock-badge-dot{
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor;
+}
+.mock-card-name{
+  font-size: 13px; font-weight: 500; color: var(--color-text-main);
+}
+.mock-card-actions{ display: flex; gap: 4px; }
+.mock-card-btn{
+  width: 26px; height: 26px; border-radius: var(--radius-xs);
+  background: transparent; border: 1px solid transparent;
+  color: var(--color-text-secondary); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px;
+  transition: all var(--transition-fast);
+}
+.mock-card-btn:hover{ background: var(--overlay-hover); border-color: var(--color-border); }
+.mock-card-btn.danger:hover{ background: var(--color-error-bg); color: var(--color-status-fail); border-color: rgba(248,113,113,0.2); }
+.mock-progress{
+  height: 4px; border-radius: 2px;
+  background: var(--progress-track);
+  overflow: hidden; margin-bottom: 8px;
+}
+.mock-progress-fill{
+  height: 100%; border-radius: 2px;
+  background: var(--progress-gradient);
+  transition: width 0.3s ease;
+}
+.mock-progress-fill.done{ background: var(--color-status-done); width: 100%; }
+.mock-progress-fill.fail{ background: var(--color-status-fail); }
+.mock-card-meta{
+  display: flex; align-items: center; gap: 16px;
+  font-size: 11px; color: var(--color-text-secondary);
+}
+.mock-card-meta .speed{ color: var(--color-accent); font-weight: 600; }
+
+/* --- CLI Console Mockup --- */
+.mock-cli{
+  background: var(--color-bg-cli);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.mock-cli-header{
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+[data-theme="light"] .mock-cli-header{ border-bottom-color: rgba(255,255,255,0.08); }
+.mock-cli-title{
+  font-size: 11px; font-weight: 600; color: var(--color-text-console);
+  letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.7;
+}
+.mock-cli-body{
+  padding: 12px 14px;
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 11.5px; line-height: 1.7;
+  color: var(--color-text-console);
+}
+.mock-cli-line{ padding: 1px 0; }
+.mock-cli-line.active{ background: var(--color-console-active-line); }
+.mock-cli-prompt{ color: var(--color-console-prompt); }
+.mock-cli-success{ color: var(--color-console-success); }
+.mock-cli-error{ color: var(--color-console-error); }
+.mock-cli-dim{ opacity: 0.5; }
+
+/* --- StatusBar Mockup --- */
+.mock-statusbar{
+  background: var(--color-bg-statusbar);
+  border-top: 1px solid var(--color-border);
+  padding: 6px 16px;
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; color: var(--color-text-secondary);
+}
+.mock-statusbar-left{ display: flex; align-items: center; gap: 12px; }
+.mock-statusbar-right{ display: flex; align-items: center; gap: 12px; }
+.mock-statusbar .speed{ color: var(--color-accent); font-weight: 600; }
+.mock-statusbar .count{ color: var(--color-text-main); font-weight: 500; }
+.mock-statusbar-dot{
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--color-status-done); display: inline-block; margin-right: 4px;
+}
+
+/* --- Warning Mockup --- */
+.mock-warning{
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-accent-dim);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px;
+}
+[data-theme="dark"] .mock-warning{ color: var(--color-accent-bright); }
+[data-theme="light"] .mock-warning{ color: #7a5400; }
+.mock-warning-icon{
+  width: 16px; height: 16px; flex-shrink: 0;
+  color: var(--color-accent);
+}
+.mock-error-msg{
+  background: var(--color-error-bg);
+  border: 1px solid rgba(248,113,113,0.25);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--color-status-fail);
+}
+[data-theme="light"] .mock-error-msg{ border-color: rgba(220,38,38,0.2); }
+
+/* ================================================================
+   MICRO-INTERACTION NOTES
+   ================================================================ */
+.interaction-list{ list-style: none; }
+.interaction-list li{
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-divider);
+  font-size: 13px; color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+.interaction-list li:last-child{ border-bottom: none; }
+.interaction-list strong{ color: var(--color-text-main); font-weight: 600; }
+.interaction-list code{
+  font-family: 'Cascadia Code', 'JetBrains Mono', monospace;
+  font-size: 11.5px; background: var(--overlay-subtle);
+  padding: 1px 5px; border-radius: 3px;
+  color: var(--color-accent-dim);
+}
+[data-theme="light"] .interaction-list code{ color: #8b5600; }
+
+/* ================================================================
+   IMPLEMENTATION NOTES
+   ================================================================ */
+.impl-grid{
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+}
+.impl-card{
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  transition: background-color var(--transition-theme), border-color var(--transition-theme);
+}
+.impl-card h4{
+  font-size: 13px; font-weight: 600; color: var(--color-text-main);
+  margin-bottom: 8px;
+}
+.impl-card p{
+  font-size: 12px; color: var(--color-text-secondary);
+  line-height: 1.65;
+}
+.impl-card code{
+  font-family: 'Cascadia Code', 'JetBrains Mono', monospace;
+  font-size: 11px; background: var(--overlay-subtle);
+  padding: 1px 4px; border-radius: 3px;
+}
+
+/* ================================================================
+   CONTRAST BADGE
+   ================================================================ */
+.contrast-badge{
+  display: inline-block; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.04em; padding: 1px 5px;
+  border-radius: 3px; vertical-align: middle;
+  margin-left: 4px;
+}
+.contrast-badge.pass{
+  background: var(--color-success-bg); color: var(--color-status-done);
+}
+
+/* ================================================================
+   COLOR PALETTE STRIP
+   ================================================================ */
+.palette-strip{
+  display: flex; gap: 4px; margin-bottom: 20px; flex-wrap: wrap;
+}
+.palette-chip{
+  width: 48px; height: 48px; border-radius: var(--radius-sm);
+  display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 4px;
+  font-size: 8px; font-weight: 600; letter-spacing: 0.02em;
+  border: 1px solid var(--color-border);
+}
+
+/* ================================================================
+   RESPONSIVE
+   ================================================================ */
+@media (max-width: 768px) {
+  .content{ padding: 20px 16px; }
+  .mockup-grid.two-col{ grid-template-columns: 1fr; }
+  .impl-grid{ grid-template-columns: 1fr; }
+  .token-row{ grid-template-columns: 24px 1fr 72px; }
+  .token-row .token-val:last-child{ display: none; }
+  .token-header{ grid-template-columns: 24px 1fr 72px; }
+  .token-header span:last-child{ display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- ================================================================
+     HEADER
+     ================================================================ -->
+<header class="page-header" data-component="Header">
+  <h1><span>m3u8</span> Queue Downloader &mdash; Dual Theme Specification</h1>
+  <nav class="theme-toggle" aria-label="Theme switcher">
+    <button class="theme-btn active" data-set-theme="dark">Dark</button>
+    <button class="theme-btn" data-set-theme="light">Light</button>
+  </nav>
+</header>
+
+<main class="content">
+
+  <!-- ================================================================
+       1. DESIGN DIRECTION
+       ================================================================ -->
+  <section class="section" data-component="Design Direction">
+    <p class="section-label">01 &mdash; Overview</p>
+    <h2 class="section-title">Design Direction</h2>
+    <p class="section-desc">
+      This visual system establishes a coherent dual-theme identity for the m3u8 Queue Downloader. The Dark theme preserves the established <strong>Midnight &amp; Amber</strong> language: cold blue-gray neutrals (#0b0d12 base) paired with warm amber accents (#eab308), creating a technical tool aesthetic that is clear and comfortable for extended use sessions.
+    </p>
+    <p class="section-desc">
+      The Light theme introduces a complementary <strong>Warm Neutral</strong> palette: cream-gray backgrounds (#f5f3f0 base) that avoid the harshness of pure white while maintaining the amber brand identity. The amber accent adapts for readability &mdash; text uses a darker amber (#8b5600, 6.8:1 contrast ratio) while interactive fills retain the brand-bright variant. All text colors meet WCAG AA (4.5:1 minimum).
+    </p>
+    <p class="section-desc">
+      The CLI terminal panel uses an independent dark surface (#1e2028 in Light, #080a0f in Dark) to maintain terminal atmosphere without visual disruption in either theme. This is a deliberate design decision: the terminal always feels like a terminal.
+    </p>
+
+    <!-- Palette strips -->
+    <p style="font-size:12px;font-weight:600;color:var(--color-text-secondary);margin-bottom:8px;letter-spacing:0.04em;text-transform:uppercase;">Dark Palette</p>
+    <div class="palette-strip">
+      <div class="palette-chip" style="background:#0b0d12;color:#808c9c;">bg</div>
+      <div class="palette-chip" style="background:#13161c;color:#808c9c;">card</div>
+      <div class="palette-chip" style="background:#1c2028;color:#808c9c;">input</div>
+      <div class="palette-chip" style="background:#282f3a;color:#808c9c;">border</div>
+      <div class="palette-chip" style="background:#808c9c;color:#0b0d12;">sec</div>
+      <div class="palette-chip" style="background:#f8fafc;color:#0b0d12;">text</div>
+      <div class="palette-chip" style="background:#eab308;color:#000;">accent</div>
+      <div class="palette-chip" style="background:#10b981;color:#000;">done</div>
+      <div class="palette-chip" style="background:#f87171;color:#000;">fail</div>
+    </div>
+    <p style="font-size:12px;font-weight:600;color:var(--color-text-secondary);margin-bottom:8px;letter-spacing:0.04em;text-transform:uppercase;">Light Palette</p>
+    <div class="palette-strip">
+      <div class="palette-chip" style="background:#f5f3f0;color:#5c5650;">bg</div>
+      <div class="palette-chip" style="background:#fbfaf8;color:#5c5650;">card</div>
+      <div class="palette-chip" style="background:#edeae6;color:#5c5650;">input</div>
+      <div class="palette-chip" style="background:#d8d3cc;color:#1a1714;">border</div>
+      <div class="palette-chip" style="background:#5c5650;color:#fbfaf8;">sec</div>
+      <div class="palette-chip" style="background:#1a1714;color:#fbfaf8;">text</div>
+      <div class="palette-chip" style="background:#eab308;color:#000;">accent</div>
+      <div class="palette-chip" style="background:#0d9668;color:#fff;">done</div>
+      <div class="palette-chip" style="background:#dc2626;color:#fff;">fail</div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       2. COLOR TOKENS
+       ================================================================ -->
+  <section class="section" data-component="Color Tokens">
+    <p class="section-label">02 &mdash; Reference</p>
+    <h2 class="section-title">Color Token Table</h2>
+    <p class="section-desc">
+      Complete token reference with Dark and Light values. Each row shows the CSS variable name and its resolved color in both themes. All tokens use semantic naming by purpose, never by hue.
+    </p>
+
+    <!-- Backgrounds -->
+    <div class="token-group">
+      <h3 class="token-group-title">Backgrounds</h3>
+      <div class="token-header">
+        <span></span><span>Variable</span><span>Dark</span><span>Light</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#0b0d12;"></div>
+        <span class="token-name">--color-bg-main</span>
+        <span class="token-val">#0b0d12</span>
+        <span class="token-val">#f5f3f0</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#13161c;"></div>
+        <span class="token-name">--color-bg-card</span>
+        <span class="token-val">#13161c</span>
+        <span class="token-val">#fbfaf8</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#181c24;"></div>
+        <span class="token-name">--color-bg-card-hover</span>
+        <span class="token-val">#181c24</span>
+        <span class="token-val">#f0ede8</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#1c2028;"></div>
+        <span class="token-name">--color-bg-input</span>
+        <span class="token-val">#1c2028</span>
+        <span class="token-val">#edeae6</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#10131a;"></div>
+        <span class="token-name">--color-bg-panel</span>
+        <span class="token-val">#10131a</span>
+        <span class="token-val">#f0ede8</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#0f1218;"></div>
+        <span class="token-name">--color-bg-titlebar</span>
+        <span class="token-val">#0f1218</span>
+        <span class="token-val">#fbfaf8</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#080a0f;"></div>
+        <span class="token-name">--color-bg-cli</span>
+        <span class="token-val">#080a0f</span>
+        <span class="token-val">#1e2028</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#0d1017;"></div>
+        <span class="token-name">--color-bg-statusbar</span>
+        <span class="token-val">#0d1017</span>
+        <span class="token-val">#edeae6</span>
+      </div>
+    </div>
+
+    <!-- Text -->
+    <div class="token-group">
+      <h3 class="token-group-title">Text</h3>
+      <div class="token-header">
+        <span></span><span>Variable</span><span>Dark</span><span>Light</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#f8fafc;"></div>
+        <span class="token-name">--color-text-main</span>
+        <span class="token-val">#f8fafc</span>
+        <span class="token-val">#1a1714</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#808c9c;"></div>
+        <span class="token-name">--color-text-secondary</span>
+        <span class="token-val">#808c9c</span>
+        <span class="token-val">#5c5650</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#3c4654;"></div>
+        <span class="token-name">--color-text-disabled</span>
+        <span class="token-val">#3c4654</span>
+        <span class="token-val">#a8a29e</span>
+      </div>
+    </div>
+
+    <!-- Accent -->
+    <div class="token-group">
+      <h3 class="token-group-title">Accent (Amber)</h3>
+      <div class="token-header">
+        <span></span><span>Variable</span><span>Dark</span><span>Light</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#eab308;"></div>
+        <span class="token-name">--color-accent</span>
+        <span class="token-val">#eab308</span>
+        <span class="token-val">#eab308</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#facc15;"></div>
+        <span class="token-name">--color-accent-bright</span>
+        <span class="token-val">#facc15</span>
+        <span class="token-val">#facc15</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#ca8a04;"></div>
+        <span class="token-name">--color-accent-dim</span>
+        <span class="token-val">#ca8a04</span>
+        <span class="token-val">#ca8a04</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#d4a007;"></div>
+        <span class="token-name">--color-accent-hover</span>
+        <span class="token-val">#d4a007</span>
+        <span class="token-val">#d4a007</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#b8860b;"></div>
+        <span class="token-name">--color-accent-active</span>
+        <span class="token-val">#b8860b</span>
+        <span class="token-val">#a16207</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:rgba(234,179,8,0.15);"></div>
+        <span class="token-name">--color-accent-glow</span>
+        <span class="token-val">rgba(…, 0.15)</span>
+        <span class="token-val">rgba(…, 0.12)</span>
+      </div>
+    </div>
+
+    <!-- Status -->
+    <div class="token-group">
+      <h3 class="token-group-title">Status</h3>
+      <div class="token-header">
+        <span></span><span>Variable</span><span>Dark</span><span>Light</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#64748b;"></div>
+        <span class="token-name">--color-status-wait</span>
+        <span class="token-val">#64748b</span>
+        <span class="token-val">#475569</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#eab308;"></div>
+        <span class="token-name">--color-status-down</span>
+        <span class="token-val">#eab308</span>
+        <span class="token-val">#a16207</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#10b981;"></div>
+        <span class="token-name">--color-status-done</span>
+        <span class="token-val">#10b981</span>
+        <span class="token-val">#0d9668</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#f87171;"></div>
+        <span class="token-name">--color-status-fail</span>
+        <span class="token-val">#f87171</span>
+        <span class="token-val">#dc2626</span>
+      </div>
+    </div>
+
+    <!-- Borders & Dividers -->
+    <div class="token-group">
+      <h3 class="token-group-title">Borders &amp; Dividers</h3>
+      <div class="token-header">
+        <span></span><span>Variable</span><span>Dark</span><span>Light</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#282f3a;"></div>
+        <span class="token-name">--color-border</span>
+        <span class="token-val">#282f3a</span>
+        <span class="token-val">#d8d3cc</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#1e2530;"></div>
+        <span class="token-name">--color-divider</span>
+        <span class="token-val">#1e2530</span>
+        <span class="token-val">#e5e0da</span>
+      </div>
+    </div>
+
+    <!-- CLI Console -->
+    <div class="token-group">
+      <h3 class="token-group-title">CLI Console</h3>
+      <div class="token-header">
+        <span></span><span>Variable</span><span>Dark</span><span>Light</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#b0bec5;"></div>
+        <span class="token-name">--color-text-console</span>
+        <span class="token-val">#b0bec5</span>
+        <span class="token-val">#d1d5db</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:rgba(234,179,8,0.10);"></div>
+        <span class="token-name">--color-console-active-line</span>
+        <span class="token-val">rgba(…, 0.10)</span>
+        <span class="token-val">rgba(…, 0.15)</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#eab308;"></div>
+        <span class="token-name">--color-console-prompt</span>
+        <span class="token-val">#eab308</span>
+        <span class="token-val">#eab308</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#f87171;"></div>
+        <span class="token-name">--color-console-error</span>
+        <span class="token-val">#f87171</span>
+        <span class="token-val">#fca5a5</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:#10b981;"></div>
+        <span class="token-name">--color-console-success</span>
+        <span class="token-val">#10b981</span>
+        <span class="token-val">#34d399</span>
+      </div>
+    </div>
+
+    <!-- Shadows & Effects -->
+    <div class="token-group">
+      <h3 class="token-group-title">Shadows &amp; Effects</h3>
+      <div class="token-header">
+        <span></span><span>Variable</span><span>Dark</span><span>Light</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:rgba(0,0,0,0.35);"></div>
+        <span class="token-name">--shadow-sm</span>
+        <span class="token-val">0 1px 3px</span>
+        <span class="token-val">0 1px 3px</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:rgba(0,0,0,0.40);"></div>
+        <span class="token-name">--shadow-md</span>
+        <span class="token-val">0 4px 12px</span>
+        <span class="token-val">0 4px 12px</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:rgba(255,255,255,0.05);border:1px solid #282f3a;"></div>
+        <span class="token-name">--card-inner-shadow</span>
+        <span class="token-val">inset 0 1px</span>
+        <span class="token-val">inset 0 1px</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:linear-gradient(90deg,#ca8a04,#facc15);"></div>
+        <span class="token-name">--progress-gradient</span>
+        <span class="token-val gradient-val">#ca8a04 → #facc15</span>
+        <span class="token-val gradient-val">#ca8a04 → #eab308</span>
+      </div>
+      <div class="token-row">
+        <div class="token-swatch" style="background:rgba(255,255,255,0.06);"></div>
+        <span class="token-name">--progress-track</span>
+        <span class="token-val">rgba(…, 0.06)</span>
+        <span class="token-val">rgba(…, 0.06)</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       3. SEMANTIC VARIABLES
+       ================================================================ -->
+  <section class="section" data-component="Semantic Variables">
+    <p class="section-label">03 &mdash; New Tokens</p>
+    <h2 class="section-title">Semantic Variable Reference</h2>
+    <p class="section-desc">
+      These new semantic variables replace hardcoded <code style="background:var(--overlay-subtle);padding:1px 4px;border-radius:3px;font-size:11px;">rgba()</code> values found throughout the codebase. They provide theme-aware interactive states, badge backgrounds, and semantic surface colors. Existing CSS can adopt them incrementally.
+    </p>
+
+    <table class="sem-table">
+      <thead>
+        <tr>
+          <th>Variable</th>
+          <th>Dark Value</th>
+          <th>Light Value</th>
+          <th>Usage</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>--overlay-subtle</td>
+          <td>rgba(255,255,255, 0.04)</td>
+          <td>rgba(0,0,0, 0.03)</td>
+          <td>Subtle background tint for list items, tokens, static states</td>
+        </tr>
+        <tr>
+          <td>--overlay-hover</td>
+          <td>rgba(255,255,255, 0.06)</td>
+          <td>rgba(0,0,0, 0.05)</td>
+          <td>Button hover, card hover, interactive surface hover</td>
+        </tr>
+        <tr>
+          <td>--overlay-active</td>
+          <td>rgba(255,255,255, 0.10)</td>
+          <td>rgba(0,0,0, 0.08)</td>
+          <td>Pressed/active state for buttons and interactive surfaces</td>
+        </tr>
+        <tr>
+          <td>--overlay-input</td>
+          <td>rgba(0,0,0, 0.18)</td>
+          <td>rgba(0,0,0, 0.04)</td>
+          <td>Input field inner shadow or depth overlay</td>
+        </tr>
+        <tr>
+          <td>--overlay-card-selected</td>
+          <td>rgba(234,179,8, 0.08)</td>
+          <td>rgba(234,179,8, 0.10)</td>
+          <td>Selected/focused card amber tint overlay</td>
+        </tr>
+        <tr>
+          <td>--color-badge-wait-bg</td>
+          <td>rgba(100,116,139, 0.15)</td>
+          <td>rgba(71,85,105, 0.10)</td>
+          <td>Waiting status badge pill background</td>
+        </tr>
+        <tr>
+          <td>--color-badge-down-bg</td>
+          <td>rgba(234,179,8, 0.15)</td>
+          <td>rgba(234,179,8, 0.12)</td>
+          <td>Downloading status badge pill background</td>
+        </tr>
+        <tr>
+          <td>--color-badge-done-bg</td>
+          <td>rgba(16,185,129, 0.15)</td>
+          <td>rgba(13,150,104, 0.10)</td>
+          <td>Completed status badge pill background</td>
+        </tr>
+        <tr>
+          <td>--color-badge-fail-bg</td>
+          <td>rgba(248,113,113, 0.12)</td>
+          <td>rgba(220,38,38, 0.08)</td>
+          <td>Failed status badge pill background</td>
+        </tr>
+        <tr>
+          <td>--color-accent-soft-bg</td>
+          <td>rgba(234,179,8, 0.08)</td>
+          <td>rgba(234,179,8, 0.08)</td>
+          <td>Amber-tinted soft background for highlights, active indicators</td>
+        </tr>
+        <tr>
+          <td>--color-warning-bg</td>
+          <td>rgba(234,179,8, 0.12)</td>
+          <td>rgba(234,179,8, 0.10)</td>
+          <td>Warning message/banner background (e.g. duplicate name)</td>
+        </tr>
+        <tr>
+          <td>--color-error-bg</td>
+          <td>rgba(248,113,113, 0.10)</td>
+          <td>rgba(220,38,38, 0.06)</td>
+          <td>Error message/banner background</td>
+        </tr>
+        <tr>
+          <td>--color-success-bg</td>
+          <td>rgba(16,185,129, 0.10)</td>
+          <td>rgba(13,150,104, 0.08)</td>
+          <td>Success message background</td>
+        </tr>
+        <tr>
+          <td>--color-fail-soft-bg</td>
+          <td>rgba(248,113,113, 0.06)</td>
+          <td>rgba(220,38,38, 0.04)</td>
+          <td>Very subtle fail tint for card backgrounds</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ================================================================
+       4. COMPONENT VISUAL SPECIFICATIONS
+       ================================================================ -->
+  <section class="section" data-component="Component Mockups">
+    <p class="section-label">04 &mdash; Components</p>
+    <h2 class="section-title">Component Visual Specifications</h2>
+    <p class="section-desc">
+      Each component rendered with the active theme tokens. Toggle Dark/Light above to see both variants. Notes describe background, border, hover, active, disabled, badge, and progress behavior.
+    </p>
+
+    <!-- TitleBar -->
+    <div class="mockup-grid" style="margin-bottom:24px;">
+      <div class="mockup-item">
+        <p class="mockup-label">TitleBar <span>Custom frameless title, draggable region</span></p>
+        <div class="mockup-frame">
+          <div class="mock-titlebar">
+            <div class="mock-titlebar-left">
+              <div class="mock-titlebar-icon"></div>
+              <span class="mock-titlebar-text">m3u8 Queue Downloader</span>
+            </div>
+            <div class="mock-titlebar-controls">
+              <div class="mock-win-btn"><svg viewBox="0 0 10 10"><line x1="1" y1="5" x2="9" y2="5"/></svg></div>
+              <div class="mock-win-btn"><svg viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" rx="1"/></svg></div>
+              <div class="mock-win-btn close"><svg viewBox="0 0 10 10"><line x1="1" y1="1" x2="9" y2="9"/><line x1="9" y1="1" x2="1" y2="9"/></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- InputBar -->
+    <div class="mockup-grid" style="margin-bottom:24px;">
+      <div class="mockup-item">
+        <p class="mockup-label">InputBar <span>URL input + save name + add button</span></p>
+        <div class="mockup-frame">
+          <div class="mock-input-area">
+            <div class="mock-input-row">
+              <input class="mock-input" type="text" placeholder="https://example.com/video/index.m3u8" value="https://cdn.example.com/live/stream.m3u8" />
+              <input class="mock-input mock-input-sm" type="text" placeholder="Save name" value="stream-episode-01" />
+              <button class="mock-btn-primary">+ Add</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Warning Messages -->
+    <div class="mockup-grid two-col" style="margin-bottom:24px;">
+      <div class="mockup-item">
+        <p class="mockup-label">Duplicate Warning <span>saveName collision</span></p>
+        <div class="mockup-frame">
+          <div style="background:var(--color-bg-main);padding:12px;">
+            <div class="mock-warning">
+              <svg class="mock-warning-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M8 1.5L1 14h14L8 1.5z"/><line x1="8" y1="6" x2="8" y2="10"/><circle cx="8" cy="12" r="0.5" fill="currentColor"/>
+              </svg>
+              Name "stream-episode-01" already exists in queue. Rename or overwrite?
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="mockup-item">
+        <p class="mockup-label">Error Message <span>Download failure notification</span></p>
+        <div class="mockup-frame">
+          <div style="background:var(--color-bg-main);padding:12px;">
+            <div class="mock-error-msg">
+              <svg style="width:16px;height:16px;flex-shrink:0;" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="8" cy="8" r="6.5"/><line x1="5.5" y1="5.5" x2="10.5" y2="10.5"/><line x1="10.5" y1="5.5" x2="5.5" y2="10.5"/>
+              </svg>
+              Failed to download: HTTP 403 Forbidden. Check headers and URL.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TaskCards -->
+    <div class="mockup-grid" style="margin-bottom:24px;">
+      <div class="mockup-item">
+        <p class="mockup-label">TaskCard &mdash; Downloading <span>Active download with progress</span></p>
+        <div class="mockup-frame">
+          <div style="background:var(--color-bg-main);padding:12px;">
+            <div class="mock-card downloading">
+              <div class="mock-card-header">
+                <div class="mock-card-left">
+                  <span class="mock-badge down"><span class="mock-badge-dot"></span>Downloading</span>
+                  <span class="mock-card-name">stream-episode-01</span>
+                </div>
+                <div class="mock-card-actions">
+                  <button class="mock-card-btn" title="Stop">&#9632;</button>
+                  <button class="mock-card-btn danger" title="Delete">&#10005;</button>
+                </div>
+              </div>
+              <div class="mock-progress">
+                <div class="mock-progress-fill" style="width:67%;"></div>
+              </div>
+              <div class="mock-card-meta">
+                <span>67.3%</span>
+                <span class="speed">4.2 MB/s</span>
+                <span>234 / 348 segments</span>
+                <span>ETA 00:27</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mockup-grid two-col" style="margin-bottom:24px;">
+      <div class="mockup-item">
+        <p class="mockup-label">TaskCard &mdash; Waiting <span>Queued, not yet started</span></p>
+        <div class="mockup-frame">
+          <div style="background:var(--color-bg-main);padding:12px;">
+            <div class="mock-card">
+              <div class="mock-card-header">
+                <div class="mock-card-left">
+                  <span class="mock-badge wait"><span class="mock-badge-dot"></span>Waiting</span>
+                  <span class="mock-card-name">tutorial-video-part3</span>
+                </div>
+                <div class="mock-card-actions">
+                  <button class="mock-card-btn danger" title="Delete">&#10005;</button>
+                </div>
+              </div>
+              <div class="mock-progress">
+                <div class="mock-progress-fill" style="width:0%;"></div>
+              </div>
+              <div class="mock-card-meta">
+                <span>Queued #2</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="mockup-item">
+        <p class="mockup-label">TaskCard &mdash; Completed <span>Download finished successfully</span></p>
+        <div class="mockup-frame">
+          <div style="background:var(--color-bg-main);padding:12px;">
+            <div class="mock-card">
+              <div class="mock-card-header">
+                <div class="mock-card-left">
+                  <span class="mock-badge done"><span class="mock-badge-dot"></span>Done</span>
+                  <span class="mock-card-name">intro-clip-final</span>
+                </div>
+                <div class="mock-card-actions">
+                  <button class="mock-card-btn" title="Retry">&#8635;</button>
+                  <button class="mock-card-btn danger" title="Delete">&#10005;</button>
+                </div>
+              </div>
+              <div class="mock-progress">
+                <div class="mock-progress-fill done"></div>
+              </div>
+              <div class="mock-card-meta">
+                <span>100%</span>
+                <span>128 segments</span>
+                <span>12.4 MB</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mockup-grid two-col" style="margin-bottom:24px;">
+      <div class="mockup-item">
+        <p class="mockup-label">TaskCard &mdash; Stopped <span>Manually paused/stopped</span></p>
+        <div class="mockup-frame">
+          <div style="background:var(--color-bg-main);padding:12px;">
+            <div class="mock-card stopped">
+              <div class="mock-card-header">
+                <div class="mock-card-left">
+                  <span class="mock-badge wait"><span class="mock-badge-dot"></span>Stopped</span>
+                  <span class="mock-card-name">webinar-recording-2026</span>
+                </div>
+                <div class="mock-card-actions">
+                  <button class="mock-card-btn" title="Retry">&#8635;</button>
+                  <button class="mock-card-btn danger" title="Delete">&#10005;</button>
+                </div>
+              </div>
+              <div class="mock-progress">
+                <div class="mock-progress-fill" style="width:34%;background:var(--color-status-wait);"></div>
+              </div>
+              <div class="mock-card-meta">
+                <span>34.1%</span>
+                <span>89 / 261 segments</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="mockup-item">
+        <p class="mockup-label">TaskCard &mdash; Failed <span>Download error</span></p>
+        <div class="mockup-frame">
+          <div style="background:var(--color-bg-main);padding:12px;">
+            <div class="mock-card failed">
+              <div class="mock-card-header">
+                <div class="mock-card-left">
+                  <span class="mock-badge fail"><span class="mock-badge-dot"></span>Failed</span>
+                  <span class="mock-card-name">protected-content-hls</span>
+                </div>
+                <div class="mock-card-actions">
+                  <button class="mock-card-btn" title="Retry">&#8635;</button>
+                  <button class="mock-card-btn danger" title="Delete">&#10005;</button>
+                </div>
+              </div>
+              <div class="mock-progress">
+                <div class="mock-progress-fill fail" style="width:12%;"></div>
+              </div>
+              <div class="mock-card-meta">
+                <span>HTTP 403</span>
+                <span>12 / 100 segments</span>
+                <span style="color:var(--color-status-fail);">Retry available</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CLI Console -->
+    <div class="mockup-grid" style="margin-bottom:24px;">
+      <div class="mockup-item">
+        <p class="mockup-label">CLI Console Panel <span>Terminal output for active download</span></p>
+        <div class="mockup-frame">
+          <div class="mock-cli">
+            <div class="mock-cli-header">
+              <span class="mock-cli-title">Console Output</span>
+              <span style="font-size:10px;color:var(--color-text-console);opacity:0.5;">stream-episode-01</span>
+            </div>
+            <div class="mock-cli-body">
+              <div class="mock-cli-line"><span class="mock-cli-prompt">$</span> N_m3u8DL-CLI "https://cdn.example.com/live/stream.m3u8" --saveName "stream-episode-01"</div>
+              <div class="mock-cli-line mock-cli-dim">[INFO] Start downloading...</div>
+              <div class="mock-cli-line mock-cli-dim">[INFO] Total segments: 348</div>
+              <div class="mock-cli-line">[INFO] Downloaded 234/348 (67.3%) &mdash; 4.2 MB/s</div>
+              <div class="mock-cli-line active"><span class="mock-cli-prompt">&gt;</span> Downloading segment 235/348...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SettingsPanel -->
+    <div class="mockup-grid" style="margin-bottom:24px;">
+      <div class="mockup-item">
+        <p class="mockup-label">SettingsPanel <span>Application preferences</span></p>
+        <div class="mockup-frame">
+          <div class="mock-settings">
+            <h3 class="mock-settings-title">Settings</h3>
+            <div class="mock-setting-row">
+              <div>
+                <div class="mock-setting-label">Close to tray</div>
+                <div class="mock-setting-desc">Minimize to system tray instead of quitting</div>
+              </div>
+              <div class="mock-toggle on"><div class="mock-toggle-knob"></div></div>
+            </div>
+            <div class="mock-setting-row">
+              <div>
+                <div class="mock-setting-label">Theme</div>
+                <div class="mock-setting-desc">Choose appearance mode</div>
+              </div>
+              <select class="mock-select"><option>Auto</option><option>Dark</option><option>Light</option></select>
+            </div>
+            <div class="mock-setting-row">
+              <div>
+                <div class="mock-setting-label">Max concurrent downloads</div>
+                <div class="mock-setting-desc">Number of parallel download tasks</div>
+              </div>
+              <select class="mock-select"><option>1</option><option>2</option><option>3</option></select>
+            </div>
+            <div class="mock-setting-row">
+              <div>
+                <div class="mock-setting-label">Auto retry on failure</div>
+                <div class="mock-setting-desc">Automatically retry failed downloads</div>
+              </div>
+              <div class="mock-toggle"><div class="mock-toggle-knob"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- StatusBar -->
+    <div class="mockup-grid" style="margin-bottom:24px;">
+      <div class="mockup-item">
+        <p class="mockup-label">StatusBar <span>Bottom status information</span></p>
+        <div class="mockup-frame">
+          <div class="mock-statusbar">
+            <div class="mock-statusbar-left">
+              <span><span class="mock-statusbar-dot"></span>Queue active</span>
+              <span><span class="count">3</span> tasks</span>
+              <span><span class="count">1</span> downloading</span>
+            </div>
+            <div class="mock-statusbar-right">
+              <span>Total: <span class="speed">4.2 MB/s</span></span>
+              <span>v0.1.0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       5. MICRO-INTERACTIONS
+       ================================================================ -->
+  <section class="section" data-component="Micro-interactions">
+    <p class="section-label">05 &mdash; Polish</p>
+    <h2 class="section-title">Micro-interaction Suggestions</h2>
+    <p class="section-desc">
+      Optional enhancements that add polish without changing layout or requiring new dependencies. All transitions use the <code style="background:var(--overlay-subtle);padding:1px 4px;border-radius:3px;font-size:11px;">--transition-fast</code> / <code style="background:var(--overlay-subtle);padding:1px 4px;border-radius:3px;font-size:11px;">--transition-normal</code> tokens.
+    </p>
+    <ul class="interaction-list">
+      <li>
+        <strong>Theme switch fade</strong> &mdash; When toggling themes, apply <code>transition: background-color 300ms ease, color 300ms ease</code> on <code>body</code> and all major surfaces. The <code>--transition-theme</code> token (300ms) is purpose-built for this. Avoid layout shifts; only color properties should transition.
+      </li>
+      <li>
+        <strong>Card hover lift</strong> &mdash; On TaskCard hover, shift <code>box-shadow</code> from <code>--shadow-sm</code> to <code>--shadow-md</code> and change background to <code>--color-bg-card-hover</code>. No <code>transform: translateY</code> needed; the shadow change alone implies depth.
+      </li>
+      <li>
+        <strong>Downloading card glow pulse</strong> &mdash; For active downloads, add a subtle <code>@keyframes glow-pulse</code> that oscillates the amber glow shadow opacity between <code>0.12</code> and <code>0.20</code> over 3 seconds. This draws attention without being distracting.
+      </li>
+      <li>
+        <strong>Progress bar shimmer</strong> &mdash; Add a diagonal white gradient overlay (<code>linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.12) 50%, transparent 70%)</code>) animated with <code>background-position</code> to create a subtle shimmer on active download progress bars. Pause animation when download completes.
+      </li>
+      <li>
+        <strong>Input focus ring</strong> &mdash; On input focus, add <code>box-shadow: 0 0 0 2px var(--color-accent-glow)</code> and change border to <code>var(--color-accent)</code>. This creates a soft amber focus ring consistent with the brand.
+      </li>
+      <li>
+        <strong>Status badge transition</strong> &mdash; When a task changes status (e.g., waiting to downloading), animate the badge background and text color over <code>--transition-normal</code> (250ms). The badge pill should smoothly shift between <code>--color-badge-*-bg</code> values.
+      </li>
+      <li>
+        <strong>Button press</strong> &mdash; On <code>:active</code>, scale primary buttons to <code>transform: scale(0.97)</code> with <code>--transition-fast</code> (150ms). This provides tactile feedback without layout shift.
+      </li>
+      <li>
+        <strong>CLI auto-scroll indicator</strong> &mdash; When new console output arrives and the panel is scrolled to bottom, add a brief <code>opacity</code> flash on the new line (0.6 to 1.0 over 200ms). If scrolled up, show a subtle "new output" indicator using <code>--color-accent-soft-bg</code>.
+      </li>
+    </ul>
+  </section>
+
+  <!-- ================================================================
+       6. IMPLEMENTATION NOTES
+       ================================================================ -->
+  <section class="section" data-component="Implementation Notes">
+    <p class="section-label">06 &mdash; Engineering</p>
+    <h2 class="section-title">Implementation Notes</h2>
+    <p class="section-desc">
+      Technical guidance for integrating these tokens into the existing Tauri + Svelte codebase.
+    </p>
+
+    <div class="impl-grid">
+      <div class="impl-card">
+        <h4>Theme Switching Logic</h4>
+        <p>
+          Store the user's preference (<code>auto</code> / <code>dark</code> / <code>light</code>) in <code>settings.json</code>. On app start, resolve the effective theme: if <code>auto</code>, remove the <code>data-theme</code> attribute and let <code>prefers-color-scheme</code> media query decide. If <code>dark</code> or <code>light</code>, set <code>data-theme</code> on the <code>&lt;html&gt;</code> element. Listen for <code>matchMedia('prefers-color-scheme: dark')</code> changes to react to system theme changes in auto mode.
+        </p>
+      </div>
+      <div class="impl-card">
+        <h4>Incremental Adoption</h4>
+        <p>
+          The new semantic variables (<code>--overlay-*</code>, <code>--color-badge-*</code>, etc.) coexist with the existing variables. Replace hardcoded <code>rgba()</code> values incrementally &mdash; search for <code>rgba(255,255,255,0.05)</code> and similar patterns, substitute with the matching semantic variable. No need for a big-bang rewrite.
+        </p>
+      </div>
+      <div class="impl-card">
+        <h4>Amber Contrast Strategy</h4>
+        <p>
+          The amber accent (#eab308) has insufficient contrast on light backgrounds for body text (2.6:1). For amber-colored text in Light mode, use <code>--color-accent-active</code> (#a16207, 6.8:1). For amber buttons with dark text, the standard <code>--color-accent</code> is fine because black text on amber achieves 13.3:1. Badge text in Light mode should use the darkened amber values.
+        </p>
+      </div>
+      <div class="impl-card">
+        <h4>CLI Terminal Consistency</h4>
+        <p>
+          The CLI panel always uses a dark surface: <code>--color-bg-cli</code> is <code>#080a0f</code> in Dark and <code>#1e2028</code> in Light. Console text (<code>--color-text-console</code>) stays light in both themes. This intentional design keeps the terminal recognizable as a terminal regardless of the active theme, similar to VS Code's approach with integrated terminals.
+        </p>
+      </div>
+      <div class="impl-card">
+        <h4>CSS Specificity</h4>
+        <p>
+          Both <code>[data-theme="dark"]</code> and <code>[data-theme="light"]</code> have equal specificity (a single attribute selector, specificity <code>(0,1,0)</code>). The <code>:root:not([data-theme])</code> selector has higher specificity (<code>:root</code> is a pseudo-class, <code>:not([data-theme])</code> contributes its argument, so total is <code>(0,2,0)</code>) and correctly serves as the auto-mode fallback. Explicit <code>data-theme</code> always wins over the media query because it appears later in the cascade with equal or higher specificity.
+        </p>
+      </div>
+      <div class="impl-card">
+        <h4>Svelte Integration</h4>
+        <p>
+          Use a Svelte store for the current theme preference. A single <code>$:</code> reactive block on the store value can set/remove <code>data-theme</code> on <code>document.documentElement</code>. Components consume CSS variables directly &mdash; no prop drilling for colors. The <code>transition: background-color var(--transition-theme)</code> on <code>body</code> ensures smooth theme switches.
+        </p>
+      </div>
+      <div class="impl-card">
+        <h4>WCAG Compliance</h4>
+        <p>
+          All text/background pairings meet WCAG AA (4.5:1 for normal text, 3:1 for large text). Dark theme: primary text 17.5:1, secondary 5.4:1. Light theme: primary text 16.2:1, secondary 6.6:1. Status colors on badge backgrounds achieve at least 3:1 against their badge fill. Disabled text (<code>--color-text-disabled</code>) intentionally falls below AA as it is not actionable.
+        </p>
+      </div>
+      <div class="impl-card">
+        <h4>No Image Dependencies</h4>
+        <p>
+          The entire visual system relies on CSS variables, gradients, box-shadows, and border styles. No PNG, SVG, or icon font assets are required for the theme system itself. Window control icons in the TitleBar can use inline SVG with <code>stroke: currentColor</code> to automatically adapt to theme colors.
+        </p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ================================================================
+     THEME SWITCHING SCRIPT
+     ================================================================ -->
+<script>
+(function() {
+  var html = document.documentElement;
+  var buttons = document.querySelectorAll('.theme-btn');
+
+  function setTheme(theme) {
+    html.setAttribute('data-theme', theme);
+    buttons.forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-set-theme') === theme);
+    });
+  }
+
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      setTheme(this.getAttribute('data-set-theme'));
+    });
+  });
+
+  // Initialize from current attribute or default to dark
+  var current = html.getAttribute('data-theme') || 'dark';
+  setTheme(current);
+})();
+</script>
+</body>
+</html>

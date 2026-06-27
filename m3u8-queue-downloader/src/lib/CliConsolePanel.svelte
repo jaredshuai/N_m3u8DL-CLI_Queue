@@ -293,12 +293,11 @@
     flex-shrink: 0;
     height: 320px;
     margin: 0 16px 12px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    /* dark-island: CLI console stays dark in both app themes */
+    border: 1px solid var(--cli-border);
     border-radius: 14px;
-    background:
-      linear-gradient(180deg, rgba(10, 12, 16, 0.98), rgba(4, 6, 9, 0.98)),
-      radial-gradient(circle at top right, rgba(250, 204, 21, 0.08), transparent 35%);
-    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
+    background: var(--color-bg-terminal-overlay);
+    box-shadow: var(--shadow-terminal);
     overflow: hidden;
   }
 
@@ -306,7 +305,7 @@
     height: 100%;
     margin: 0;
     border-radius: 18px;
-    border-color: rgba(255, 255, 255, 0.1);
+    border-color: var(--cli-border-strong);
     box-shadow:
       0 22px 52px rgba(0, 0, 0, 0.42),
       inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -318,8 +317,8 @@
     align-items: start;
     gap: 16px;
     padding: 12px 14px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid var(--cli-divider);
+    background: var(--cli-surface-subtle);
   }
 
   .cli-console-title {
@@ -354,8 +353,8 @@
     padding: 8px 14px;
     font-size: 11px;
     color: var(--color-text-disabled);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    background: rgba(255, 255, 255, 0.015);
+    border-bottom: 1px solid var(--cli-divider-subtle);
+    background: var(--cli-surface-faint);
   }
 
   .cli-console-meta {
@@ -386,8 +385,8 @@
     border-radius: 999px;
     font-size: 11px;
     font-weight: 700;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--cli-border);
+    background: var(--cli-surface);
     color: var(--color-text-secondary);
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
@@ -421,7 +420,7 @@
 
   .subtle {
     color: var(--color-text-disabled);
-    background: rgba(255, 255, 255, 0.015);
+    background: var(--cli-surface-faint);
   }
 
   .cli-console-summary {
@@ -435,8 +434,8 @@
     padding: 6px 10px;
     min-width: 78px;
     border-radius: var(--radius-sm);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--cli-border);
+    background: var(--cli-surface);
     color: var(--color-text-main);
     font-size: 12px;
     cursor: pointer;
@@ -454,7 +453,7 @@
     padding: 8px 14px;
     font-size: 11px;
     color: var(--color-text-disabled);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid var(--cli-divider-subtle);
   }
 
   .cli-console-body {
@@ -466,35 +465,29 @@
     font-size: 12px;
     line-height: 1.55;
     background:
-      linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0)),
-      repeating-linear-gradient(
-        180deg,
-        rgba(255,255,255,0.012) 0,
-        rgba(255,255,255,0.012) 1px,
-        transparent 1px,
-        transparent 26px
-      );
+      linear-gradient(180deg, var(--cli-surface-faint), transparent),
+      var(--cli-line-pattern);
   }
 
   .cli-line {
     padding: 0 14px;
-    color: #d1d7df;
+    color: var(--color-text-console);
     white-space: pre-wrap;
     word-break: break-word;
   }
 
   .cli-line::before {
     content: '› ';
-    color: rgba(250, 204, 21, 0.55);
+    color: var(--color-console-prompt);
   }
 
   .cli-active-line {
-    color: #facc15;
+    color: var(--color-console-prompt);
   }
 
   .cli-active-line::before {
     content: '▸ ';
-    color: rgba(250, 204, 21, 0.85);
+    color: var(--color-console-active-prompt);
   }
 
   .cli-empty {

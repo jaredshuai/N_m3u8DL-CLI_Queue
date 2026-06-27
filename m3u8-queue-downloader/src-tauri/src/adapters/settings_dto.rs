@@ -1,4 +1,4 @@
-use crate::application::settings::{AppSettings, CloseButtonBehavior};
+use crate::application::settings::{AppSettings, CloseButtonBehavior, ThemePreference};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,6 +30,36 @@ impl From<CloseButtonBehaviorDto> for CloseButtonBehavior {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
+pub enum ThemePreferenceDto {
+    #[default]
+    Auto,
+    Dark,
+    Light,
+}
+
+impl From<&ThemePreference> for ThemePreferenceDto {
+    fn from(value: &ThemePreference) -> Self {
+        match value {
+            ThemePreference::Auto => Self::Auto,
+            ThemePreference::Dark => Self::Dark,
+            ThemePreference::Light => Self::Light,
+        }
+    }
+}
+
+impl From<ThemePreferenceDto> for ThemePreference {
+    fn from(value: ThemePreferenceDto) -> Self {
+        match value {
+            ThemePreferenceDto::Auto => Self::Auto,
+            ThemePreferenceDto::Dark => Self::Dark,
+            ThemePreferenceDto::Light => Self::Light,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSettingsDto {
     #[serde(default)]
     pub close_button_behavior: CloseButtonBehaviorDto,
@@ -37,6 +67,8 @@ pub struct AppSettingsDto {
     pub auto_action_on_complete: bool,
     #[serde(default, rename = "downloadDir")]
     pub download_dir: Option<String>,
+    #[serde(default)]
+    pub theme: ThemePreferenceDto,
 }
 
 impl From<&AppSettings> for AppSettingsDto {
@@ -45,6 +77,7 @@ impl From<&AppSettings> for AppSettingsDto {
             close_button_behavior: CloseButtonBehaviorDto::from(&settings.close_button_behavior),
             auto_action_on_complete: settings.auto_action_on_complete,
             download_dir: settings.download_dir.clone(),
+            theme: ThemePreferenceDto::from(&settings.theme),
         }
     }
 }
@@ -61,6 +94,7 @@ impl From<AppSettingsDto> for AppSettings {
             close_button_behavior: settings.close_button_behavior.into(),
             auto_action_on_complete: settings.auto_action_on_complete,
             download_dir: settings.download_dir,
+            theme: settings.theme.into(),
         }
     }
 }
@@ -75,6 +109,7 @@ mod tests {
             close_button_behavior: CloseButtonBehavior::Exit,
             auto_action_on_complete: true,
             download_dir: Some("D:/Videos".to_string()),
+            theme: ThemePreference::Light,
         };
 
         let value =
@@ -83,6 +118,7 @@ mod tests {
         assert_eq!(value["closeButtonBehavior"], serde_json::json!("exit"));
         assert_eq!(value["autoShutdownOnComplete"], serde_json::json!(true));
         assert_eq!(value["downloadDir"], serde_json::json!("D:/Videos"));
+        assert_eq!(value["theme"], serde_json::json!("light"));
     }
 
     #[test]
@@ -96,5 +132,6 @@ mod tests {
         );
         assert!(!settings.auto_action_on_complete);
         assert!(settings.download_dir.is_none());
+        assert_eq!(settings.theme, ThemePreference::Auto);
     }
 }

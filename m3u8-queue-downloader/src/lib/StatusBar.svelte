@@ -57,13 +57,17 @@
 
 <style>
   .status-bar {
+    position: relative;
+    z-index: 1;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 10px 16px;
+    padding: 10px 18px;
     border-top: 1px solid var(--color-border);
-    background: var(--color-bg-card);
-    box-shadow: var(--card-inner-shadow, inset 0 1px 0 rgba(255,255,255,0.05));
+    box-shadow: 0 -1px 4px rgba(234, 179, 8, 0.03);
+    background: var(--color-bg-card-alpha);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
   }
 
   .status-info {
@@ -76,7 +80,7 @@
   .status-item {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
     font-size: 12px;
     color: var(--color-text-secondary);
   }
@@ -109,6 +113,7 @@
 
   .dot.down {
     background: var(--color-status-down);
+    animation: status-pulse 2s ease-in-out infinite;
   }
 
   .dot.done {

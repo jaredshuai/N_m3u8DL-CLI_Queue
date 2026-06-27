@@ -5,6 +5,7 @@ export const appSettings = writable({
   closeButtonBehavior: 'closeToTray',
   autoShutdownOnComplete: false,
   downloadDir: '',
+  theme: 'auto',
 });
 
 export const shutdownNotice = writable({
@@ -65,6 +66,17 @@ export async function saveAppSettings(settings) {
     return updated;
   } catch (err) {
     console.error('Failed to save app settings:', err);
+    throw err;
+  }
+}
+
+export async function saveAppTheme(theme) {
+  try {
+    const updated = await invoke('update_app_theme', { theme });
+    appSettings.set(updated);
+    return updated;
+  } catch (err) {
+    console.error('Failed to save app theme:', err);
     throw err;
   }
 }

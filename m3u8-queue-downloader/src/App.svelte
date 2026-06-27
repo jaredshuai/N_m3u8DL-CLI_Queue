@@ -18,6 +18,7 @@
     completedHistory,
     failedHistory,
     appNotice,
+    appSettings,
     cancelAutoShutdown,
     clearAppNotice,
     loadAppSettings,
@@ -61,6 +62,17 @@
     dropFromOthersDisabled: true,
     centreDraggedOnCursor: true,
   };
+
+  function applyThemePreference(preference = 'auto') {
+    if (typeof document === 'undefined') return;
+    const normalized = ['auto', 'dark', 'light'].includes(preference) ? preference : 'auto';
+    // Software B: auto = no attribute (CSS media query resolves), dark/light = explicit
+    if (normalized === 'auto') {
+      document.documentElement.removeAttribute('data-theme');
+    } else {
+      document.documentElement.setAttribute('data-theme', normalized);
+    }
+  }
 
   function toggleSettings() {
     showSettings = !showSettings;
@@ -170,9 +182,30 @@
       cliConsole = closeCliConsole(cliConsole);
     }
   });
+
+  // Theme switching: auto / dark / light
+  $effect(() => {
+    applyThemePreference($appSettings.theme);
+  });
+
+  // When following system, react to OS theme changes
+  onMount(() => {
+    const mediaQuery = window.matchMedia?.('(prefers-color-scheme: light)');
+    if (!mediaQuery) return;
+
+    const handleChange = () => {
+      if (($appSettings.theme ?? 'auto') === 'auto') {
+        applyThemePreference('auto');
+      }
+    };
+
+    mediaQuery.addEventListener?.('change', handleChange);
+    return () => mediaQuery.removeEventListener?.('change', handleChange);
+  });
 </script>
 
 <main class="app">
+  <div class="aurora" aria-hidden="true"></div>
   <TitleBar onToggleSettings={toggleSettings} settingsOpen={showSettings} />
 
   <section class="app-shell">
@@ -311,8 +344,15 @@
         {/if}
       {:else}
         <div class="empty-state">
-          <div class="empty-icon">📋</div>
-          <p>队列为空，粘贴 m3u8 链接即可开始下载</p>
+          <div class="empty-icon">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </div>
+          <p class="empty-title">粘贴 m3u8 链接即可开始</p>
+          <p class="empty-hint">Ctrl+V 粘贴 · 回车添加</p>
         </div>
       {/if}
     </section>
@@ -333,12 +373,42 @@
 
 <style>
   .app {
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100vh;
-    background: var(--color-bg-main);
     color: var(--color-text-main);
     overflow: hidden;
+  }
+
+  .aurora {
+    position: absolute;
+    inset: -80px;
+    z-index: 0;
+    pointer-events: none;
+    opacity: var(--aurora-opacity, 1);
+    will-change: transform;
+    background:
+      radial-gradient(ellipse 65% 55% at 18% 8%, rgba(234, 179, 8, 0.45) 0%, transparent 60%),
+      radial-gradient(ellipse 55% 50% at 82% 55%, rgba(217, 119, 6, 0.30) 0%, transparent 55%),
+      radial-gradient(ellipse 60% 45% at 45% 95%, rgba(59, 130, 246, 0.22) 0%, transparent 50%);
+    filter: blur(40px);
+    animation: auroraShift 25s ease-in-out infinite alternate;
+  }
+
+  @keyframes auroraShift {
+    0% {
+      transform: translate(0, 0) scale(1);
+    }
+    33% {
+      transform: translate(30px, -15px) scale(1.03);
+    }
+    66% {
+      transform: translate(-20px, 12px) scale(0.97);
+    }
+    100% {
+      transform: translate(12px, -8px) scale(1.01);
+    }
   }
 
   .app-shell {
@@ -351,11 +421,12 @@
 
   .app-header {
     flex-shrink: 0;
-    background: rgba(11, 13, 18, 0.85);
+    background: var(--scrim);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--color-border);
-    padding-bottom: 12px;
+    box-shadow: 0 1px 8px rgba(234, 179, 8, 0.04), 0 4px 24px rgba(0, 0, 0, 0.15);
+    padding-bottom: 14px;
     z-index: 10;
   }
 
@@ -366,13 +437,13 @@
     gap: 14px;
     flex-shrink: 0;
     padding: 10px 16px;
-    border-bottom: 1px solid rgba(234, 179, 8, 0.35);
-    background: rgba(234, 179, 8, 0.11);
+    border-bottom: 1px solid var(--color-accent-border);
+    background: var(--color-warning-bg);
   }
 
   .shutdown-banner.error {
-    border-bottom-color: rgba(248, 113, 113, 0.35);
-    background: rgba(248, 113, 113, 0.08);
+    border-bottom-color: var(--color-error-border);
+    background: var(--color-error-bg);
   }
 
   .shutdown-banner div {
@@ -399,9 +470,9 @@
   .shutdown-banner button {
     flex-shrink: 0;
     padding: 7px 12px;
-    border: 1px solid rgba(234, 179, 8, 0.45);
+    border: 1px solid var(--color-accent-border);
     border-radius: var(--radius-sm);
-    background: rgba(234, 179, 8, 0.12);
+    background: var(--color-accent-soft-bg);
     color: var(--color-accent-bright);
     font-family: var(--font-stack);
     font-weight: 700;
@@ -409,7 +480,7 @@
   }
 
   .shutdown-banner button:hover {
-    background: rgba(234, 179, 8, 0.18);
+    background: var(--color-accent-glow);
   }
 
   .app-notice {
@@ -419,8 +490,8 @@
     gap: 14px;
     flex-shrink: 0;
     padding: 10px 16px;
-    border-bottom: 1px solid rgba(248, 113, 113, 0.35);
-    background: rgba(248, 113, 113, 0.08);
+    border-bottom: 1px solid var(--color-error-border);
+    background: var(--color-error-bg);
   }
 
   .app-notice div {
@@ -443,9 +514,9 @@
   .app-notice button {
     flex-shrink: 0;
     padding: 7px 12px;
-    border: 1px solid rgba(248, 113, 113, 0.45);
+    border: 1px solid var(--color-error-border);
     border-radius: var(--radius-sm);
-    background: rgba(248, 113, 113, 0.12);
+    background: var(--color-fail-soft-bg);
     color: var(--color-status-fail);
     font-family: var(--font-stack);
     font-weight: 700;
@@ -453,14 +524,14 @@
   }
 
   .app-notice button:hover {
-    background: rgba(248, 113, 113, 0.18);
+    background: var(--color-error-bg);
   }
 
   .task-list {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 12px 16px;
+    padding: 14px 18px;
   }
 
   .cli-console-overlay {
@@ -468,9 +539,7 @@
     inset: 0;
     z-index: 40;
     padding: 14px 16px 16px;
-    background:
-      linear-gradient(180deg, rgba(7, 9, 13, 0.82), rgba(4, 6, 10, 0.9)),
-      radial-gradient(circle at top right, rgba(250, 204, 21, 0.06), transparent 30%);
+    background: var(--color-bg-terminal-overlay);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
   }
@@ -479,10 +548,10 @@
     font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: 1.2px;
     color: var(--color-text-disabled);
-    margin-top: 16px;
-    margin-bottom: 8px;
+    margin-top: 20px;
+    margin-bottom: 10px;
     padding-left: 2px;
   }
 
@@ -501,17 +570,31 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    gap: 12px;
+    gap: 8px;
   }
 
   .empty-icon {
-    font-size: 48px;
-    opacity: 0.3;
+    width: 56px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 16px;
+    background: var(--color-accent-glow);
+    color: var(--color-accent-dim);
+    margin-bottom: 8px;
   }
 
-  .empty-state p {
+  .empty-title {
     font-size: 14px;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+  }
+
+  .empty-hint {
+    font-size: 12px;
     color: var(--color-text-disabled);
+    letter-spacing: 0.3px;
   }
 
   .load-more-btn {

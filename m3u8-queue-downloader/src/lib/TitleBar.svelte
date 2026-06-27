@@ -1,6 +1,7 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { appSettings, saveAppTheme } from './stores.js';
 
   let { onToggleSettings, settingsOpen = false } = $props();
 
@@ -37,6 +38,26 @@
       console.error('Failed to close window:', err);
     }
   }
+
+  async function cycleTheme() {
+    const current = $appSettings.theme ?? 'auto';
+    const next = current === 'auto' ? 'dark' : current === 'dark' ? 'light' : 'auto';
+    try {
+      await saveAppTheme(next);
+    } catch (err) {
+      console.error('Failed to change theme:', err);
+    }
+  }
+
+  let themeLabel = $derived(
+    ($appSettings.theme ?? 'auto') === 'auto' ? '跟随系统' :
+    ($appSettings.theme ?? 'auto') === 'dark' ? '深色' : '浅色'
+  );
+
+  let themeIcon = $derived(
+    ($appSettings.theme ?? 'auto') === 'auto' ? '◐' :
+    ($appSettings.theme ?? 'auto') === 'dark' ? '☾' : '☀'
+  );
 </script>
 
 <header class="title-bar">
@@ -55,6 +76,14 @@
 
   <div class="window-actions">
     <button
+      class="title-btn theme-btn"
+      onclick={cycleTheme}
+      title={`主题：${themeLabel}（点击切换）`}
+      aria-label={`主题：${themeLabel}`}
+    >
+      {themeIcon}
+    </button>
+    <button
       class:active={settingsOpen}
       class="title-btn settings-btn"
       onclick={onToggleSettings}
@@ -71,14 +100,19 @@
 
 <style>
   .title-bar {
+    position: relative;
+    z-index: 1;
     height: 42px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-shrink: 0;
     padding: 0 8px 0 14px;
-    background: linear-gradient(180deg, rgba(19, 22, 28, 0.98), rgba(11, 13, 18, 0.96));
+    background: var(--color-bg-titlebar-overlay);
     border-bottom: 1px solid var(--color-border);
+    box-shadow: 0 1px 4px rgba(234, 179, 8, 0.03);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     user-select: none;
   }
 
@@ -101,7 +135,7 @@
     background: var(--color-accent-glow);
     color: var(--color-accent-bright);
     font-size: 13px;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+    box-shadow: 0 0 8px var(--color-accent-glow), inset 0 1px 0 var(--overlay-active);
   }
 
   .title-text {
@@ -112,12 +146,12 @@
   }
 
   .title-text strong {
-    font-size: 12.5px;
+    font-size: 13px;
     letter-spacing: 0.1px;
   }
 
   .title-text span {
-    margin-top: 2px;
+    margin-top: 3px;
     font-size: 10.5px;
     color: var(--color-text-secondary);
   }
@@ -147,7 +181,7 @@
 
   .title-btn:hover,
   .title-btn.active {
-    background: rgba(255,255,255,0.06);
+    background: var(--overlay-hover);
     border-color: var(--color-border);
     color: var(--color-accent-bright);
   }
@@ -158,8 +192,8 @@
   }
 
   .title-btn.close:hover {
-    background: rgba(248, 113, 113, 0.14);
-    border-color: rgba(248, 113, 113, 0.38);
+    background: var(--color-fail-soft-bg);
+    border-color: var(--color-error-border);
     color: var(--color-status-fail);
   }
 </style>

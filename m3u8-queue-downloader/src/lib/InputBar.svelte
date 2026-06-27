@@ -203,13 +203,13 @@
 
   .input-bar {
     display: flex;
-    gap: 8px;
+    gap: 10px;
     align-items: center;
   }
 
   .url-input {
     flex: 1;
-    padding: 10px 14px;
+    padding: 11px 16px;
     background: var(--color-bg-input);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
@@ -233,9 +233,9 @@
   }
 
   .add-btn {
-    padding: 10px 20px;
+    padding: 11px 22px;
     background: var(--color-accent);
-    color: var(--color-bg-main);
+    color: var(--color-on-accent);
     border: none;
     border-radius: var(--radius-sm);
     font-weight: 700;
@@ -247,7 +247,7 @@
   }
 
   .queue-btn {
-    padding: 10px 20px;
+    padding: 11px 22px;
     background: transparent;
     color: var(--color-text-main);
     border: 1px solid var(--color-border);
@@ -361,9 +361,9 @@
     gap: 8px;
     margin-top: 8px;
     padding: 8px 10px;
-    border: 1px solid rgba(248, 113, 113, 0.45);
+    border: 1px solid var(--color-error-border);
     border-radius: var(--radius-sm);
-    background: rgba(248, 113, 113, 0.1);
+    background: var(--color-error-bg);
     color: var(--color-status-fail);
     font-size: 12px;
   }
@@ -373,9 +373,9 @@
     flex-direction: column;
     gap: 8px;
     padding: 10px 12px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--overlay-hover);
     border-radius: var(--radius-sm);
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--overlay-subtle);
   }
 
   .headers-row {
@@ -408,8 +408,8 @@
   .mini-action {
     padding: 6px 10px;
     border-radius: var(--radius-sm);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--overlay-active);
+    background: var(--overlay-subtle);
     color: var(--color-text-secondary);
     font-size: 12px;
     font-family: var(--font-stack);
@@ -425,15 +425,15 @@
   }
 
   .mini-action.danger:hover {
-    border-color: rgba(248, 113, 113, 0.38);
+    border-color: var(--color-error-border);
     color: var(--color-status-fail);
-    background: rgba(248, 113, 113, 0.1);
+    background: var(--color-error-bg);
   }
 
   .headers-preview {
     padding: 8px 10px;
     border-radius: var(--radius-sm);
-    background: rgba(0, 0, 0, 0.18);
+    background: var(--overlay-input);
     color: var(--color-text-secondary);
     font-size: 12px;
     white-space: nowrap;
@@ -447,9 +447,9 @@
     gap: 8px;
     margin-top: 8px;
     padding: 8px 10px;
-    border: 1px solid rgba(234, 179, 8, 0.45);
+    border: 1px solid var(--color-accent-border);
     border-radius: var(--radius-sm);
-    background: rgba(234, 179, 8, 0.1);
+    background: var(--color-warning-bg);
     color: var(--color-accent-bright);
     font-size: 12px;
   }
