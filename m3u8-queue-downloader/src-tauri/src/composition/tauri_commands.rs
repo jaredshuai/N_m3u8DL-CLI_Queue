@@ -58,10 +58,12 @@ pub fn update_app_settings(
 #[tauri::command]
 pub fn update_app_theme(
     state: State<'_, DependencyGraph>,
+    app_handle: tauri::AppHandle,
     theme: ThemePreferenceDto,
 ) -> Result<AppSettingsDto, String> {
+    let events = TauriFrontendEventPublisher::new(app_handle);
     let settings_commands = SettingsCommandFacade::new(state.inner().clone());
-    command_result(settings_commands.update_theme(theme.into())).map(AppSettingsDto::from)
+    command_result(settings_commands.update_theme(&events, theme.into())).map(AppSettingsDto::from)
 }
 
 #[tauri::command]

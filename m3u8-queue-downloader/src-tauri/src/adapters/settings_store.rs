@@ -1,7 +1,7 @@
 use crate::adapters::settings_dto::AppSettingsDto;
 use crate::adapters::storage_files;
 use crate::application::app_error::AppResult;
-use crate::application::settings::{normalize_download_dir, AppSettings};
+use crate::application::settings::{normalize_download_dir, AppSettings, ThemePreference};
 use crate::ports::settings_repository::SettingsRepository;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -32,12 +32,30 @@ impl SettingsStore {
     }
 
     pub fn update(&self, settings: AppSettings) -> AppResult<AppSettings> {
+        self.update_state(|current| *current = settings)
+    }
+
+    pub fn update_theme(&self, theme: ThemePreference) -> AppResult<AppSettings> {
+        self.update_state(|current| current.theme = theme)
+    }
+
+    /// Read-modify-write under a single lock acquisition so concurrent
+    /// settings mutations (e.g. theme toggle vs. full settings save) cannot
+    /// interleave. The file write happens while the lock is held; a failed
+    /// write leaves the in-memory state untouched.
+    fn update_state<F>(&self, mutate: F) -> AppResult<AppSettings>
+    where
+        F: FnOnce(&mut AppSettings),
+    {
+        let mut state = self.state.lock().expect("settings mutex poisoned");
+        let mut candidate = state.clone();
+        mutate(&mut candidate);
         let normalized = AppSettings {
-            download_dir: normalize_download_dir(settings.download_dir),
-            ..settings
+            download_dir: normalize_download_dir(candidate.download_dir),
+            ..candidate
         };
         save_settings(&normalized, &self.path)?;
-        *self.state.lock().expect("settings mutex poisoned") = normalized.clone();
+        *state = normalized.clone();
         Ok(normalized)
     }
 }
@@ -49,6 +67,10 @@ impl SettingsRepository for SettingsStore {
 
     fn update(&self, settings: AppSettings) -> AppResult<AppSettings> {
         SettingsStore::update(self, settings)
+    }
+
+    fn update_theme(&self, theme: ThemePreference) -> AppResult<AppSettings> {
+        SettingsStore::update_theme(self, theme)
     }
 }
 
@@ -145,6 +167,37 @@ mod tests {
 
         assert_eq!(updated.download_dir, None);
         assert_eq!(store.get().download_dir, None);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn update_theme_preserves_other_fields() {
+        let path = std::env::temp_dir().join(format!("settings-{}.json", Uuid::new_v4()));
+        let store = SettingsStore::new(path.clone());
+
+        store
+            .update(AppSettings {
+                close_button_behavior: CloseButtonBehavior::Exit,
+                auto_action_on_complete: true,
+                download_dir: Some("D:/Videos".to_string()),
+                theme: ThemePreference::Dark,
+            })
+            .expect("save settings");
+
+        let updated = store.update_theme(ThemePreference::Light).expect("update theme");
+
+        assert_eq!(updated.theme, ThemePreference::Light);
+        // theme-only update must not clobber the rest of the settings
+        assert_eq!(updated.close_button_behavior, CloseButtonBehavior::Exit);
+        assert!(updated.auto_action_on_complete);
+        assert_eq!(updated.download_dir.as_deref(), Some("D:/Videos"));
+
+        let reloaded = SettingsStore::new(path.clone());
+        assert_eq!(reloaded.get().theme, ThemePreference::Light);
+        assert_eq!(reloaded.get().close_button_behavior, CloseButtonBehavior::Exit);
+        assert!(reloaded.get().auto_action_on_complete);
+        assert_eq!(reloaded.get().download_dir.as_deref(), Some("D:/Videos"));
 
         let _ = std::fs::remove_file(path);
     }
