@@ -100,6 +100,8 @@
 
 <style>
   .title-bar {
+    position: relative;
+    z-index: 1;
     height: 42px;
     display: flex;
     align-items: center;
@@ -108,6 +110,9 @@
     padding: 0 8px 0 14px;
     background: var(--color-bg-titlebar-overlay);
     border-bottom: 1px solid var(--color-border);
+    box-shadow: 0 1px 4px rgba(234, 179, 8, 0.03);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     user-select: none;
   }
 
@@ -130,7 +135,7 @@
     background: var(--color-accent-glow);
     color: var(--color-accent-bright);
     font-size: 13px;
-    box-shadow: inset 0 1px 0 var(--overlay-active);
+    box-shadow: 0 0 8px var(--color-accent-glow), inset 0 1px 0 var(--overlay-active);
   }
 
   .title-text {
@@ -141,12 +146,12 @@
   }
 
   .title-text strong {
-    font-size: 12.5px;
+    font-size: 13px;
     letter-spacing: 0.1px;
   }
 
   .title-text span {
-    margin-top: 2px;
+    margin-top: 3px;
     font-size: 10.5px;
     color: var(--color-text-secondary);
   }

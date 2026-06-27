@@ -95,6 +95,7 @@
   --color-console-prompt:   #eab308;
   --color-console-error:    #f87171;
   --color-console-success:  #10b981;
+  --color-console-active-prompt: #facc15;
 
   /* ---- Progress ---- */
   --progress-gradient:      linear-gradient(90deg, #ca8a04 0%, #facc15 100%);
@@ -186,6 +187,7 @@
   --color-console-prompt:   #eab308;
   --color-console-error:    #fca5a5;
   --color-console-success:  #34d399;
+  --color-console-active-prompt: #facc15;
 
   /* ---- Progress ---- */
   --progress-gradient:      linear-gradient(90deg, #ca8a04 0%, #eab308 100%);

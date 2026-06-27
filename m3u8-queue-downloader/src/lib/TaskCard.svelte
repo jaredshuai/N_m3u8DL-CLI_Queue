@@ -14,14 +14,6 @@
     task.status === 'cancelled' ? 'cancel' : 'wait'
   );
 
-  let borderColor = $derived(
-    statusKey === 'down' ? 'var(--color-status-down)' :
-    statusKey === 'done' ? 'var(--color-status-done)' :
-    statusKey === 'fail' ? 'var(--color-status-fail)' :
-    statusKey === 'cancel' ? 'var(--color-status-wait)' :
-    'var(--color-status-wait)'
-  );
-
   let statusLabel = $derived(
     task.status === 'downloading' ? '下载中' :
     task.status === 'waiting' ? '等待中' :
@@ -121,7 +113,6 @@
 
 <div
   class="task-card"
-  style="border-left: 3px solid {borderColor};"
   class:downloading={statusKey === 'down'}
   class:completed={statusKey === 'done'}
 >
@@ -225,17 +216,51 @@
 
 <style>
   .task-card {
-    background: var(--color-bg-card);
+    position: relative;
+    background: var(--color-bg-card-alpha);
     border: 1px solid var(--color-border);
     border-radius: var(--radius);
-    padding: 14px 16px;
-    margin-bottom: 8px;
-    box-shadow: var(--card-inner-shadow, inset 0 1px 0 rgba(255,255,255,0.05));
-    transition: background 0.15s, box-shadow 0.15s;
+    padding: 16px 18px;
+    margin-bottom: 10px;
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: background 0.15s, box-shadow 0.2s ease;
+  }
+
+  /* Card-level aurora: cool teal glow from bottom-left, contrasting warm background aurora */
+  .task-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    opacity: var(--card-aurora-opacity, 1);
+    background: radial-gradient(ellipse 90% 65% at 10% 105%, rgba(20, 184, 166, 0.28) 0%, transparent 55%);
+    pointer-events: none;
+    transition: opacity 0.3s ease;
   }
 
   .task-card:hover {
-    background: var(--color-bg-card-hover);
+    background: var(--color-bg-card-hover-alpha);
+    box-shadow: var(--shadow-card-hover);
+  }
+
+  .task-card:hover::before {
+    opacity: 0.85;
+  }
+
+  .task-card.downloading {
+    border-color: var(--color-status-down);
+    box-shadow: 0 0 0 1px var(--color-status-down-bg), var(--shadow-card);
+  }
+
+  .task-card.downloading::before {
+    background: radial-gradient(ellipse 95% 70% at 10% 105%, rgba(139, 92, 246, 0.38) 0%, transparent 50%);
+    opacity: var(--card-aurora-opacity, 1);
+  }
+
+  .task-card.downloading:hover {
+    box-shadow: 0 0 0 1px var(--color-status-down-bg), var(--shadow-card-hover);
   }
 
   .card-main {
@@ -267,7 +292,7 @@
     justify-content: space-between;
     align-items: center;
     gap: 8px;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
   }
 
   .task-title {
@@ -377,6 +402,7 @@
   .status-badge.down {
     background: var(--color-status-down-bg);
     color: var(--color-status-down);
+    animation: statusPulse 2s ease-in-out infinite;
   }
 
   .status-badge.done {
@@ -400,22 +426,32 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
   }
 
   .progress-bar {
-    height: 6px;
-    background: var(--overlay-hover);
-    border-radius: 3px;
-    margin-bottom: 6px;
+    height: 4px;
+    background: var(--progress-track);
+    border-radius: 2px;
+    margin-bottom: 8px;
     overflow: hidden;
   }
 
   .progress-fill {
     height: 100%;
     background: var(--progress-gradient);
-    border-radius: 3px;
+    border-radius: 2px;
     transition: width 0.3s ease;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .progress-fill::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+    animation: shimmer 2s ease-in-out infinite;
   }
 
   .progress-info {
@@ -423,7 +459,7 @@
     gap: 12px;
     align-items: center;
     font-size: 12px;
-    margin-bottom: 4px;
+    margin-bottom: 8px;
   }
 
   .progress-pct {
@@ -464,7 +500,7 @@
     display: flex;
     gap: 6px;
     justify-content: flex-end;
-    margin-top: 6px;
+    margin-top: 10px;
     flex-wrap: wrap;
   }
 

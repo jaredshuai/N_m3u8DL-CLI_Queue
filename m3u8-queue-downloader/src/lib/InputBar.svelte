@@ -203,13 +203,13 @@
 
   .input-bar {
     display: flex;
-    gap: 8px;
+    gap: 10px;
     align-items: center;
   }
 
   .url-input {
     flex: 1;
-    padding: 10px 14px;
+    padding: 11px 16px;
     background: var(--color-bg-input);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
@@ -233,9 +233,9 @@
   }
 
   .add-btn {
-    padding: 10px 20px;
+    padding: 11px 22px;
     background: var(--color-accent);
-    color: var(--color-bg-main);
+    color: var(--color-on-accent);
     border: none;
     border-radius: var(--radius-sm);
     font-weight: 700;
@@ -247,7 +247,7 @@
   }
 
   .queue-btn {
-    padding: 10px 20px;
+    padding: 11px 22px;
     background: transparent;
     color: var(--color-text-main);
     border: 1px solid var(--color-border);

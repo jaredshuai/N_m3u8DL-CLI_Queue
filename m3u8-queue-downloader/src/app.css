@@ -34,9 +34,12 @@
   --color-bg-main:          #0b0d12;
   --color-bg-card:          #13161c;
   --color-bg-card-hover:    #181c24;
+  --color-bg-card-alpha:    rgba(19, 22, 28, 0.70);
+  --color-bg-card-hover-alpha: rgba(24, 28, 36, 0.78);
   --color-bg-input:         #1c2028;
   --color-bg-panel:         #10131a;
   --color-bg-titlebar:      #0f1218;
+  --color-bg-titlebar-alpha: rgba(15, 18, 24, 0.60);
   --color-bg-cli:           #080a0f;
   --color-bg-statusbar:     #0d1017;
 
@@ -52,6 +55,7 @@
   --color-accent-hover:     #d4a007;
   --color-accent-active:    #b8860b;
   --color-accent-glow:      rgba(234, 179, 8, 0.15);
+  --color-on-accent:        #0b0d12;
 
   /* ---- Status ---- */
   --color-status-wait:      #64748b;
@@ -60,8 +64,8 @@
   --color-status-fail:      #f87171;
 
   /* ---- Borders & Dividers ---- */
-  --color-border:           #282f3a;
-  --color-divider:          #1e2530;
+  --color-border:           #384152;
+  --color-divider:          #2a3342;
 
   /* ---- Overlays ---- */
   --overlay-subtle:         rgba(255, 255, 255, 0.04);
@@ -87,6 +91,8 @@
   --shadow-sm:              0 1px 3px rgba(0, 0, 0, 0.35);
   --shadow-md:              0 4px 12px rgba(0, 0, 0, 0.40);
   --shadow-lg:              0 8px 24px rgba(0, 0, 0, 0.50);
+  --shadow-card:            0 1px 2px rgba(0, 0, 0, 0.20), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  --shadow-card-hover:      0 4px 12px rgba(0, 0, 0, 0.30), 0 0 0 1px rgba(255, 255, 255, 0.05);
   --card-inner-shadow:      inset 0 1px 0 rgba(255, 255, 255, 0.05);
 
   /* ---- CLI Console ---- */
@@ -95,6 +101,7 @@
   --color-console-prompt:   #eab308;
   --color-console-error:    #f87171;
   --color-console-success:  #10b981;
+  --color-console-active-prompt: #facc15;
 
   /* ---- Progress ---- */
   --progress-gradient:      linear-gradient(90deg, #ca8a04 0%, #facc15 100%);
@@ -125,9 +132,12 @@
   --color-bg-main:          #f5f3f0;
   --color-bg-card:          #fbfaf8;
   --color-bg-card-hover:    #f0ede8;
+  --color-bg-card-alpha:    rgba(251, 250, 248, 0.88);
+  --color-bg-card-hover-alpha: rgba(240, 237, 232, 0.92);
   --color-bg-input:         #edeae6;
   --color-bg-panel:         #f0ede8;
   --color-bg-titlebar:      #fbfaf8;
+  --color-bg-titlebar-alpha: rgba(251, 250, 248, 0.78);
   --color-bg-cli:           #1e2028;
   --color-bg-statusbar:     #edeae6;
 
@@ -143,6 +153,7 @@
   --color-accent-hover:     #d4a007;
   --color-accent-active:    #a16207;
   --color-accent-glow:      rgba(234, 179, 8, 0.12);
+  --color-on-accent:        #1a1714;
 
   /* ---- Status ---- */
   --color-status-wait:      #475569;
@@ -178,6 +189,8 @@
   --shadow-sm:              0 1px 3px rgba(120, 110, 100, 0.06);
   --shadow-md:              0 4px 12px rgba(120, 110, 100, 0.08);
   --shadow-lg:              0 8px 24px rgba(120, 110, 100, 0.10);
+  --shadow-card:            0 1px 3px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0, 0, 0, 0.03);
+  --shadow-card-hover:      0 4px 16px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.04);
   --card-inner-shadow:      inset 0 1px 0 rgba(255, 255, 255, 0.70);
 
   /* ---- CLI Console ---- */
@@ -186,6 +199,7 @@
   --color-console-prompt:   #eab308;
   --color-console-error:    #fca5a5;
   --color-console-success:  #34d399;
+  --color-console-active-prompt: #facc15;
 
   /* ---- Progress ---- */
   --progress-gradient:      linear-gradient(90deg, #ca8a04 0%, #eab308 100%);
@@ -219,9 +233,12 @@
   --color-bg-main:          #0b0d12;
   --color-bg-card:          #13161c;
   --color-bg-card-hover:    #181c24;
+  --color-bg-card-alpha:    rgba(19, 22, 28, 0.70);
+  --color-bg-card-hover-alpha: rgba(24, 28, 36, 0.78);
   --color-bg-input:         #1c2028;
   --color-bg-panel:         #10131a;
   --color-bg-titlebar:      #0f1218;
+  --color-bg-titlebar-alpha: rgba(15, 18, 24, 0.60);
   --color-bg-cli:           #080a0f;
   --color-bg-statusbar:     #0d1017;
 
@@ -235,14 +252,15 @@
   --color-accent-hover:     #d4a007;
   --color-accent-active:    #b8860b;
   --color-accent-glow:      rgba(234, 179, 8, 0.15);
+  --color-on-accent:        #0b0d12;
 
   --color-status-wait:      #64748b;
   --color-status-down:      #eab308;
   --color-status-done:      #10b981;
   --color-status-fail:      #f87171;
 
-  --color-border:           #282f3a;
-  --color-divider:          #1e2530;
+  --color-border:           #384152;
+  --color-divider:          #2a3342;
 
   --overlay-subtle:         rgba(255, 255, 255, 0.04);
   --overlay-hover:          rgba(255, 255, 255, 0.06);
@@ -264,6 +282,8 @@
   --shadow-sm:              0 1px 3px rgba(0, 0, 0, 0.35);
   --shadow-md:              0 4px 12px rgba(0, 0, 0, 0.40);
   --shadow-lg:              0 8px 24px rgba(0, 0, 0, 0.50);
+  --shadow-card:            0 1px 2px rgba(0, 0, 0, 0.20), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  --shadow-card-hover:      0 4px 12px rgba(0, 0, 0, 0.30), 0 0 0 1px rgba(255, 255, 255, 0.05);
   --card-inner-shadow:      inset 0 1px 0 rgba(255, 255, 255, 0.05);
 
   --color-text-console:     #b0bec5;
@@ -271,6 +291,7 @@
   --color-console-prompt:   #eab308;
   --color-console-error:    #f87171;
   --color-console-success:  #10b981;
+  --color-console-active-prompt: #facc15;
 
   --progress-gradient:      linear-gradient(90deg, #ca8a04 0%, #facc15 100%);
   --progress-track:         rgba(255, 255, 255, 0.06);
@@ -292,9 +313,12 @@
     --color-bg-main:          #f5f3f0;
     --color-bg-card:          #fbfaf8;
     --color-bg-card-hover:    #f0ede8;
+    --color-bg-card-alpha:    rgba(251, 250, 248, 0.88);
+    --color-bg-card-hover-alpha: rgba(240, 237, 232, 0.92);
     --color-bg-input:         #edeae6;
     --color-bg-panel:         #f0ede8;
     --color-bg-titlebar:      #fbfaf8;
+    --color-bg-titlebar-alpha: rgba(251, 250, 248, 0.78);
     --color-bg-cli:           #1e2028;
     --color-bg-statusbar:     #edeae6;
 
@@ -308,6 +332,7 @@
     --color-accent-hover:     #d4a007;
     --color-accent-active:    #a16207;
     --color-accent-glow:      rgba(234, 179, 8, 0.12);
+    --color-on-accent:        #1a1714;
 
     --color-status-wait:      #475569;
     --color-status-down:      #a16207;
@@ -337,6 +362,8 @@
     --shadow-sm:              0 1px 3px rgba(120, 110, 100, 0.06);
     --shadow-md:              0 4px 12px rgba(120, 110, 100, 0.08);
     --shadow-lg:              0 8px 24px rgba(120, 110, 100, 0.10);
+    --shadow-card:            0 1px 3px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0, 0, 0, 0.03);
+    --shadow-card-hover:      0 4px 16px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.04);
     --card-inner-shadow:      inset 0 1px 0 rgba(255, 255, 255, 0.70);
 
     --color-text-console:     #d1d5db;
@@ -344,6 +371,7 @@
     --color-console-prompt:   #eab308;
     --color-console-error:    #fca5a5;
     --color-console-success:  #34d399;
+    --color-console-active-prompt: #facc15;
 
     --progress-gradient:      linear-gradient(90deg, #ca8a04 0%, #eab308 100%);
     --progress-track:         rgba(0, 0, 0, 0.06);
@@ -370,22 +398,97 @@
   --color-done-soft-bg: var(--color-success-bg);
   --color-accent-border: var(--color-accent-dim);
   --color-bg-panel-overlay: var(--color-bg-panel);
-  --color-bg-titlebar-overlay: var(--color-bg-titlebar);
+  --color-bg-titlebar-overlay: var(--color-bg-titlebar-alpha);
   --color-bg-terminal-overlay:
     linear-gradient(180deg, var(--color-bg-cli), var(--color-bg-cli)),
     radial-gradient(circle at top right, var(--color-accent-glow), transparent 35%);
   --scrim: rgba(7, 9, 13, 0.82);
   --shadow-panel: var(--shadow-lg);
   --shadow-terminal: var(--shadow-lg);
+
+  /* Font stack */
+  --font-stack: 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+
+  /* CLI island — dark by default, overridden in light theme */
+  --cli-border: rgba(255, 255, 255, 0.08);
+  --cli-border-strong: rgba(255, 255, 255, 0.10);
+  --cli-divider: rgba(255, 255, 255, 0.06);
+  --cli-divider-subtle: rgba(255, 255, 255, 0.04);
+  --cli-surface: rgba(255, 255, 255, 0.03);
+  --cli-surface-subtle: rgba(255, 255, 255, 0.02);
+  --cli-surface-faint: rgba(255, 255, 255, 0.015);
+  --cli-line-pattern: repeating-linear-gradient(
+    180deg,
+    rgba(255,255,255,0.012) 0,
+    rgba(255,255,255,0.012) 1px,
+    transparent 1px,
+    transparent 26px
+  );
 }
 
 [data-theme="light"] {
-  --scrim: rgba(15, 23, 42, 0.45);
+  --scrim: rgba(60, 45, 30, 0.06);
+  --aurora-opacity: 0.4;
+  --card-aurora-opacity: 0;
+
+  /* CLI light island — terminal follows light theme */
+  --color-bg-cli: #f0ede8;
+  --color-bg-terminal-overlay:
+    linear-gradient(180deg, var(--color-bg-cli), var(--color-bg-cli)),
+    radial-gradient(circle at top right, rgba(234, 179, 8, 0.06), transparent 35%);
+  --color-text-console: #4a4540;
+  --color-console-active-line: rgba(234, 179, 8, 0.10);
+  --color-console-prompt: #b45309;
+  --color-console-error: #dc2626;
+  --color-console-success: #0d9668;
+  --color-console-active-prompt: #92400e;
+  --cli-border: rgba(0, 0, 0, 0.10);
+  --cli-border-strong: rgba(0, 0, 0, 0.14);
+  --cli-divider: rgba(0, 0, 0, 0.07);
+  --cli-divider-subtle: rgba(0, 0, 0, 0.04);
+  --cli-surface: rgba(0, 0, 0, 0.04);
+  --cli-surface-subtle: rgba(0, 0, 0, 0.025);
+  --cli-surface-faint: rgba(0, 0, 0, 0.015);
+  --cli-line-pattern: repeating-linear-gradient(
+    180deg,
+    rgba(0,0,0,0.015) 0,
+    rgba(0,0,0,0.015) 1px,
+    transparent 1px,
+    transparent 26px
+  );
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
-    --scrim: rgba(15, 23, 42, 0.45);
+    --scrim: rgba(60, 45, 30, 0.06);
+    --aurora-opacity: 0.4;
+    --card-aurora-opacity: 0;
+
+    /* CLI light island — terminal follows light theme */
+    --color-bg-cli: #f0ede8;
+    --color-bg-terminal-overlay:
+      linear-gradient(180deg, var(--color-bg-cli), var(--color-bg-cli)),
+      radial-gradient(circle at top right, rgba(234, 179, 8, 0.06), transparent 35%);
+    --color-text-console: #4a4540;
+    --color-console-active-line: rgba(234, 179, 8, 0.10);
+    --color-console-prompt: #b45309;
+    --color-console-error: #dc2626;
+    --color-console-success: #0d9668;
+    --color-console-active-prompt: #92400e;
+    --cli-border: rgba(0, 0, 0, 0.10);
+    --cli-border-strong: rgba(0, 0, 0, 0.14);
+    --cli-divider: rgba(0, 0, 0, 0.07);
+    --cli-divider-subtle: rgba(0, 0, 0, 0.04);
+    --cli-surface: rgba(0, 0, 0, 0.04);
+    --cli-surface-subtle: rgba(0, 0, 0, 0.025);
+    --cli-surface-faint: rgba(0, 0, 0, 0.015);
+    --cli-line-pattern: repeating-linear-gradient(
+      180deg,
+      rgba(0,0,0,0.015) 0,
+      rgba(0,0,0,0.015) 1px,
+      transparent 1px,
+      transparent 26px
+    );
   }
 }
 
@@ -447,4 +550,38 @@ body {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Focus-visible: consistent keyboard focus ring */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Reduced motion: disable all animations */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
