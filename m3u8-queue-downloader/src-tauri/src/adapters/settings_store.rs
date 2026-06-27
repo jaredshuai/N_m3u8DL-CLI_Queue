@@ -90,6 +90,7 @@ mod tests {
                 close_button_behavior: CloseButtonBehavior::Exit,
                 auto_action_on_complete: true,
                 download_dir: Some("D:/Videos".to_string()),
+                theme: crate::application::settings::ThemePreference::Dark,
             })
             .expect("save settings");
 
@@ -115,6 +116,7 @@ mod tests {
             close_button_behavior: CloseButtonBehavior::Exit,
             auto_action_on_complete: true,
             download_dir: Some("D:/Blocked".to_string()),
+            theme: crate::application::settings::ThemePreference::Light,
         });
 
         assert!(result.is_err());
@@ -133,6 +135,7 @@ mod tests {
                 close_button_behavior: CloseButtonBehavior::CloseToTray,
                 auto_action_on_complete: false,
                 download_dir: Some("   ".to_string()),
+                theme: crate::application::settings::ThemePreference::Auto,
             })
             .expect("save settings");
 

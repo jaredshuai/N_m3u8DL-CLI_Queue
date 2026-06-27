@@ -56,6 +56,23 @@
     {/if}
   </div>
 
+  <label class="setting-row" for="theme-preference">
+    <div class="setting-copy">
+      <strong>主题</strong>
+      <span>跟随系统、强制深色或强制浅色。</span>
+    </div>
+    <select
+      id="theme-preference"
+      value={$appSettings.theme ?? 'auto'}
+      onchange={(event) => updateSetting({ theme: event.currentTarget.value })}
+      disabled={saving}
+    >
+      <option value="auto">跟随系统</option>
+      <option value="dark">深色</option>
+      <option value="light">浅色</option>
+    </select>
+  </label>
+
   <label class="setting-row" for="close-behavior">
     <div class="setting-copy">
       <strong>关闭按钮默认行为</strong>
@@ -118,9 +135,9 @@
 <style>
   .settings-panel {
     border-bottom: 1px solid var(--color-border);
-    background: rgba(13, 16, 22, 0.96);
+    background: var(--color-bg-panel-overlay);
     padding: 14px 16px 12px;
-    box-shadow: 0 12px 28px rgba(0,0,0,0.25);
+    box-shadow: var(--shadow-panel);
   }
 
   .settings-header {
@@ -154,7 +171,7 @@
     gap: 16px;
     align-items: center;
     padding: 12px 0;
-    border-top: 1px solid rgba(255,255,255,0.05);
+    border-top: 1px solid var(--color-divider);
   }
 
   .checkbox-row {
@@ -224,7 +241,7 @@
     padding: 8px 10px;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
-    background: rgba(255,255,255,0.03);
+    background: var(--overlay-subtle);
     color: var(--color-text-secondary);
     font-family: var(--font-stack);
     cursor: pointer;
@@ -244,9 +261,9 @@
   .settings-error {
     margin-top: 8px;
     padding: 8px 10px;
-    border: 1px solid rgba(248, 113, 113, 0.35);
+    border: 1px solid var(--color-error-border);
     border-radius: var(--radius-sm);
-    background: rgba(248, 113, 113, 0.08);
+    background: var(--color-error-bg);
     color: var(--color-status-fail);
     font-size: 12px;
   }

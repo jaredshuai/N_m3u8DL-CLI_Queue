@@ -5,6 +5,7 @@ export const appSettings = writable({
   closeButtonBehavior: 'closeToTray',
   autoShutdownOnComplete: false,
   downloadDir: '',
+  theme: 'auto',
 });
 
 export const shutdownNotice = writable({

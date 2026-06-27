@@ -647,6 +647,7 @@ mod tests {
                 close_button_behavior: CloseButtonBehavior::CloseToTray,
                 auto_action_on_complete: true,
                 download_dir: None,
+                theme: crate::application::settings::ThemePreference::Auto,
             }
         }
 

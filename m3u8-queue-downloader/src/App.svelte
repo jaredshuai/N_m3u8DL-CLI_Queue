@@ -18,6 +18,7 @@
     completedHistory,
     failedHistory,
     appNotice,
+    appSettings,
     cancelAutoShutdown,
     clearAppNotice,
     loadAppSettings,
@@ -61,6 +62,17 @@
     dropFromOthersDisabled: true,
     centreDraggedOnCursor: true,
   };
+
+  function applyThemePreference(preference = 'auto') {
+    if (typeof document === 'undefined') return;
+    const normalized = ['auto', 'dark', 'light'].includes(preference) ? preference : 'auto';
+    // Software B: auto = no attribute (CSS media query resolves), dark/light = explicit
+    if (normalized === 'auto') {
+      document.documentElement.removeAttribute('data-theme');
+    } else {
+      document.documentElement.setAttribute('data-theme', normalized);
+    }
+  }
 
   function toggleSettings() {
     showSettings = !showSettings;
@@ -169,6 +181,26 @@
     if (cliConsole.open && !cliConsoleTask) {
       cliConsole = closeCliConsole(cliConsole);
     }
+  });
+
+  // Theme switching: auto / dark / light
+  $effect(() => {
+    applyThemePreference($appSettings.theme);
+  });
+
+  // When following system, react to OS theme changes
+  onMount(() => {
+    const mediaQuery = window.matchMedia?.('(prefers-color-scheme: light)');
+    if (!mediaQuery) return;
+
+    const handleChange = () => {
+      if (($appSettings.theme ?? 'auto') === 'auto') {
+        applyThemePreference('auto');
+      }
+    };
+
+    mediaQuery.addEventListener?.('change', handleChange);
+    return () => mediaQuery.removeEventListener?.('change', handleChange);
   });
 </script>
 
@@ -351,7 +383,7 @@
 
   .app-header {
     flex-shrink: 0;
-    background: rgba(11, 13, 18, 0.85);
+    background: var(--scrim);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--color-border);
@@ -366,13 +398,13 @@
     gap: 14px;
     flex-shrink: 0;
     padding: 10px 16px;
-    border-bottom: 1px solid rgba(234, 179, 8, 0.35);
-    background: rgba(234, 179, 8, 0.11);
+    border-bottom: 1px solid var(--color-accent-border);
+    background: var(--color-warning-bg);
   }
 
   .shutdown-banner.error {
-    border-bottom-color: rgba(248, 113, 113, 0.35);
-    background: rgba(248, 113, 113, 0.08);
+    border-bottom-color: var(--color-error-border);
+    background: var(--color-error-bg);
   }
 
   .shutdown-banner div {
@@ -399,9 +431,9 @@
   .shutdown-banner button {
     flex-shrink: 0;
     padding: 7px 12px;
-    border: 1px solid rgba(234, 179, 8, 0.45);
+    border: 1px solid var(--color-accent-border);
     border-radius: var(--radius-sm);
-    background: rgba(234, 179, 8, 0.12);
+    background: var(--color-accent-soft-bg);
     color: var(--color-accent-bright);
     font-family: var(--font-stack);
     font-weight: 700;
@@ -409,7 +441,7 @@
   }
 
   .shutdown-banner button:hover {
-    background: rgba(234, 179, 8, 0.18);
+    background: var(--color-accent-glow);
   }
 
   .app-notice {
@@ -419,8 +451,8 @@
     gap: 14px;
     flex-shrink: 0;
     padding: 10px 16px;
-    border-bottom: 1px solid rgba(248, 113, 113, 0.35);
-    background: rgba(248, 113, 113, 0.08);
+    border-bottom: 1px solid var(--color-error-border);
+    background: var(--color-error-bg);
   }
 
   .app-notice div {
@@ -443,9 +475,9 @@
   .app-notice button {
     flex-shrink: 0;
     padding: 7px 12px;
-    border: 1px solid rgba(248, 113, 113, 0.45);
+    border: 1px solid var(--color-error-border);
     border-radius: var(--radius-sm);
-    background: rgba(248, 113, 113, 0.12);
+    background: var(--color-fail-soft-bg);
     color: var(--color-status-fail);
     font-family: var(--font-stack);
     font-weight: 700;
@@ -453,7 +485,7 @@
   }
 
   .app-notice button:hover {
-    background: rgba(248, 113, 113, 0.18);
+    background: var(--color-error-bg);
   }
 
   .task-list {
@@ -468,9 +500,7 @@
     inset: 0;
     z-index: 40;
     padding: 14px 16px 16px;
-    background:
-      linear-gradient(180deg, rgba(7, 9, 13, 0.82), rgba(4, 6, 10, 0.9)),
-      radial-gradient(circle at top right, rgba(250, 204, 21, 0.06), transparent 30%);
+    background: var(--color-bg-terminal-overlay);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
   }

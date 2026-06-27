@@ -5,11 +5,20 @@ pub enum CloseButtonBehavior {
     Exit,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ThemePreference {
+    #[default]
+    Auto,
+    Dark,
+    Light,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSettings {
     pub close_button_behavior: CloseButtonBehavior,
     pub auto_action_on_complete: bool,
     pub download_dir: Option<String>,
+    pub theme: ThemePreference,
 }
 
 impl Default for AppSettings {
@@ -18,6 +27,7 @@ impl Default for AppSettings {
             close_button_behavior: CloseButtonBehavior::CloseToTray,
             auto_action_on_complete: false,
             download_dir: None,
+            theme: ThemePreference::Auto,
         }
     }
 }
@@ -42,6 +52,7 @@ mod tests {
         );
         assert!(!settings.auto_action_on_complete);
         assert!(settings.download_dir.is_none());
+        assert_eq!(settings.theme, ThemePreference::Auto);
     }
 
     #[test]

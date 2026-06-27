@@ -293,12 +293,11 @@
     flex-shrink: 0;
     height: 320px;
     margin: 0 16px 12px;
+    /* dark-island: CLI console stays dark in both app themes */
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 14px;
-    background:
-      linear-gradient(180deg, rgba(10, 12, 16, 0.98), rgba(4, 6, 9, 0.98)),
-      radial-gradient(circle at top right, rgba(250, 204, 21, 0.08), transparent 35%);
-    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
+    background: var(--color-bg-terminal-overlay);
+    box-shadow: var(--shadow-terminal);
     overflow: hidden;
   }
 
@@ -478,23 +477,23 @@
 
   .cli-line {
     padding: 0 14px;
-    color: #d1d7df;
+    color: var(--color-text-console);
     white-space: pre-wrap;
     word-break: break-word;
   }
 
   .cli-line::before {
     content: '› ';
-    color: rgba(250, 204, 21, 0.55);
+    color: var(--color-console-prompt);
   }
 
   .cli-active-line {
-    color: #facc15;
+    color: var(--color-console-prompt);
   }
 
   .cli-active-line::before {
     content: '▸ ';
-    color: rgba(250, 204, 21, 0.85);
+    color: var(--color-console-active-prompt);
   }
 
   .cli-empty {

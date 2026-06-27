@@ -235,7 +235,7 @@
   }
 
   .task-card:hover {
-    background: #181c24;
+    background: var(--color-bg-card-hover);
   }
 
   .card-main {
@@ -341,12 +341,12 @@
   }
 
   .edit-confirm {
-    background: rgba(16, 185, 129, 0.15);
+    background: var(--color-done-soft-bg);
     color: var(--color-status-done);
   }
 
   .edit-confirm:hover {
-    background: rgba(16, 185, 129, 0.3);
+    background: var(--color-done-soft-bg);
     border-color: var(--color-status-done);
   }
 
@@ -370,27 +370,27 @@
   }
 
   .status-badge.wait {
-    background: rgba(100, 116, 139, 0.15);
+    background: var(--color-status-wait-bg);
     color: var(--color-status-wait);
   }
 
   .status-badge.down {
-    background: rgba(234, 179, 8, 0.15);
+    background: var(--color-status-down-bg);
     color: var(--color-status-down);
   }
 
   .status-badge.done {
-    background: rgba(16, 185, 129, 0.15);
+    background: var(--color-status-done-bg);
     color: var(--color-status-done);
   }
 
   .status-badge.fail {
-    background: rgba(248, 113, 113, 0.15);
+    background: var(--color-status-fail-bg);
     color: var(--color-status-fail);
   }
 
   .status-badge.cancel {
-    background: rgba(156, 163, 175, 0.15);
+    background: var(--color-status-cancel-bg);
     color: var(--color-text-secondary);
   }
 
@@ -405,7 +405,7 @@
 
   .progress-bar {
     height: 6px;
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--overlay-hover);
     border-radius: 3px;
     margin-bottom: 6px;
     overflow: hidden;
@@ -439,7 +439,7 @@
   .error-msg {
     font-size: 12px;
     color: var(--color-status-fail);
-    background: rgba(248, 113, 113, 0.08);
+    background: var(--color-error-bg);
     padding: 6px 10px;
     border-radius: var(--radius-sm);
     margin-bottom: 6px;
@@ -448,7 +448,7 @@
 
   .error-msg.cancel-msg {
     color: var(--color-text-secondary);
-    background: rgba(156, 163, 175, 0.08);
+    background: var(--overlay-hover);
   }
 
   .output-path {
@@ -493,13 +493,13 @@
   }
 
   .action-btn:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--overlay-subtle);
     border-color: var(--color-text-secondary);
     color: var(--color-text-main);
   }
 
   .action-btn.danger:hover {
-    background: rgba(248, 113, 113, 0.1);
+    background: var(--color-error-bg);
     border-color: var(--color-status-fail);
     color: var(--color-status-fail);
   }
