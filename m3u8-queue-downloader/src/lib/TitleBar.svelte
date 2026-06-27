@@ -1,7 +1,7 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { appSettings, saveAppSettings } from './stores.js';
+  import { appSettings, saveAppTheme } from './stores.js';
 
   let { onToggleSettings, settingsOpen = false } = $props();
 
@@ -43,7 +43,7 @@
     const current = $appSettings.theme ?? 'auto';
     const next = current === 'auto' ? 'dark' : current === 'dark' ? 'light' : 'auto';
     try {
-      await saveAppSettings({ ...$appSettings, theme: next });
+      await saveAppTheme(next);
     } catch (err) {
       console.error('Failed to change theme:', err);
     }

@@ -402,7 +402,7 @@
   .status-badge.down {
     background: var(--color-status-down-bg);
     color: var(--color-status-down);
-    animation: statusPulse 2s ease-in-out infinite;
+    animation: status-pulse 2s ease-in-out infinite;
   }
 
   .status-badge.done {

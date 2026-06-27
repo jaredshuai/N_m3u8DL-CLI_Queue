@@ -12,7 +12,7 @@ use composition::tauri_commands::{
     get_cli_terminal_state, get_history_page, get_queue_state, minimize_main_window,
     open_download_dir, pause_queue, remove_history_task, remove_task, reorder_tasks,
     request_main_window_close, retry_task, start_queue, stop_task, toggle_main_window_maximize,
-    update_app_settings, update_save_name,
+    update_app_settings, update_app_theme, update_save_name,
 };
 
 pub fn run() {
@@ -24,6 +24,7 @@ pub fn run() {
             get_queue_state,
             get_app_settings,
             update_app_settings,
+            update_app_theme,
             get_history_page,
             get_cli_output_tail,
             get_cli_output_page,

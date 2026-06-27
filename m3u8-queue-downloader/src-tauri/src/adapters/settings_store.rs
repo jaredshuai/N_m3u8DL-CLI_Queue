@@ -101,6 +101,10 @@ mod tests {
         );
         assert!(reloaded.get().auto_action_on_complete);
         assert_eq!(reloaded.get().download_dir.as_deref(), Some("D:/Videos"));
+        assert_eq!(
+            reloaded.get().theme,
+            crate::application::settings::ThemePreference::Dark
+        );
 
         let _ = std::fs::remove_file(path);
     }

@@ -70,6 +70,17 @@ export async function saveAppSettings(settings) {
   }
 }
 
+export async function saveAppTheme(theme) {
+  try {
+    const updated = await invoke('update_app_theme', { theme });
+    appSettings.set(updated);
+    return updated;
+  } catch (err) {
+    console.error('Failed to save app theme:', err);
+    throw err;
+  }
+}
+
 export async function cancelAutoShutdown() {
   try {
     await invoke('cancel_auto_shutdown');

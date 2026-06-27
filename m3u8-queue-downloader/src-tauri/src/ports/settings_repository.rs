@@ -1,10 +1,16 @@
 use crate::application::app_error::AppResult;
-use crate::application::settings::AppSettings;
+use crate::application::settings::{AppSettings, ThemePreference};
 use std::sync::Arc;
 
 pub(crate) trait SettingsRepository: Send + Sync {
     fn get(&self) -> AppSettings;
     fn update(&self, settings: AppSettings) -> AppResult<AppSettings>;
+
+    fn update_theme(&self, theme: ThemePreference) -> AppResult<AppSettings> {
+        let mut settings = self.get();
+        settings.theme = theme;
+        self.update(settings)
+    }
 }
 
 impl<T> SettingsRepository for Arc<T>

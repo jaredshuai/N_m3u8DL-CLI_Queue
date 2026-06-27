@@ -113,7 +113,7 @@
 
   .dot.down {
     background: var(--color-status-down);
-    animation: statusPulse 2s ease-in-out infinite;
+    animation: status-pulse 2s ease-in-out infinite;
   }
 
   .dot.done {

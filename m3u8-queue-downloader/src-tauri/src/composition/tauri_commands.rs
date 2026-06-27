@@ -2,7 +2,7 @@ use crate::adapters::frontend_dto::{
     CliOutputPageDto, CliTerminalStateDto, HistoryPageDto, QueueStateDto, TaskDto,
 };
 use crate::adapters::history_status_codec::parse_history_status;
-use crate::adapters::settings_dto::AppSettingsDto;
+use crate::adapters::settings_dto::{AppSettingsDto, ThemePreferenceDto};
 use crate::adapters::tauri_frontend_event_publisher::TauriFrontendEventPublisher;
 use crate::adapters::window_actions;
 use crate::application::app_error::{AppError, AppResult};
@@ -53,6 +53,15 @@ pub fn update_app_settings(
     let settings_commands = SettingsCommandFacade::new(state.inner().clone());
     command_result(settings_commands.update_app_settings(&events, settings.into()))
         .map(AppSettingsDto::from)
+}
+
+#[tauri::command]
+pub fn update_app_theme(
+    state: State<'_, DependencyGraph>,
+    theme: ThemePreferenceDto,
+) -> Result<AppSettingsDto, String> {
+    let settings_commands = SettingsCommandFacade::new(state.inner().clone());
+    command_result(settings_commands.update_theme(theme.into())).map(AppSettingsDto::from)
 }
 
 #[tauri::command]

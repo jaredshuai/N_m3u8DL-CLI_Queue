@@ -1,5 +1,5 @@
 use crate::application::app_error::AppResult;
-use crate::application::settings::AppSettings;
+use crate::application::settings::{AppSettings, ThemePreference};
 use crate::composition::dependency_graph::DependencyGraph;
 use crate::ports::event_publisher::FrontendEventPublisher;
 
@@ -19,5 +19,9 @@ impl SettingsCommandFacade {
     ) -> AppResult<AppSettings> {
         let ports = self.dependencies.settings_orchestrator(events);
         ports.update_settings_and_handle_auto_action_change(settings)
+    }
+
+    pub(crate) fn update_theme(&self, theme: ThemePreference) -> AppResult<AppSettings> {
+        self.dependencies.update_theme(theme)
     }
 }
