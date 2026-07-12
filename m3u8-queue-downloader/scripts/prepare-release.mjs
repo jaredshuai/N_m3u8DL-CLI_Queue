@@ -77,9 +77,11 @@ export class JsonVersionFiles {
   updateVersion(version) {
     const updatedFiles = [];
     for (const file of this.files) {
-      const json = JSON.parse(fs.readFileSync(file, 'utf8'));
-      json.version = version;
-      fs.writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`, 'utf8');
+      if (file.endsWith('.toml')) {
+        updateTomlVersion(file, version);
+      } else {
+        updateJsonVersion(file, version);
+      }
       updatedFiles.push(path.relative(this.rootDir, file));
     }
     return updatedFiles;
@@ -230,7 +232,20 @@ function defaultReleaseVersionFiles() {
   return [
     path.join(root, 'package.json'),
     path.join(root, 'src-tauri', 'tauri.conf.json'),
+    path.join(root, 'src-tauri', 'Cargo.toml'),
   ];
+}
+
+function updateJsonVersion(file, version) {
+  const json = JSON.parse(fs.readFileSync(file, 'utf8'));
+  json.version = version;
+  fs.writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`, 'utf8');
+}
+
+function updateTomlVersion(file, version) {
+  const content = fs.readFileSync(file, 'utf8');
+  const updated = content.replace(/^version = ".*"/m, `version = "${version}"`);
+  fs.writeFileSync(file, updated, 'utf8');
 }
 
 function defaultPackageSyncCliDependencies() {
