@@ -52,7 +52,15 @@ jobs:
         working-directory: m3u8-queue-downloader
         run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
 
+      - name: Cache ffmpeg upstream bundle
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: upstream-bundle
+          key: ffmpeg-upstream-3.0.2
+
       - name: Fetch ffmpeg from upstream release
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           gh release download 3.0.2 --repo nilaoda/N_m3u8DL-CLI `
@@ -94,7 +102,43 @@ jobs:
 
             包含：
             - Tauri + Svelte 桌面程序安装包
+            - 免安装 portable 版（zip）
             - 内置 N_m3u8DL-CLI 可执行文件
             - 队列、托盘、CLI实况、自动关机等 GUI 功能
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
-          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || contains(github.ref_name, '-') }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+
+      - name: Prepare portable folder
+        shell: pwsh
+        working-directory: m3u8-queue-downloader
+        run: |
+          $portableRoot = Join-Path $PWD '.portable-dist'
+          $portableDir = Join-Path $portableRoot 'm3u8-queue-downloader-portable'
+          if (Test-Path -LiteralPath $portableRoot) {
+            Remove-Item -LiteralPath $portableRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $portableDir | Out-Null
+
+          Copy-Item -LiteralPath 'src-tauri/target/release/m3u8-queue-downloader.exe' -Destination $portableDir -Force
+
+          Get-ChildItem -LiteralPath 'src-tauri/target/release' -Filter '*.dll' -File | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $portableDir $_.Name) -Force
+          }
+
+          if (Test-Path -LiteralPath 'src-tauri/target/release/resources') {
+            Copy-Item -LiteralPath 'src-tauri/target/release/resources' -Destination (Join-Path $portableDir 'resources') -Recurse -Force
+          } else {
+            throw 'Portable resources directory was not found at src-tauri/target/release/resources'
+          }
+
+          $defaultFfmpegDir = Join-Path $portableDir 'lib/ffmpeg/tools/ffmpeg/bin'
+          New-Item -ItemType Directory -Path $defaultFfmpegDir -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $portableDir 'resources/ffmpeg.exe') -Destination (Join-Path $defaultFfmpegDir 'ffmpeg.exe') -Force
+
+      - name: Upload portable zip to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          Compress-Archive -Path m3u8-queue-downloader/.portable-dist/m3u8-queue-downloader-portable/* -DestinationPath portable.zip -Force
+          gh release upload ${{ github.ref_name }} portable.zip --repo ${{ github.repository }}

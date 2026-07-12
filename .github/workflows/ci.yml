@@ -53,7 +53,15 @@ jobs:
       - name: Check Rust crate
         run: cargo check --manifest-path src-tauri/Cargo.toml --locked
 
+      - name: Cache ffmpeg upstream bundle
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: upstream-bundle
+          key: ffmpeg-upstream-3.0.2
+
       - name: Fetch ffmpeg from upstream release
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         shell: pwsh
         working-directory: .
         run: |

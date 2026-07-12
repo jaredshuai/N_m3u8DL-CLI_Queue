@@ -44,7 +44,15 @@ jobs:
         if: ${{ inputs.run_tests }}
         run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
 
+      - name: Cache ffmpeg upstream bundle
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: upstream-bundle
+          key: ffmpeg-upstream-3.0.2
+
       - name: Fetch ffmpeg from upstream release
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         shell: pwsh
         working-directory: .
         run: |
