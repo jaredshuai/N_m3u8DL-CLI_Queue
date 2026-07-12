@@ -1,5 +1,5 @@
 use crate::application::app_error::AppResult;
-use crate::application::settings::{AppSettings, ThemePreference};
+use crate::application::settings::AppSettings;
 use crate::application::FrontendEventPublisher;
 use crate::application::SettingsRepository;
 use crate::application::ShutdownScheduler;
@@ -39,10 +39,6 @@ impl<'a> SettingsPorts<'a> {
         }
 
         Ok(updated)
-    }
-
-    pub(crate) fn update_theme(&self, theme: ThemePreference) -> AppResult<AppSettings> {
-        self.settings_repository.update_theme(theme)
     }
 
     fn mark_auto_action_disabled_shutdown_countdown_cancelled(&self) {

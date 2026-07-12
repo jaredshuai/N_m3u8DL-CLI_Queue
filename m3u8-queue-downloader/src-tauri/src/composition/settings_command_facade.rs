@@ -21,12 +21,7 @@ impl SettingsCommandFacade {
         ports.update_settings_and_handle_auto_action_change(settings)
     }
 
-    pub(crate) fn update_theme(
-        &self,
-        events: &dyn FrontendEventPublisher,
-        theme: ThemePreference,
-    ) -> AppResult<AppSettings> {
-        let ports = self.dependencies.settings_orchestrator(events);
-        ports.update_theme(theme)
+    pub(crate) fn update_theme(&self, theme: ThemePreference) -> AppResult<AppSettings> {
+        self.dependencies.update_theme(theme)
     }
 }

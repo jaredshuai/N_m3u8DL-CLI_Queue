@@ -162,6 +162,13 @@ impl DependencyGraph {
         SettingsQueryPorts::new(self.settings_repository.as_ref())
     }
 
+    pub(in crate::composition) fn update_theme(
+        &self,
+        theme: crate::application::settings::ThemePreference,
+    ) -> crate::application::app_error::AppResult<crate::application::settings::AppSettings> {
+        self.settings_repository.update_theme(theme)
+    }
+
     pub(in crate::composition) fn download_directory_orchestrator(
         &self,
     ) -> DownloadDirectoryPorts<'_> {

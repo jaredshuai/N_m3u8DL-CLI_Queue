@@ -5,12 +5,7 @@ use std::sync::Arc;
 pub(crate) trait SettingsRepository: Send + Sync {
     fn get(&self) -> AppSettings;
     fn update(&self, settings: AppSettings) -> AppResult<AppSettings>;
-
-    fn update_theme(&self, theme: ThemePreference) -> AppResult<AppSettings> {
-        let mut settings = self.get();
-        settings.theme = theme;
-        self.update(settings)
-    }
+    fn update_theme(&self, theme: ThemePreference) -> AppResult<AppSettings>;
 }
 
 impl<T> SettingsRepository for Arc<T>
@@ -23,5 +18,9 @@ where
 
     fn update(&self, settings: AppSettings) -> AppResult<AppSettings> {
         self.as_ref().update(settings)
+    }
+
+    fn update_theme(&self, theme: ThemePreference) -> AppResult<AppSettings> {
+        self.as_ref().update_theme(theme)
     }
 }

@@ -638,6 +638,15 @@ mod tests {
         fn update(&self, settings: AppSettings) -> AppResult<AppSettings> {
             Ok(settings)
         }
+
+        fn update_theme(
+            &self,
+            theme: crate::application::settings::ThemePreference,
+        ) -> AppResult<AppSettings> {
+            let mut settings = self.get();
+            settings.theme = theme;
+            Ok(settings)
+        }
     }
 
     struct AutoShutdownSettingsRepository;
@@ -653,6 +662,15 @@ mod tests {
         }
 
         fn update(&self, settings: AppSettings) -> AppResult<AppSettings> {
+            Ok(settings)
+        }
+
+        fn update_theme(
+            &self,
+            theme: crate::application::settings::ThemePreference,
+        ) -> AppResult<AppSettings> {
+            let mut settings = self.get();
+            settings.theme = theme;
             Ok(settings)
         }
     }
