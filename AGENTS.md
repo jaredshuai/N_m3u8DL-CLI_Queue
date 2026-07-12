@@ -111,7 +111,7 @@ node scripts/prepare-release.mjs package-sync --run-id <已成功的_actions_run
 同步回本地 `artifacts/` 后，应看到：
 
 - 安装包：
-  `artifacts/m3u8-queue-downloader_0.1.0_x64-setup.exe`
+  `artifacts/m3u8-queue-downloader_0.2.0_x64-setup.exe`
 - portable 文件夹：
   `artifacts/m3u8-queue-downloader-portable/`
 
@@ -127,9 +127,30 @@ portable 目录当前应至少包含：
   - 用于测试包/日常包
   - 产出 installer + portable 目录
   - 本地 `package:sync` 默认使用它
+  - 三个 workflow 均缓存 ffmpeg upstream bundle（`actions/cache`，key `ffmpeg-upstream-3.0.2`）
 - `Release`
   - 用于 draft/prerelease/release 发布
-  - 不作为日常测试打包首选
+  - 产出 installer（NSIS）+ portable.zip 上传到 GitHub Release
+  - 由 `app-v*` tag push 自动触发
+  - prerelease 标记：仅当版本号含 `-rc`/`-beta`/`-alpha` 时为 prerelease，正式版（如 `app-v0.2.0`）不会误标
+
+## 发版流程
+
+在 `m3u8-queue-downloader/` 目录执行：
+
+```powershell
+npm run release:prepare -- <版本号>
+```
+
+此命令自动更新三个文件的版本号：`package.json`、`tauri.conf.json`、`Cargo.toml`。
+
+然后提交、打 tag、推送（推送 tag 会自动触发 Release workflow）：
+
+```bash
+git commit -am "chore(release): v<版本号>"
+git tag app-v<版本号>
+git push origin master app-v<版本号>
+```
 
 ## 运行时数据排查
 
