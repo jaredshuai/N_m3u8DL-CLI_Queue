@@ -966,6 +966,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_child_exit_recovery_retries_after_persistence_failure() {
+        let queue_path = temp_persistence_path();
+        let history_path = std::env::temp_dir().join(format!("history-{}", Uuid::new_v4()));
+        let queue_manager = Arc::new(QueueManager::new(queue_path.clone()));
+        let history_store = Arc::new(HistoryStore::new(history_path.clone()));
+        let (cancelled_task, _) = add_queue_manager_task(
+            &queue_manager,
+            AddTaskPayload {
+                url: "https://example.com/cancelled-recovery.m3u8".to_string(),
+                save_name: None,
+                headers: None,
+            },
+        )
+        .await;
+        let (next_task, _) = add_queue_manager_task(
+            &queue_manager,
+            AddTaskPayload {
+                url: "https://example.com/next-after-recovery.m3u8".to_string(),
+                save_name: None,
+                headers: None,
+            },
+        )
+        .await;
+
+        queue_manager
+            .set_run_status(QueueRunStatus::Running)
+            .await
+            .expect("set running");
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("schedule first task");
+        queue_manager
+            .stop_task(&cancelled_task.id)
+            .await
+            .expect("mark task cancelled");
+
+        std::fs::remove_file(&queue_path).expect("remove persisted queue file");
+        std::fs::create_dir_all(&queue_path).expect("block queue persistence path");
+
+        let scheduling_ports =
+            queue_scheduling_orchestrator(queue_manager.as_ref(), history_store.as_ref());
+        scheduling_ports
+            .handle_cancelled_child_exit(&cancelled_task.id, "Stopped by user")
+            .await;
+
+        let blocked = queue_manager.get_state().await;
+        assert_eq!(blocked.current_task_id(), Some(cancelled_task.id.as_str()));
+        assert!(blocked
+            .tasks()
+            .iter()
+            .any(|task| task.id == next_task.id && task.status == TaskStatus::Waiting));
+
+        std::fs::remove_dir_all(&queue_path).expect("unblock queue persistence path");
+        scheduling_ports
+            .recover_cancelled_child_exit(&cancelled_task.id, "Stopped by user")
+            .await
+            .expect("recover cancellation finalization");
+
+        let recovered = queue_manager.get_state().await;
+        assert_eq!(recovered.current_task_id(), Some(next_task.id.as_str()));
+        assert!(recovered
+            .tasks()
+            .iter()
+            .any(|task| task.id == next_task.id && task.status == TaskStatus::Downloading));
+
+        let _ = std::fs::remove_file(queue_path);
+        let _ = std::fs::remove_dir_all(history_path);
+    }
+
+    #[tokio::test]
     async fn task_output_progress_events_publish_only_after_live_state_update() {
         let queue_path = temp_persistence_path();
         let queue_manager = Arc::new(QueueManager::new(queue_path.clone()));

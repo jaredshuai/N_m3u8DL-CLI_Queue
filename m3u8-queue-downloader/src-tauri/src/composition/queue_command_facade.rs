@@ -1,12 +1,56 @@
 use crate::application::app_error::AppResult;
-use crate::application::process_runner_outcomes::TaskTerminationClaimOutcome;
+use crate::application::process_runner_outcomes::{
+    TaskTerminationClaim, TaskTerminationClaimOutcome,
+};
 use crate::application::query_models::TaskView;
 use crate::application::queue_requests::AddTaskPayload;
 use crate::composition::dependency_graph::DependencyGraph;
 use crate::ports::event_publisher::FrontendEventPublisher;
+use std::future::Future;
+
+async fn resolve_task_termination_claim<F, Fut>(
+    outcome: TaskTerminationClaimOutcome,
+    recover_already_exited: F,
+) -> AppResult<Option<TaskTerminationClaim>>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = AppResult<()>>,
+{
+    match outcome {
+        TaskTerminationClaimOutcome::Claimed(claim) => Ok(Some(claim)),
+        TaskTerminationClaimOutcome::AlreadyClaimed => Ok(None),
+        TaskTerminationClaimOutcome::AlreadyExited => {
+            recover_already_exited().await?;
+            Ok(None)
+        }
+    }
+}
 
 pub(crate) struct QueueCommandFacade {
     dependencies: DependencyGraph,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_task_termination_claim;
+    use crate::application::process_runner_outcomes::TaskTerminationClaimOutcome;
+    use std::cell::Cell;
+
+    #[tokio::test]
+    async fn already_exited_claim_invokes_cancellation_recovery() {
+        let recovered = Cell::new(false);
+
+        let claim =
+            resolve_task_termination_claim(TaskTerminationClaimOutcome::AlreadyExited, || async {
+                recovered.set(true);
+                Ok(())
+            })
+            .await
+            .expect("resolve already exited claim");
+
+        assert!(claim.is_none());
+        assert!(recovered.get());
+    }
 }
 
 impl QueueCommandFacade {
@@ -90,12 +134,27 @@ impl QueueCommandFacade {
     /// Claim the exact child generation before changing queue state. A waiter
     /// that exits after the claim pauses until this method commits or aborts,
     /// so persistence failure restores the natural Completed/Failed event.
-    pub(crate) async fn stop_task(&self, task_id: &str) -> AppResult<()> {
+    pub(crate) async fn stop_task(
+        &self,
+        events: &dyn FrontendEventPublisher,
+        task_id: &str,
+    ) -> AppResult<()> {
         let (queue_repository, process_supervisor) = self.dependencies.stop_task_ports();
-        let claim = match process_supervisor.claim_task_termination(task_id).await? {
-            TaskTerminationClaimOutcome::Claimed(claim) => claim,
-            TaskTerminationClaimOutcome::AlreadyClaimed => return Ok(()),
-            TaskTerminationClaimOutcome::AlreadyExited => return Ok(()),
+        let claim = resolve_task_termination_claim(
+            process_supervisor.claim_task_termination(task_id).await?,
+            || async {
+                let process_runner = self.dependencies.create_task_process_runner();
+                let scheduling_ports = self
+                    .dependencies
+                    .queue_scheduling_orchestrator(events, process_runner.as_ref());
+                scheduling_ports
+                    .recover_cancelled_child_exit(task_id, "Stopped by user")
+                    .await
+            },
+        )
+        .await?;
+        let Some(claim) = claim else {
+            return Ok(());
         };
 
         if let Err(err) = queue_repository.stop_task(task_id).await {

@@ -232,9 +232,11 @@ pub async fn pause_queue(
 pub async fn stop_task(
     state: State<'_, DependencyGraph>,
     task_id: String,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    let events = TauriFrontendEventPublisher::new(app_handle);
     let queue_commands = QueueCommandFacade::new(state.inner().clone());
-    command_result(queue_commands.stop_task(&task_id).await)
+    command_result(queue_commands.stop_task(&events, &task_id).await)
 }
 
 #[tauri::command]

@@ -142,20 +142,12 @@ pub(crate) fn application_stop_task_result(id: &str, result: StopTaskResult) -> 
 }
 
 pub(crate) fn application_finalize_task_cancellation_result(
-    id: &str,
     result: FinalizeTaskCancellationResult,
 ) -> AppResult<bool> {
     match result {
         FinalizeTaskCancellationResult::Finalized => Ok(true),
-        FinalizeTaskCancellationResult::Missing | FinalizeTaskCancellationResult::NotCurrent => {
-            Ok(false)
-        }
-        FinalizeTaskCancellationResult::NotCancelled { status } => {
-            Err(AppError::InvalidTaskStatus {
-                action: "finalize cancellation",
-                id: id.to_string(),
-                status: format!("{:?}", status),
-            })
-        }
+        FinalizeTaskCancellationResult::Missing
+        | FinalizeTaskCancellationResult::NotCurrent
+        | FinalizeTaskCancellationResult::NotCancelled => Ok(false),
     }
 }

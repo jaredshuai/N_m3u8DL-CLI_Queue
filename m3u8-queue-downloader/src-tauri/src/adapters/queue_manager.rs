@@ -75,7 +75,6 @@ impl QueueManager {
             .update_and_persist_when(
                 |state| {
                     application_finalize_task_cancellation_result(
-                        id,
                         state.finalize_task_cancellation(id),
                     )
                 },

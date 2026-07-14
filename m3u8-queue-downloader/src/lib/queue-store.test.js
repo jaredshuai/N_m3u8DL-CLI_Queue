@@ -93,11 +93,18 @@ test('runStopTask reloads queue state when the stop command fails', async () => 
       reloadQueueState: async () => {
         calls.push(['reload']);
       },
+      onError: (error) => {
+        calls.push(['error', error.message]);
+      },
     }),
     /stop failed/,
   );
 
-  assert.deepEqual(calls, [['invoke'], ['reload']]);
+  assert.deepEqual(calls, [
+    ['invoke'],
+    ['error', 'stop failed'],
+    ['reload'],
+  ]);
 });
 
 test('isTaskTerminationPending identifies only the cancelled current task', () => {

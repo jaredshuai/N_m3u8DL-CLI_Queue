@@ -307,7 +307,7 @@ pub(crate) enum StopTaskResult {
 pub(crate) enum FinalizeTaskCancellationResult {
     Finalized,
     Missing,
-    NotCancelled { status: TaskStatus },
+    NotCancelled,
     NotCurrent,
 }
 
@@ -437,9 +437,7 @@ impl QueueAggregate {
             return FinalizeTaskCancellationResult::Missing;
         };
         if !task.status.is_cancelled() {
-            return FinalizeTaskCancellationResult::NotCancelled {
-                status: task.status.clone(),
-            };
+            return FinalizeTaskCancellationResult::NotCancelled;
         }
         if self.current_task_id() != Some(id) {
             return FinalizeTaskCancellationResult::NotCurrent;

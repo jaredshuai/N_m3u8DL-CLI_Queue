@@ -21,7 +21,7 @@
 | **任务状态** | 五种：`Waiting`（等待中）、`Downloading`（下载中）、`Completed`（完成）、`Failed`（失败）、`Cancelled`（用户停止）。**注意**：同一个状态在每一层有各自的类型，详见 `docs/adr/0003-*.md` 和 `docs/adr/0009-*.md` |
 | **队列（Queue）** | 一组排好序的任务，串行处理（同一时间只下载一个） |
 | **活跃任务** | 还没结束的任务——也就是"等待中"或"下载中"的。代码里叫 `is_live_work`，用来判断队列是不是"还活着" |
-| **停止任务（Stop Task）** | 用户主动终止 `Downloading` 子进程，把任务转为 `Cancelled`。进程 waiter 确认真实退出前仍保留 current slot，阻止并发下载和过早重试/删除；退出后可删除、可手动重试，但不走失败自动重试、不进入历史，也不触发自动关机倒计时。详见 `docs/adr/0009-*.md` |
+| **停止任务（Stop Task）** | 用户主动终止 `Downloading` 子进程，把任务转为 `Cancelled`。持有 `Child` 的 waiter 确认真实退出前仍保留 current slot；Unix 还需确认整个 process group 消失，阻止后代存活时并发下载和过早重试/删除。取消收尾持久化失败可通过再次停止幂等恢复。退出后可删除、可手动重试，但不走失败自动重试、不进入历史，也不触发自动关机倒计时。详见 `docs/adr/0009-*.md` |
 | **历史（History）** | 已经到头的完成或失败任务留下的不可变记录；`Cancelled` 当前不进入历史 |
 | **产物（Artifact）** | 下载完成后落在磁盘上的视频文件。ADR-0005 采纳后目标类型是 `ArtifactPath`（application 层 newtype）。详见 `docs/adr/0005-*.md` |
 | **产物目录（Artifact Dir）** | 产物所在目录，ADR-0005 目标类型 `ArtifactDir`（application 层 newtype，absolute non-canonical）。和 `ArtifactPath` 配对：dir 是输入（要盘点的目录），path 是输出（找到的产物路径） |

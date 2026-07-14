@@ -4,6 +4,7 @@ import {
   createSessionProgressState,
   trackSessionTask as trackSessionTaskState,
 } from './session-progress.js';
+import { showAppErrorNotice } from './settings-store.js';
 import { derived, writable } from 'svelte/store';
 
 export const tasks = writable([]);
@@ -71,9 +72,15 @@ export async function loadQueueState() {
   return loadLatestQueueState();
 }
 
-export async function runStopTask(taskId, { invokeCommand, reloadQueueState }) {
+export async function runStopTask(
+  taskId,
+  { invokeCommand, reloadQueueState, onError = () => {} },
+) {
   try {
     await invokeCommand('stop_task', { taskId });
+  } catch (error) {
+    onError(error);
+    throw error;
   } finally {
     // Backend emits a queue-state-changed event via the lifecycle handler, but
     // proactively re-read state so the UI reflects Cancelled immediately even
@@ -86,6 +93,7 @@ export async function stopTask(taskId) {
   return runStopTask(taskId, {
     invokeCommand: invoke,
     reloadQueueState: loadQueueState,
+    onError: (error) => showAppErrorNotice(error, '停止任务失败'),
   });
 }
 

@@ -15,13 +15,19 @@ use std::collections::HashMap;
 use std::collections::HashMap as StdHashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{path::BaseDirectory, Manager};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
 use tokio::sync::mpsc;
-use tokio::sync::{watch, Mutex, OwnedMutexGuard};
+use tokio::sync::{oneshot, watch, Mutex, OwnedMutexGuard};
+#[cfg(unix)]
+use tokio::time::sleep;
+#[cfg(any(unix, test))]
+use tokio::time::Instant;
 use tokio::time::{timeout, Duration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,18 +38,27 @@ enum ProcessTerminationState {
     Aborted,
 }
 
+type KillProcessFuture =
+    Pin<Box<dyn Future<Output = AppResult<KillProcessResult>> + Send + 'static>>;
+type KillProcessOperation = Box<dyn FnOnce(u32) -> KillProcessFuture + Send + 'static>;
+
+struct ProcessTerminationRequest {
+    kill: KillProcessOperation,
+    response_tx: oneshot::Sender<AppResult<()>>,
+}
+
 #[derive(Clone)]
 struct RunningProcess {
-    pid: u32,
     generation: u64,
     termination_tx: watch::Sender<ProcessTerminationState>,
-    exit_rx: watch::Receiver<bool>,
+    termination_request_tx: mpsc::UnboundedSender<ProcessTerminationRequest>,
 }
 
 struct ProcessWaitRegistration {
+    pid: u32,
     generation: u64,
     termination_rx: watch::Receiver<ProcessTerminationState>,
-    exit_tx: watch::Sender<bool>,
+    termination_request_rx: mpsc::UnboundedReceiver<ProcessTerminationRequest>,
 }
 
 #[cfg(test)]
@@ -154,14 +169,48 @@ impl TaskProcessSupervisor for TaskRunner {
 }
 
 const MAX_CLI_SEARCH_DEPTH: usize = 8;
+const KILL_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_EXIT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+const TERMINATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 const GRACEFUL_TERMINATION_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(unix)]
+const PROCESS_GROUP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+#[cfg(any(unix, test))]
+fn remaining_until_deadline(deadline: Instant, now: Instant) -> Option<Duration> {
+    deadline.checked_duration_since(now)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KillProcessResult {
     Killed,
     AlreadyExited,
+}
+
+async fn run_kill_future_with_timeout<Fut>(
+    kill_future: Fut,
+    kill_timeout: Duration,
+) -> AppResult<KillProcessResult>
+where
+    Fut: Future<Output = AppResult<KillProcessResult>>,
+{
+    timeout(kill_timeout, kill_future).await.map_err(|_| {
+        AppError::message("Timed out waiting for the OS process termination command")
+    })?
+}
+
+#[cfg(any(target_os = "windows", test))]
+async fn run_command_output_with_timeout(
+    command: &mut tokio::process::Command,
+    command_timeout: Duration,
+    description: &str,
+) -> AppResult<std::process::Output> {
+    command.kill_on_drop(true);
+    timeout(command_timeout, command.output())
+        .await
+        .map_err(|_| AppError::message(format!("Timed out waiting for {description}")))?
+        .map_err(|err| AppError::message(format!("Failed to launch {description}: {err}")))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -333,27 +382,17 @@ impl TaskRunner {
             let processes = self.running_processes.lock().await;
             processes
                 .iter()
-                .map(|(task_id, process)| (task_id.clone(), process.clone()))
+                .map(|(task_id, process)| (task_id.clone(), process.generation))
                 .collect::<Vec<_>>()
         };
 
         let mut errors = Vec::new();
-        for (task_id, process) in &running {
-            match kill_process(process.pid).await {
-                Ok(KillProcessResult::Killed) | Ok(KillProcessResult::AlreadyExited) => {
-                    if let Err(err) = confirm_process_exit_after_kill(
-                        process.pid,
-                        process.exit_rx.clone(),
-                        task_id,
-                    )
-                    .await
-                    {
-                        errors.push(format!("Failed to terminate task {task_id}: {err}"));
-                    }
-                }
-                Err(err) => {
-                    errors.push(format!("Failed to terminate task {task_id}: {err}"));
-                }
+        for (task_id, generation) in &running {
+            if let Err(err) = self
+                .request_process_termination_with(task_id, *generation, false, kill_process)
+                .await
+            {
+                errors.push(format!("Failed to terminate task {task_id}: {err}"));
             }
         }
 
@@ -418,61 +457,90 @@ impl TaskRunner {
         kill: F,
     ) -> AppResult<()>
     where
-        F: FnOnce(u32) -> Fut,
-        Fut: Future<Output = AppResult<KillProcessResult>>,
+        F: FnOnce(u32) -> Fut + Send + 'static,
+        Fut: Future<Output = AppResult<KillProcessResult>> + Send + 'static,
     {
-        let Some(process) = ({
+        self.request_process_termination_with(&claim.task_id, claim.generation, true, kill)
+            .await
+    }
+
+    async fn request_process_termination_with<F, Fut>(
+        &self,
+        task_id: &str,
+        generation: u64,
+        require_claim: bool,
+        kill: F,
+    ) -> AppResult<()>
+    where
+        F: FnOnce(u32) -> Fut + Send + 'static,
+        Fut: Future<Output = AppResult<KillProcessResult>> + Send + 'static,
+    {
+        let response_rx = {
             let processes = self.running_processes.lock().await;
-            processes
-                .get(&claim.task_id)
-                .filter(|process| process.generation == claim.generation)
-                .cloned()
-        }) else {
-            return Ok(());
+            let Some(process) = processes
+                .get(task_id)
+                .filter(|process| process.generation == generation)
+            else {
+                return Ok(());
+            };
+            let termination_state = *process.termination_tx.borrow();
+            if require_claim
+                && !matches!(
+                    termination_state,
+                    ProcessTerminationState::Claimed | ProcessTerminationState::Committed
+                )
+            {
+                return Err(AppError::message(
+                    "Task process termination claim is no longer active",
+                ));
+            }
+
+            let (response_tx, response_rx) = oneshot::channel();
+            let kill: KillProcessOperation =
+                Box::new(move |pid| Box::pin(kill(pid)) as KillProcessFuture);
+            process
+                .termination_request_tx
+                .send(ProcessTerminationRequest { kill, response_tx })
+                .map_err(|_| AppError::message("Task process waiter is no longer available"))?;
+
+            if termination_state != ProcessTerminationState::Committed {
+                process
+                    .termination_tx
+                    .send(ProcessTerminationState::Committed)
+                    .map_err(|_| AppError::message("Task process waiter is no longer available"))?;
+            }
+
+            response_rx
         };
 
-        let kill_result = kill(process.pid).await;
-        {
-            let processes = self.running_processes.lock().await;
-            if let Some(process) = processes
-                .get(&claim.task_id)
-                .filter(|process| process.generation == claim.generation)
-            {
-                let termination_state = *process.termination_tx.borrow();
-                if termination_state == ProcessTerminationState::Claimed {
-                    let _ = process
-                        .termination_tx
-                        .send(ProcessTerminationState::Committed);
-                }
-            }
-        }
-
-        match kill_result {
-            Ok(KillProcessResult::Killed) | Ok(KillProcessResult::AlreadyExited) => {
-                confirm_process_exit_after_kill(process.pid, process.exit_rx, &claim.task_id).await
-            }
-            Err(err) => Err(err),
-        }
+        timeout(TERMINATION_REQUEST_TIMEOUT, response_rx)
+            .await
+            .map_err(|_| {
+                AppError::message(format!("Timed out waiting for task {task_id} termination"))
+            })?
+            .map_err(|_| {
+                AppError::message("Task process waiter closed before termination completed")
+            })?
     }
 
     async fn register_running_task(&self, task_id: String, pid: u32) -> ProcessWaitRegistration {
         let generation = self.next_process_generation.fetch_add(1, Ordering::Relaxed);
         let (termination_tx, termination_rx) = watch::channel(ProcessTerminationState::Running);
-        let (exit_tx, exit_rx) = watch::channel(false);
+        let (termination_request_tx, termination_request_rx) = mpsc::unbounded_channel();
         let mut processes = self.running_processes.lock().await;
         processes.insert(
             task_id,
             RunningProcess {
-                pid,
                 generation,
                 termination_tx,
-                exit_rx,
+                termination_request_tx,
             },
         );
         ProcessWaitRegistration {
+            pid,
             generation,
             termination_rx,
-            exit_tx,
+            termination_request_rx,
         }
     }
 
@@ -489,14 +557,23 @@ impl TaskRunner {
 
         tokio::spawn(async move {
             let mut child = child;
-            let result = child.wait().await;
-            let termination_state = resolve_process_exit(
-                &running_processes,
+            let ProcessWaitRegistration {
+                pid,
+                generation,
+                termination_rx,
+                mut termination_request_rx,
+            } = registration;
+            let (result, termination_response) = wait_for_child_or_termination(
+                &mut child,
+                pid,
                 &task_id,
-                registration.generation,
-                registration.termination_rx,
+                &mut termination_request_rx,
             )
             .await;
+            let termination_state =
+                resolve_process_exit(&running_processes, &task_id, generation, termination_rx)
+                    .await;
+            let exit_error = result.as_ref().err().cloned();
 
             // ADR-0005: the adapter no longer locates the artifact. It only
             // reports the raw facts (download_dir + save_name) and lets the
@@ -527,8 +604,8 @@ impl TaskRunner {
                             error_message: error_msg,
                         }
                     }
-                    Err(e) => {
-                        let error_msg = format!("Process error: {}", e);
+                    Err(error) => {
+                        let error_msg = format!("Process error: {}", error);
                         TaskLifecycleEvent::Failed {
                             id: task_id,
                             error_message: error_msg,
@@ -540,7 +617,10 @@ impl TaskRunner {
             if let Some(sender) = lifecycle_sender {
                 let _ = sender.send(event);
             }
-            let _ = registration.exit_tx.send(true);
+            if let Some(response_tx) = termination_response {
+                let _ = response_tx.send(Ok(()));
+            }
+            complete_pending_termination_requests(&mut termination_request_rx, exit_error);
         });
     }
 
@@ -574,14 +654,23 @@ impl TaskRunner {
 
         tokio::spawn(async move {
             let mut child = child;
-            let result = child.wait().await;
-            let termination_state = resolve_process_exit(
-                &running_processes,
+            let ProcessWaitRegistration {
+                pid,
+                generation,
+                termination_rx,
+                mut termination_request_rx,
+            } = registration;
+            let (result, termination_response) = wait_for_child_or_termination(
+                &mut child,
+                pid,
                 &task_id,
-                registration.generation,
-                registration.termination_rx,
+                &mut termination_request_rx,
             )
             .await;
+            let termination_state =
+                resolve_process_exit(&running_processes, &task_id, generation, termination_rx)
+                    .await;
+            let exit_error = result.as_ref().err().cloned();
 
             if let Some(sender) = lifecycle_sender {
                 let event = if termination_state == ProcessTerminationState::Committed {
@@ -607,15 +696,18 @@ impl TaskRunner {
                                 status.code().unwrap_or(-1)
                             ),
                         },
-                        Err(err) => TaskLifecycleEvent::Failed {
+                        Err(error) => TaskLifecycleEvent::Failed {
                             id: task_id,
-                            error_message: format!("Process error: {err}"),
+                            error_message: format!("Process error: {error}"),
                         },
                     }
                 };
                 let _ = sender.send(event);
             }
-            let _ = registration.exit_tx.send(true);
+            if let Some(response_tx) = termination_response {
+                let _ = response_tx.send(Ok(()));
+            }
+            complete_pending_termination_requests(&mut termination_request_rx, exit_error);
         });
     }
 
@@ -843,6 +935,292 @@ fn send_output_event(
     }
 }
 
+async fn wait_for_child_or_termination(
+    child: &mut Child,
+    pid: u32,
+    task_id: &str,
+    termination_request_rx: &mut mpsc::UnboundedReceiver<ProcessTerminationRequest>,
+) -> (
+    Result<ExitStatus, String>,
+    Option<oneshot::Sender<AppResult<()>>>,
+) {
+    loop {
+        tokio::select! {
+            result = child.wait() => {
+                return wait_for_reaped_child_process_group(
+                    pid,
+                    task_id,
+                    result.map_err(|err| err.to_string()),
+                    termination_request_rx,
+                )
+                .await;
+            }
+            request = termination_request_rx.recv() => {
+                let Some(request) = request else {
+                    return (
+                        child.wait().await.map_err(|err| err.to_string()),
+                        None,
+                    );
+                };
+                match terminate_child_process(child, task_id, request.kill).await {
+                    Ok(status) => return (Ok(status), Some(request.response_tx)),
+                    Err(err) => {
+                        let _ = request.response_tx.send(Err(err));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn complete_pending_termination_requests(
+    termination_request_rx: &mut mpsc::UnboundedReceiver<ProcessTerminationRequest>,
+    exit_error: Option<String>,
+) {
+    while let Ok(request) = termination_request_rx.try_recv() {
+        let result = match &exit_error {
+            Some(error) => Err(AppError::message(format!(
+                "Process waiter failed before termination completed: {error}"
+            ))),
+            None => Ok(()),
+        };
+        let _ = request.response_tx.send(result);
+    }
+}
+
+#[cfg(any(unix, test))]
+async fn complete_reaped_termination_request_with<F, Fut>(
+    pid: u32,
+    request: ProcessTerminationRequest,
+    cleanup: F,
+) -> Option<oneshot::Sender<AppResult<()>>>
+where
+    F: FnOnce(u32, KillProcessOperation) -> Fut,
+    Fut: Future<Output = AppResult<()>>,
+{
+    let ProcessTerminationRequest { kill, response_tx } = request;
+    match cleanup(pid, kill).await {
+        Ok(()) => Some(response_tx),
+        Err(err) => {
+            let _ = response_tx.send(Err(err));
+            None
+        }
+    }
+}
+
+async fn wait_for_child_exit(
+    child: &mut Child,
+    wait_timeout: Duration,
+    task_id: &str,
+) -> AppResult<ExitStatus> {
+    match timeout(wait_timeout, child.wait()).await {
+        Ok(Ok(status)) => Ok(status),
+        Ok(Err(err)) => Err(AppError::message(format!(
+            "Failed waiting for task {task_id} process exit: {err}"
+        ))),
+        Err(_) => Err(AppError::message(format!(
+            "Timed out waiting for task {task_id} process exit"
+        ))),
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn terminate_child_process(
+    child: &mut Child,
+    task_id: &str,
+    kill: KillProcessOperation,
+) -> AppResult<ExitStatus> {
+    let pid = child
+        .id()
+        .ok_or_else(|| AppError::message("Task process has already exited"))?;
+    let _ = run_kill_future_with_timeout(kill(pid), KILL_COMMAND_TIMEOUT).await?;
+    wait_for_child_exit(child, PROCESS_EXIT_CONFIRM_TIMEOUT, task_id).await
+}
+
+#[cfg(unix)]
+async fn terminate_child_process(
+    child: &mut Child,
+    task_id: &str,
+    kill: KillProcessOperation,
+) -> AppResult<ExitStatus> {
+    let pid = child
+        .id()
+        .ok_or_else(|| AppError::message("Task process has already exited"))?;
+    let _ = run_kill_future_with_timeout(kill(pid), KILL_COMMAND_TIMEOUT).await?;
+
+    let graceful_status = match timeout(GRACEFUL_TERMINATION_TIMEOUT, child.wait()).await {
+        Ok(Ok(status)) => Some(status),
+        Ok(Err(err)) => {
+            return Err(AppError::message(format!(
+                "Failed waiting for task {task_id} process exit: {err}"
+            )));
+        }
+        Err(_) => None,
+    };
+
+    if let Some(status) = graceful_status {
+        if wait_for_process_group_exit(pid, GRACEFUL_TERMINATION_TIMEOUT).await? {
+            return Ok(status);
+        }
+
+        let _ = run_kill_future_with_timeout(force_kill_process(pid), KILL_COMMAND_TIMEOUT).await?;
+        if wait_for_process_group_exit(pid, PROCESS_EXIT_CONFIRM_TIMEOUT).await? {
+            return Ok(status);
+        }
+        return Err(AppError::message(format!(
+            "Timed out waiting for task {task_id} process group to exit after SIGKILL"
+        )));
+    }
+
+    let _ = run_kill_future_with_timeout(force_kill_process(pid), KILL_COMMAND_TIMEOUT).await?;
+    let status = wait_for_child_exit(child, PROCESS_EXIT_CONFIRM_TIMEOUT, task_id).await?;
+    if wait_for_process_group_exit(pid, PROCESS_EXIT_CONFIRM_TIMEOUT).await? {
+        return Ok(status);
+    }
+    Err(AppError::message(format!(
+        "Timed out waiting for task {task_id} process group to exit after SIGKILL"
+    )))
+}
+
+#[cfg(unix)]
+async fn terminate_reaped_process_group(
+    pid: u32,
+    task_id: &str,
+    kill: KillProcessOperation,
+) -> AppResult<()> {
+    if !process_group_exists(pid).await? {
+        return Ok(());
+    }
+
+    let _ = run_kill_future_with_timeout(kill(pid), KILL_COMMAND_TIMEOUT).await?;
+    if wait_for_process_group_exit(pid, GRACEFUL_TERMINATION_TIMEOUT).await? {
+        return Ok(());
+    }
+
+    let _ = run_kill_future_with_timeout(force_kill_process(pid), KILL_COMMAND_TIMEOUT).await?;
+    if wait_for_process_group_exit(pid, PROCESS_EXIT_CONFIRM_TIMEOUT).await? {
+        return Ok(());
+    }
+    Err(AppError::message(format!(
+        "Timed out waiting for task {task_id} process group to exit after SIGKILL"
+    )))
+}
+
+#[cfg(unix)]
+async fn wait_for_reaped_child_process_group(
+    pid: u32,
+    task_id: &str,
+    result: Result<ExitStatus, String>,
+    termination_request_rx: &mut mpsc::UnboundedReceiver<ProcessTerminationRequest>,
+) -> (
+    Result<ExitStatus, String>,
+    Option<oneshot::Sender<AppResult<()>>>,
+) {
+    loop {
+        if let Ok(request) = termination_request_rx.try_recv() {
+            if let Some(response_tx) =
+                complete_reaped_termination_request_with(pid, request, |pid, kill| {
+                    terminate_reaped_process_group(pid, task_id, kill)
+                })
+                .await
+            {
+                return (result, Some(response_tx));
+            }
+            continue;
+        }
+
+        match process_group_exists(pid).await {
+            Ok(false) => return (result, None),
+            Ok(true) => {}
+            Err(err) => {
+                return (
+                    Err(format!(
+                        "Failed to confirm task {task_id} process group exit: {err}"
+                    )),
+                    None,
+                );
+            }
+        }
+
+        tokio::select! {
+            request = termination_request_rx.recv() => {
+                let Some(request) = request else {
+                    return (result, None);
+                };
+                if let Some(response_tx) = complete_reaped_termination_request_with(
+                    pid,
+                    request,
+                    |pid, kill| terminate_reaped_process_group(pid, task_id, kill),
+                )
+                .await
+                {
+                    return (result, Some(response_tx));
+                }
+            }
+            _ = sleep(PROCESS_GROUP_POLL_INTERVAL) => {}
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_reaped_child_process_group(
+    _pid: u32,
+    _task_id: &str,
+    result: Result<ExitStatus, String>,
+    _termination_request_rx: &mut mpsc::UnboundedReceiver<ProcessTerminationRequest>,
+) -> (
+    Result<ExitStatus, String>,
+    Option<oneshot::Sender<AppResult<()>>>,
+) {
+    (result, None)
+}
+
+#[cfg(unix)]
+async fn wait_for_process_group_exit(pid: u32, wait_timeout: Duration) -> AppResult<bool> {
+    let deadline = Instant::now() + wait_timeout;
+    loop {
+        if remaining_until_deadline(deadline, Instant::now()).is_none() {
+            return Ok(false);
+        }
+        if !process_group_exists(pid).await? {
+            return Ok(true);
+        }
+        let Some(remaining) = remaining_until_deadline(deadline, Instant::now()) else {
+            return Ok(false);
+        };
+        sleep(remaining.min(PROCESS_GROUP_POLL_INTERVAL)).await;
+    }
+}
+
+#[cfg(unix)]
+async fn process_group_exists(pid: u32) -> AppResult<bool> {
+    let process_group = process_group_target(pid)?;
+    // SAFETY: libc::kill reads only the integer target and signal values.
+    let result = unsafe { libc::kill(process_group, 0) };
+    if result == 0 {
+        return Ok(true);
+    }
+
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(AppError::message(format!(
+            "Failed to probe process group {pid}: {error}"
+        ))),
+    }
+}
+
+#[cfg(unix)]
+fn process_group_target(pid: u32) -> AppResult<libc::pid_t> {
+    let pid = libc::pid_t::try_from(pid)
+        .map_err(|_| AppError::message(format!("Process ID {pid} exceeds pid_t range")))?;
+    if pid == 0 {
+        return Err(AppError::message("Process ID must be non-zero"));
+    }
+    Ok(-pid)
+}
+
 async fn resolve_process_exit(
     running_processes: &Arc<Mutex<StdHashMap<String, RunningProcess>>>,
     task_id: &str,
@@ -880,66 +1258,6 @@ async fn resolve_process_exit(
     }
 }
 
-async fn confirm_process_exit_after_kill(
-    pid: u32,
-    mut exit_rx: watch::Receiver<bool>,
-    task_id: &str,
-) -> AppResult<()> {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = pid;
-        if wait_for_process_exit(&mut exit_rx, PROCESS_EXIT_CONFIRM_TIMEOUT, task_id).await? {
-            return Ok(());
-        }
-        return Err(AppError::message(format!(
-            "Timed out waiting for task {task_id} to exit after taskkill"
-        )));
-    }
-
-    #[cfg(unix)]
-    {
-        if wait_for_process_exit(&mut exit_rx, GRACEFUL_TERMINATION_TIMEOUT, task_id).await? {
-            return Ok(());
-        }
-
-        force_kill_process(pid).await?;
-        if wait_for_process_exit(&mut exit_rx, PROCESS_EXIT_CONFIRM_TIMEOUT, task_id).await? {
-            return Ok(());
-        }
-        Err(AppError::message(format!(
-            "Timed out waiting for task {task_id} to exit after SIGKILL"
-        )))
-    }
-}
-
-async fn wait_for_process_exit(
-    exit_rx: &mut watch::Receiver<bool>,
-    wait_timeout: Duration,
-    task_id: &str,
-) -> AppResult<bool> {
-    if *exit_rx.borrow() {
-        return Ok(true);
-    }
-
-    match timeout(wait_timeout, async {
-        loop {
-            exit_rx.changed().await.map_err(|_| {
-                AppError::message(format!(
-                    "Process waiter for task {task_id} closed before reporting exit"
-                ))
-            })?;
-            if *exit_rx.borrow() {
-                return Ok::<(), AppError>(());
-            }
-        }
-    })
-    .await
-    {
-        Ok(result) => result.map(|()| true),
-        Err(_) => Ok(false),
-    }
-}
-
 #[cfg(target_os = "windows")]
 async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
     let mut cmd = tokio::process::Command::new("taskkill");
@@ -950,10 +1268,8 @@ async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| AppError::message(format!("Failed to launch taskkill: {}", e)))?;
+    let output =
+        run_command_output_with_timeout(&mut cmd, KILL_COMMAND_TIMEOUT, "taskkill").await?;
 
     if output.status.success() {
         return Ok(KillProcessResult::Killed);
@@ -979,39 +1295,34 @@ async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
 
 #[cfg(unix)]
 async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
-    send_process_group_signal(pid, "-TERM").await
+    send_process_group_signal(pid, libc::SIGTERM, "SIGTERM").await
 }
 
 #[cfg(unix)]
 async fn force_kill_process(pid: u32) -> AppResult<KillProcessResult> {
-    send_process_group_signal(pid, "-KILL").await
+    send_process_group_signal(pid, libc::SIGKILL, "SIGKILL").await
 }
 
 #[cfg(unix)]
-async fn send_process_group_signal(pid: u32, signal: &str) -> AppResult<KillProcessResult> {
-    let process_group = format!("-{pid}");
-    let output = tokio::process::Command::new("kill")
-        .args([signal, "--", process_group.as_str()])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| AppError::message(format!("Failed to launch kill: {}", e)))?;
-
-    if output.status.success() {
+async fn send_process_group_signal(
+    pid: u32,
+    signal: libc::c_int,
+    signal_name: &str,
+) -> AppResult<KillProcessResult> {
+    let process_group = process_group_target(pid)?;
+    // SAFETY: libc::kill reads only the integer target and signal values.
+    let result = unsafe { libc::kill(process_group, signal) };
+    if result == 0 {
         return Ok(KillProcessResult::Killed);
     }
 
-    let stderr = decode_cli_bytes_lossy(&output.stderr).to_lowercase();
-    if stderr.contains("no such process") {
-        return Ok(KillProcessResult::AlreadyExited);
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(KillProcessResult::AlreadyExited),
+        _ => Err(AppError::message(format!(
+            "Failed to send {signal_name} to process group {pid}: {error}"
+        ))),
     }
-
-    Err(AppError::message(format!(
-        "kill {signal} exited with code {}: {}",
-        output.status.code().unwrap_or(-1),
-        stderr.trim()
-    )))
 }
 
 #[cfg(test)]
@@ -1021,15 +1332,42 @@ mod tests {
         TaskRunner,
     };
     use crate::application::app_error::AppError;
-    use crate::application::process_runner_outcomes::TaskTerminationClaimOutcome;
+    use crate::application::process_runner_outcomes::{
+        TaskTerminationClaim, TaskTerminationClaimOutcome,
+    };
     use crate::application::task_process_events::{TaskLifecycleEvent, TaskOutputEvent};
     use crate::test_support::{spawn_sleeping_child, spawn_success_child};
     use std::fs;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::AsyncWriteExt;
     use tokio::sync::mpsc;
     use tokio::time::timeout;
     use uuid::Uuid;
+
+    #[cfg(target_os = "windows")]
+    fn delayed_marker_command(marker: &std::path::Path) -> tokio::process::Command {
+        let escaped_marker = marker.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "Start-Sleep -Milliseconds 750; Set-Content -LiteralPath '{escaped_marker}' -Value done"
+        );
+        let mut command = tokio::process::Command::new("powershell");
+        command.args(["-NoProfile", "-Command", &script]);
+        command
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn delayed_marker_command(marker: &std::path::Path) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("sh");
+        command.args([
+            "-c",
+            "sleep 0.75; printf done > \"$1\"",
+            "delayed-marker",
+            marker.to_string_lossy().as_ref(),
+        ]);
+        command
+    }
 
     #[test]
     fn stderr_stream_does_not_drive_terminal_active_line() {
@@ -1239,7 +1577,7 @@ mod tests {
         };
         runner.abort_task_termination(&claim).await;
 
-        let event = timeout(Duration::from_secs(3), rx.recv())
+        let event = timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("natural lifecycle event timeout")
             .expect("natural lifecycle event");
@@ -1277,7 +1615,7 @@ mod tests {
         assert!(result.is_err());
         assert!(runner.is_task_running(&task_id).await);
 
-        let event = timeout(Duration::from_secs(3), rx.recv())
+        let event = timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("cancelled lifecycle event timeout")
             .expect("cancelled lifecycle event");
@@ -1328,6 +1666,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_exit_claim_does_not_invoke_os_kill_for_a_reaped_pid() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner = TaskRunner::with_lifecycle_sender(tx);
+        let task_id = "task-post-exit-claim".to_string();
+        let child = spawn_success_child().await;
+
+        runner
+            .insert_running_task_for_test(task_id.clone(), child)
+            .await;
+        let processes = runner.running_processes.lock().await;
+        let process = processes.get(&task_id).expect("registered process").clone();
+        let claim = TaskTerminationClaim {
+            task_id: task_id.clone(),
+            generation: process.generation,
+        };
+        runner.begin_wait_for_test(&task_id).await;
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let _ = process
+            .termination_tx
+            .send(ProcessTerminationState::Claimed);
+        drop(processes);
+
+        let kill_called = Arc::new(AtomicBool::new(false));
+        let kill_called_by_request = Arc::clone(&kill_called);
+        runner
+            .terminate_claimed_task_with(&claim, move |_| async move {
+                kill_called_by_request.store(true, Ordering::SeqCst);
+                Ok(super::KillProcessResult::AlreadyExited)
+            })
+            .await
+            .expect("complete already exited cancellation");
+
+        let event = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("cancelled lifecycle event timeout")
+            .expect("cancelled lifecycle event");
+        assert!(matches!(
+            event,
+            TaskLifecycleEvent::Cancelled { id, .. } if id == task_id
+        ));
+        assert!(!kill_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn kill_future_timeout_is_reported_by_the_termination_layer() {
+        let result = timeout(
+            Duration::from_millis(200),
+            super::run_kill_future_with_timeout(std::future::pending(), Duration::from_millis(25)),
+        )
+        .await
+        .expect("termination layer should enforce its own timeout");
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn timed_out_os_helper_cannot_continue_after_timeout() {
+        let marker = std::env::temp_dir().join(format!("kill-helper-marker-{}", Uuid::new_v4()));
+        let mut command = delayed_marker_command(&marker);
+
+        let result = super::run_command_output_with_timeout(
+            &mut command,
+            Duration::from_millis(150),
+            "test OS helper",
+        )
+        .await;
+
+        assert!(result.is_err());
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        assert!(!marker.exists());
+        let _ = fs::remove_file(marker);
+    }
+
+    #[test]
+    fn process_group_poll_stops_when_its_deadline_expires() {
+        let now = tokio::time::Instant::now();
+        let deadline = now + Duration::from_millis(80);
+
+        assert_eq!(
+            super::remaining_until_deadline(deadline, now + Duration::from_millis(30)),
+            Some(Duration::from_millis(50))
+        );
+        assert_eq!(
+            super::remaining_until_deadline(deadline, deadline + Duration::from_millis(1)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn reaped_termination_request_reports_cleanup_failure_for_retry() {
+        let kill_called = Arc::new(AtomicBool::new(false));
+        let kill_called_by_request = Arc::clone(&kill_called);
+        let kill: super::KillProcessOperation = Box::new(move |_| {
+            Box::pin(async move {
+                kill_called_by_request.store(true, Ordering::SeqCst);
+                Ok(super::KillProcessResult::Killed)
+            }) as super::KillProcessFuture
+        });
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let request = super::ProcessTerminationRequest { kill, response_tx };
+
+        let completed =
+            super::complete_reaped_termination_request_with(42, request, |pid, kill| async move {
+                let _ = kill(pid).await?;
+                Err(AppError::message("descendant still running"))
+            })
+            .await;
+
+        assert!(completed.is_none());
+        assert!(kill_called.load(Ordering::SeqCst));
+        assert!(response_rx.await.expect("termination response").is_err());
+    }
+
+    #[tokio::test]
     async fn abort_does_not_downgrade_a_committed_cancellation() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let runner = TaskRunner::with_lifecycle_sender(tx);
@@ -1362,7 +1815,7 @@ mod tests {
         };
         runner.abort_task_termination(&retry_claim).await;
 
-        let event = timeout(Duration::from_secs(3), rx.recv())
+        let event = timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("cancelled lifecycle event timeout")
             .expect("cancelled lifecycle event");
@@ -1409,6 +1862,87 @@ mod tests {
             event,
             TaskLifecycleEvent::Completed { id, .. } if id == task_id
         ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_termination_kills_descendants_after_group_leader_exits() {
+        use tokio::process::Command;
+
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "trap 'exit 0' TERM; (trap '' TERM; sleep 30) & wait"])
+            .process_group(0);
+        let mut child = command.spawn().expect("spawn process group test child");
+        let pid = child.id().expect("process group leader pid");
+        let kill: super::KillProcessOperation =
+            Box::new(|pid| Box::pin(super::kill_process(pid)) as super::KillProcessFuture);
+
+        let result = super::terminate_child_process(&mut child, "unix-process-group", kill).await;
+        if result.is_err() {
+            let _ = super::force_kill_process(pid).await;
+            let _ = child.wait().await;
+        }
+
+        result.expect("terminate full Unix process group");
+        assert!(!super::process_group_exists(pid)
+            .await
+            .expect("probe terminated process group"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn post_exit_claim_terminates_surviving_unix_process_group() {
+        use tokio::process::Command;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner = TaskRunner::with_lifecycle_sender(tx);
+        let task_id = "task-reaped-unix-group".to_string();
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "(trap '' HUP; sleep 30) & exit 0"])
+            .process_group(0);
+        let child = command.spawn().expect("spawn reaped group leader");
+        let pid = child.id().expect("process group leader pid");
+
+        runner
+            .insert_running_task_for_test(task_id.clone(), child)
+            .await;
+        let TaskTerminationClaimOutcome::Claimed(claim) = runner
+            .claim_task_termination(&task_id)
+            .await
+            .expect("claim reaped process group")
+        else {
+            panic!("process group should be claimable");
+        };
+        runner.begin_wait_for_test(&task_id).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(super::process_group_exists(pid)
+            .await
+            .expect("probe surviving descendant"));
+
+        let kill_called = Arc::new(AtomicBool::new(false));
+        let kill_called_by_request = Arc::clone(&kill_called);
+        runner
+            .terminate_claimed_task_with(&claim, move |pid| async move {
+                kill_called_by_request.store(true, Ordering::SeqCst);
+                super::kill_process(pid).await
+            })
+            .await
+            .expect("terminate reaped process group");
+
+        let event = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("cancelled lifecycle event timeout")
+            .expect("cancelled lifecycle event");
+        assert!(matches!(
+            event,
+            TaskLifecycleEvent::Cancelled { id, .. } if id == task_id
+        ));
+        assert!(kill_called.load(Ordering::SeqCst));
+        assert!(!super::process_group_exists(pid)
+            .await
+            .expect("probe terminated process group"));
     }
 
     #[test]

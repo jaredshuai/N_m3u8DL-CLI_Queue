@@ -666,32 +666,42 @@ impl<'a> QueueSchedulingPorts<'a> {
     /// acknowledges shutdown if needed, and drives queue continuation.
     /// Distinct from `Failed`: skips the retry policy entirely. See ADR-0009.
     pub(crate) async fn handle_cancelled_child_exit(&self, task_id: &str, _error_message: &str) {
+        if let Err(err) = self
+            .recover_cancelled_child_exit(task_id, _error_message)
+            .await
+        {
+            self.diagnostics.warn(&format!(
+                "Failed to finalize cancellation for task {}: {}",
+                task_id, err
+            ));
+        }
+    }
+
+    pub(crate) async fn recover_cancelled_child_exit(
+        &self,
+        task_id: &str,
+        _error_message: &str,
+    ) -> AppResult<()> {
         self.clear_child_exit_terminal_active_line(task_id);
-        self.continue_child_exit_unless_shutting_down(|| async {
-            match self
-                .queue_repository
-                .finalize_task_cancellation(task_id)
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) => return,
-                Err(err) => {
-                    self.diagnostics.warn(&format!(
-                        "Failed to finalize cancellation for task {}: {}",
-                        task_id, err
-                    ));
-                    return;
-                }
-            }
-            self.diagnostics
-                .warn(&format!("Task {} cancelled by user", task_id));
-            // Drive queue continuation (mark changed, schedule next, finish
-            // run if idle) but do NOT trigger auto-shutdown — cancellation
-            // by the user is not "all tasks completed". Codex P1 on PR #13.
-            self.drive_child_exit_queue_and_report_finished("cancellation")
-                .await;
-        })
-        .await;
+        if self.acknowledge_shutdown_child_exit_if_needed().await {
+            return Ok(());
+        }
+        if !self
+            .queue_repository
+            .finalize_task_cancellation(task_id)
+            .await?
+        {
+            return Ok(());
+        }
+
+        self.diagnostics
+            .warn(&format!("Task {} cancelled by user", task_id));
+        // Drive queue continuation (mark changed, schedule next, finish
+        // run if idle) but do NOT trigger auto-shutdown — cancellation
+        // by the user is not "all tasks completed". Codex P1 on PR #13.
+        self.drive_child_exit_queue_and_report_finished("cancellation")
+            .await;
+        Ok(())
     }
 
     async fn acknowledge_shutdown_child_exit_if_needed(&self) -> bool {
