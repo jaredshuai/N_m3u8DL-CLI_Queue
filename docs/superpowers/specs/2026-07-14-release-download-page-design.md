@@ -22,7 +22,8 @@ or replacing the existing `app-v0.2.1` tag.
 - Publish one Windows x64 installer and one Windows x64 portable archive.
 - Give both assets explicit versioned names.
 - Generate release notes from commits since the previous release.
-- Fail before Release creation when the tag, version, or assets are invalid.
+- Fail before a Release becomes public when the tag, version, or assets are
+  invalid.
 - Add a prominent README download section that sends users to Latest Release.
 
 ## Non-Goals
@@ -32,6 +33,7 @@ or replacing the existing `app-v0.2.1` tag.
 - No change to the `Package GUI` workflow used for daily test packages.
 - No code-signing work in this change.
 - No rewrite of existing release tags or assets.
+- No branch-based or untagged manual release path.
 
 ## Release Flow
 
@@ -43,8 +45,18 @@ or replacing the existing `app-v0.2.1` tag.
 6. The workflow prepares and compresses the portable directory.
 7. A verification step requires exactly one non-empty installer and one
    non-empty portable archive.
-8. `softprops/action-gh-release@v2` creates the GitHub Release, generates notes,
-   and uploads both verified assets in one publishing step.
+8. Release steps run only for `refs/tags/app-v*`; `workflow_dispatch` is removed
+   so every published binary has an immutable tag source.
+9. If a prior failed run left a draft for the same tag, the workflow may delete
+   that draft only. It must fail rather than modify an already published
+   release.
+10. `gh release create --draft --verify-tag --generate-notes` stages a draft
+    Release and uploads both verified assets.
+11. The workflow reads the draft back through the GitHub API and requires the
+    two exact asset names with non-zero sizes.
+12. Only after that verification does `gh release edit --draft=false` publish
+    the page. Prerelease state is derived from `-rc`, `-beta`, or `-alpha` in
+    the tag.
 
 ## Assets
 
@@ -69,11 +81,13 @@ asset URL, so future releases do not require README edits.
 
 ## Failure Handling
 
-- Tag/version mismatch stops the workflow before building or publishing.
-- Missing, duplicate, or zero-byte assets stop the workflow before Release
+- Tag/version mismatch stops the workflow before building or staging a draft.
+- Missing, duplicate, or zero-byte local assets stop the workflow before draft
   creation.
-- Release creation happens after both artifacts are ready, preventing a page
-  that temporarily contains only one download type.
+- Upload or remote verification failure may leave a draft, but never exposes a
+  partial public Release.
+- A retry may replace only an unpublished draft for the same tag. Published
+  releases are immutable to the workflow.
 - A failed workflow leaves the previous Latest Release unchanged.
 
 ## Verification
@@ -84,4 +98,3 @@ asset URL, so future releases do not require README edits.
 - Use `gh release view app-v0.2.2` to verify the release is published and has
   exactly the installer and portable assets.
 - Download or synchronize both assets and verify they are non-empty.
-
