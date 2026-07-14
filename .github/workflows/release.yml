@@ -1,41 +1,88 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      draft:
-        description: 'Create the GitHub Release as a draft'
-        required: true
-        type: boolean
-        default: true
-      prerelease:
-        description: 'Mark the GitHub Release as a prerelease'
-        required: true
-        type: boolean
-        default: false
   push:
     tags:
       - 'app-v*'
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   windows:
     name: Windows desktop package
     runs-on: windows-latest
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      installer: ${{ steps.release.outputs.installer }}
+      portable: ${{ steps.release.outputs.portable }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
+
+      - name: Resolve release metadata
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sourceShaOutput = @(git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to resolve the checked-out source commit.'
+          }
+          if ($sourceShaOutput.Count -ne 1) {
+            throw 'Source commit output must be exactly one line.'
+          }
+          $sourceSha = [string]$sourceShaOutput[0]
+          if ($sourceSha -cnotmatch '\A[0-9A-Fa-f]{40}\z') {
+            throw "Source commit is not a 40-character Git SHA: $sourceSha"
+          }
+
+          $versionBase64Output = @(node -e "const version = require('./m3u8-queue-downloader/package.json').version; if (typeof version !== 'string') { process.exit(2); } process.stdout.write(Buffer.from(version, 'utf8').toString('base64'));")
+          if ($LASTEXITCODE -ne 0) {
+            if ($LASTEXITCODE -eq 2) {
+              throw 'Package version must be a string.'
+            }
+            throw 'Failed to read and Base64-encode the package version.'
+          }
+          if ($versionBase64Output.Count -ne 1) {
+            throw 'Package version Base64 output must be exactly one line.'
+          }
+
+          $versionBase64 = [string]$versionBase64Output[0]
+          if ([string]::IsNullOrWhiteSpace($versionBase64)) {
+            throw 'Package version Base64 output must be non-empty.'
+          }
+          try {
+            $versionBytes = [Convert]::FromBase64String($versionBase64)
+            $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+            $version = $utf8.GetString($versionBytes)
+          } catch {
+            throw "Failed to decode package version Base64 as UTF-8: $($_.Exception.Message)"
+          }
+
+          if ($version -cnotmatch '\A(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(rc|beta|alpha)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?\z') {
+            throw "Unsupported package version format: $version"
+          }
+
+          $expectedTag = "app-v$version"
+          if ($env:RELEASE_TAG -cne $expectedTag) {
+            throw "Release tag $env:RELEASE_TAG does not match package version $version."
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "source_sha=$sourceSha" >> $env:GITHUB_OUTPUT
+          "installer=m3u8-queue-downloader_${version}_x64-setup.exe" >> $env:GITHUB_OUTPUT
+          "portable=m3u8-queue-downloader_${version}_portable_x64.zip" >> $env:GITHUB_OUTPUT
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -61,14 +108,19 @@ jobs:
 
       - name: Fetch ffmpeg from upstream release
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           gh release download 3.0.2 --repo nilaoda/N_m3u8DL-CLI `
             --pattern 'N_m3u8DL-CLI_v3.0.2_with_ffmpeg_and_SimpleG.zip' `
             --output upstream-bundle.zip
+          $downloadExit = $LASTEXITCODE
+          if ($downloadExit -ne 0) {
+            throw 'Failed to download the ffmpeg upstream bundle.'
+          }
           Expand-Archive upstream-bundle.zip -DestinationPath upstream-bundle -Force
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build bundled legacy CLI
         shell: pwsh
@@ -76,7 +128,13 @@ jobs:
           $ffmpeg = (Resolve-Path 'upstream-bundle/ffmpeg.exe').Path
           Push-Location m3u8-queue-downloader
           node scripts/stage-bundled-resources.mjs --ffmpeg $ffmpeg
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to stage bundled runtime resources.'
+          }
           node scripts/validate-bundled-resources.mjs
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to validate bundled runtime resources.'
+          }
           Pop-Location
 
       - name: Upload bundled runtime resources
@@ -89,56 +147,676 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: Build and publish Tauri release
+      - name: Build Tauri release bundles
         uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: m3u8-queue-downloader
-          tagName: app-v__VERSION__
-          releaseName: 'm3u8 Queue Downloader v__VERSION__'
-          releaseBody: |
-            Windows 桌面 GUI 发版包。
 
-            包含：
-            - Tauri + Svelte 桌面程序安装包
-            - 免安装 portable 版（zip）
-            - 内置 N_m3u8DL-CLI 可执行文件
-            - 队列、托盘、CLI实况、自动关机等 GUI 功能
-          releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
-          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
-
-      - name: Prepare portable folder
+      - name: Prepare release assets
+        env:
+          INSTALLER_ASSET: ${{ steps.release.outputs.installer }}
+          PORTABLE_ASSET: ${{ steps.release.outputs.portable }}
         shell: pwsh
-        working-directory: m3u8-queue-downloader
         run: |
-          $portableRoot = Join-Path $PWD '.portable-dist'
+          $ErrorActionPreference = 'Stop'
+          $workspaceRoot = (Resolve-Path '.').Path
+          $projectRoot = Join-Path $workspaceRoot 'm3u8-queue-downloader'
+          $portableRoot = Join-Path $projectRoot '.portable-dist'
           $portableDir = Join-Path $portableRoot 'm3u8-queue-downloader-portable'
-          if (Test-Path -LiteralPath $portableRoot) {
-            Remove-Item -LiteralPath $portableRoot -Recurse -Force
+          $releaseAssetsRoot = Join-Path $workspaceRoot 'release-assets'
+
+          function Assert-WorkspaceChild([string]$path) {
+            $fullPath = [System.IO.Path]::GetFullPath($path)
+            $workspacePrefix = $workspaceRoot.TrimEnd('\') + '\'
+            if (-not $fullPath.StartsWith($workspacePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw "Refusing to modify path outside workspace: $fullPath"
+            }
+            return $fullPath
           }
-          New-Item -ItemType Directory -Path $portableDir | Out-Null
 
-          Copy-Item -LiteralPath 'src-tauri/target/release/m3u8-queue-downloader.exe' -Destination $portableDir -Force
+          $portableRoot = Assert-WorkspaceChild $portableRoot
+          $releaseAssetsRoot = Assert-WorkspaceChild $releaseAssetsRoot
+          foreach ($target in @($portableRoot, $releaseAssetsRoot)) {
+            if (Test-Path -LiteralPath $target) {
+              Remove-Item -LiteralPath $target -Recurse -Force
+            }
+          }
 
-          Get-ChildItem -LiteralPath 'src-tauri/target/release' -Filter '*.dll' -File | ForEach-Object {
+          New-Item -ItemType Directory -Path $portableRoot -Force | Out-Null
+          New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $releaseAssetsRoot -Force | Out-Null
+
+          $releaseRoot = Join-Path $projectRoot 'src-tauri/target/release'
+          Copy-Item -LiteralPath (Join-Path $releaseRoot 'm3u8-queue-downloader.exe') `
+            -Destination $portableDir -Force
+
+          Get-ChildItem -LiteralPath $releaseRoot -Filter '*.dll' -File | ForEach-Object {
             Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $portableDir $_.Name) -Force
           }
 
-          if (Test-Path -LiteralPath 'src-tauri/target/release/resources') {
-            Copy-Item -LiteralPath 'src-tauri/target/release/resources' -Destination (Join-Path $portableDir 'resources') -Recurse -Force
-          } else {
-            throw 'Portable resources directory was not found at src-tauri/target/release/resources'
+          $resources = Join-Path $releaseRoot 'resources'
+          if (-not (Test-Path -LiteralPath $resources)) {
+            throw "Portable resources directory was not found: $resources"
           }
+          Copy-Item -LiteralPath $resources -Destination (Join-Path $portableDir 'resources') `
+            -Recurse -Force
 
           $defaultFfmpegDir = Join-Path $portableDir 'lib/ffmpeg/tools/ffmpeg/bin'
           New-Item -ItemType Directory -Path $defaultFfmpegDir -Force | Out-Null
-          Copy-Item -LiteralPath (Join-Path $portableDir 'resources/ffmpeg.exe') -Destination (Join-Path $defaultFfmpegDir 'ffmpeg.exe') -Force
+          Copy-Item -LiteralPath (Join-Path $portableDir 'resources/ffmpeg.exe') `
+            -Destination (Join-Path $defaultFfmpegDir 'ffmpeg.exe') -Force
 
-      - name: Upload portable zip to release
+          $installerDir = Join-Path $releaseRoot 'bundle/nsis'
+          $installers = @(Get-ChildItem -LiteralPath $installerDir -Filter '*-setup.exe' -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)."
+          }
+
+          $installerTarget = Join-Path $releaseAssetsRoot $env:INSTALLER_ASSET
+          $portableTarget = Join-Path $releaseAssetsRoot $env:PORTABLE_ASSET
+          Copy-Item -LiteralPath $installers[0].FullName -Destination $installerTarget -Force
+          Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath $portableTarget -Force
+
+      - name: Verify local release assets
+        env:
+          INSTALLER_ASSET: ${{ steps.release.outputs.installer }}
+          PORTABLE_ASSET: ${{ steps.release.outputs.portable }}
         shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = @($env:INSTALLER_ASSET, $env:PORTABLE_ASSET)
+          if (@($expected | Sort-Object -CaseSensitive -Unique).Count -ne 2) {
+            throw 'Release asset names must be unique.'
+          }
+
+          $files = @(Get-ChildItem -LiteralPath 'release-assets' -File)
+          if ($files.Count -ne 2) {
+            throw "Expected exactly two release assets, found $($files.Count)."
+          }
+          foreach ($name in $expected) {
+            $matches = @($files | Where-Object { $_.Name -ceq $name })
+            if ($matches.Count -ne 1 -or $matches[0].Length -le 0) {
+              throw "Missing, duplicate, or empty release asset: $name"
+            }
+          }
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish verified GitHub Release
+    needs: windows
+    runs-on: windows-latest
+    concurrency:
+      group: release-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_REPO: ${{ github.repository }}
+      RELEASE_RUN_ID: ${{ github.run_id }}
+      RELEASE_VERSION: ${{ needs.windows.outputs.version }}
+      SOURCE_SHA: ${{ needs.windows.outputs.source_sha }}
+      INSTALLER_ASSET: ${{ needs.windows.outputs.installer }}
+      PORTABLE_ASSET: ${{ needs.windows.outputs.portable }}
+
+    steps:
+      - name: Download release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
         run: |
-          Compress-Archive -Path m3u8-queue-downloader/.portable-dist/m3u8-queue-downloader-portable/* -DestinationPath portable.zip -Force
-          gh release upload ${{ github.ref_name }} portable.zip --repo ${{ github.repository }}
+          $ErrorActionPreference = 'Stop'
+          & gh run download $env:RELEASE_RUN_ID --name release-assets --dir release-assets --repo $env:RELEASE_REPO
+          $downloadExit = $LASTEXITCODE
+          if ($downloadExit -ne 0) {
+            throw "Failed to download release assets from run $env:RELEASE_RUN_ID."
+          }
+
+      - name: Verify local release assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = @($env:INSTALLER_ASSET, $env:PORTABLE_ASSET)
+          if (@($expected | Sort-Object -CaseSensitive -Unique).Count -ne 2) {
+            throw 'Release asset names must be unique.'
+          }
+
+          $files = @(Get-ChildItem -LiteralPath 'release-assets' -File)
+          if ($files.Count -ne 2) {
+            throw "Expected exactly two release assets, found $($files.Count)."
+          }
+          foreach ($name in $expected) {
+            $matches = @($files | Where-Object { $_.Name -ceq $name })
+            if ($matches.Count -ne 1 -or $matches[0].Length -le 0) {
+              throw "Missing, duplicate, or empty release asset: $name"
+            }
+          }
+
+      - name: Determine publication policy
+        id: channel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Invoke-GitHubApiStatus([string]$endpoint) {
+            $responseLines = & gh api -i $endpoint 2>&1
+            $apiExit = $LASTEXITCODE
+            $responseText = @($responseLines) -join "`n"
+            $statusMatches = [regex]::Matches(
+              $responseText,
+              '(?m)^HTTP/\S+\s+([0-9]{3})\b'
+            )
+            if ($statusMatches.Count -ne 1) {
+              throw "Unable to parse GitHub API HTTP status for $endpoint (exit $apiExit). Response: $responseText"
+            }
+
+            $status = $statusMatches[0].Groups[1].Value
+            if ($status -ceq '200') {
+              if ($apiExit -ne 0) {
+                throw "GitHub API reported HTTP 200 with exit $apiExit for $endpoint. Response: $responseText"
+              }
+            } elseif ($status -ceq '404') {
+              # A missing resource is an expected policy input.
+            } else {
+              throw "GitHub API returned HTTP $status for $endpoint (exit $apiExit). Response: $responseText"
+            }
+
+            $bodyStart = $responseText.IndexOf('{', [System.StringComparison]::Ordinal)
+            $body = if ($bodyStart -ge 0) { $responseText.Substring($bodyStart) } else { '' }
+            return [pscustomobject]@{
+              Status = $status
+              Body = $body
+              Diagnostic = $responseText
+            }
+          }
+
+          function Compare-SemVerCore([string]$Left, [string]$Right) {
+            $leftParts = $Left.Split('.')
+            $rightParts = $Right.Split('.')
+            if ($leftParts.Count -ne 3 -or $rightParts.Count -ne 3) {
+              throw "SemVer core comparison requires three segments: $Left vs $Right"
+            }
+
+            for ($index = 0; $index -lt 3; $index += 1) {
+              $leftPart = $leftParts[$index]
+              $rightPart = $rightParts[$index]
+              if ($leftPart.Length -gt $rightPart.Length) {
+                return 1
+              }
+              if ($leftPart.Length -lt $rightPart.Length) {
+                return -1
+              }
+
+              $ordinal = [string]::CompareOrdinal($leftPart, $rightPart)
+              if ($ordinal -gt 0) {
+                return 1
+              }
+              if ($ordinal -lt 0) {
+                return -1
+              }
+            }
+            return 0
+          }
+
+          $isPrerelease = $env:RELEASE_VERSION -cmatch '-(?:rc|beta|alpha)(?:\.|$)'
+          $targetCore = ($env:RELEASE_VERSION -split '-', 2)[0]
+          $latestEndpoint = "repos/$env:RELEASE_REPO/releases/latest"
+          $latestResponse = Invoke-GitHubApiStatus $latestEndpoint
+          $expectedLatestTag = ''
+          $currentLatestCore = $null
+
+          if ($latestResponse.Status -ceq '200') {
+            if ([string]::IsNullOrWhiteSpace($latestResponse.Body)) {
+              throw "Latest release response did not contain JSON. Response: $($latestResponse.Diagnostic)"
+            }
+            try {
+              $latestRelease = $latestResponse.Body | ConvertFrom-Json
+            } catch {
+              throw "Failed to parse current Latest release JSON: $($_.Exception.Message). Response: $($latestResponse.Diagnostic)"
+            }
+
+            $expectedLatestTag = [string]$latestRelease.tag_name
+            $latestMatch = [regex]::Match(
+              $expectedLatestTag,
+              '\Aapp-v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\z'
+            )
+            if (-not $latestMatch.Success) {
+              throw "Current Latest tag is not a stable app-vX.Y.Z tag: $expectedLatestTag"
+            }
+            $currentLatestCore = $latestMatch.Groups[1].Value
+          } elseif ($latestResponse.Status -cne '404') {
+            throw "Unexpected Latest release status: $($latestResponse.Status)"
+          }
+
+          $markLatest = $false
+          if (-not $isPrerelease) {
+            if ($latestResponse.Status -ceq '404') {
+              $markLatest = $true
+            } else {
+              $comparison = Compare-SemVerCore $targetCore $currentLatestCore
+              if ($comparison -gt 0) {
+                $markLatest = $true
+              } elseif ($comparison -lt 0) {
+                $markLatest = $false
+              } elseif ($comparison -eq 0) {
+                $markLatest = $false
+              } else {
+                throw "Unexpected SemVer comparison result: $comparison"
+              }
+            }
+          }
+
+          "mark_latest=$($markLatest.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "expected_latest_tag=$expectedLatestTag" >> $env:GITHUB_OUTPUT
+
+      - name: Verify release tag source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Invoke-GitHubJson([string]$endpoint) {
+            $jsonLines = & gh api $endpoint 2>&1
+            $apiExit = $LASTEXITCODE
+            $jsonText = @($jsonLines) -join "`n"
+            if ($apiExit -ne 0) {
+              throw "GitHub API request failed for $endpoint (exit $apiExit). Response: $jsonText"
+            }
+            try {
+              return $jsonText | ConvertFrom-Json
+            } catch {
+              throw "GitHub API returned invalid JSON for ${endpoint}: $($_.Exception.Message). Response: $jsonText"
+            }
+          }
+
+          function Resolve-ReleaseTagCommit {
+            if ($env:SOURCE_SHA -cnotmatch '\A[0-9A-Fa-f]{40}\z') {
+              throw "Build source SHA is invalid: $env:SOURCE_SHA"
+            }
+
+            $encodedTag = [Uri]::EscapeDataString($env:RELEASE_TAG)
+            $reference = Invoke-GitHubJson "repos/$env:RELEASE_REPO/git/ref/tags/$encodedTag"
+            $object = $reference.object
+            $seen = [System.Collections.Generic.HashSet[string]]::new(
+              [System.StringComparer]::OrdinalIgnoreCase
+            )
+            $maxTagDepth = 8
+
+            for ($depth = 0; $depth -le $maxTagDepth; $depth += 1) {
+              $type = [string]$object.type
+              $sha = [string]$object.sha
+              if ($sha -cnotmatch '\A[0-9A-Fa-f]{40}\z') {
+                throw "Release tag object has an invalid SHA at depth ${depth}: $sha"
+              }
+              if (-not $seen.Add($sha)) {
+                throw "Release tag peel detected a cycle at SHA $sha."
+              }
+              if ($type -ceq 'commit') {
+                return $sha
+              }
+              if ($type -cne 'tag') {
+                throw "Release tag resolved to unsupported object type '$type' at SHA $sha."
+              }
+              if ($depth -eq $maxTagDepth) {
+                throw "Release tag peel is too deep after $maxTagDepth annotated tags."
+              }
+              $tagObject = Invoke-GitHubJson "repos/$env:RELEASE_REPO/git/tags/$sha"
+              $object = $tagObject.object
+            }
+            throw 'Release tag peel is too deep.'
+          }
+
+          $tagCommit = Resolve-ReleaseTagCommit
+          if ($tagCommit -ine $env:SOURCE_SHA) {
+            throw "Release tag $env:RELEASE_TAG resolves to $tagCommit, not build source $env:SOURCE_SHA. The external app-v* update/delete ruleset must be configured before publishing."
+          }
+
+      - name: Stage draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Invoke-GitHubApiStatus([string]$endpoint) {
+            $responseLines = & gh api -i $endpoint 2>&1
+            $apiExit = $LASTEXITCODE
+            $responseText = @($responseLines) -join "`n"
+            $statusMatches = [regex]::Matches(
+              $responseText,
+              '(?m)^HTTP/\S+\s+([0-9]{3})\b'
+            )
+            if ($statusMatches.Count -ne 1) {
+              throw "Unable to parse GitHub API HTTP status for $endpoint (exit $apiExit). Response: $responseText"
+            }
+
+            $status = $statusMatches[0].Groups[1].Value
+            if ($status -ceq '200') {
+              if ($apiExit -ne 0) {
+                throw "GitHub API reported HTTP 200 with exit $apiExit for $endpoint. Response: $responseText"
+              }
+            } elseif ($status -ceq '404') {
+              # A missing release is the only status that may continue to create.
+            } else {
+              throw "GitHub API returned HTTP $status for $endpoint (exit $apiExit). Response: $responseText"
+            }
+
+            $bodyStart = $responseText.IndexOf('{', [System.StringComparison]::Ordinal)
+            $body = if ($bodyStart -ge 0) { $responseText.Substring($bodyStart) } else { '' }
+            return [pscustomobject]@{
+              Status = $status
+              Body = $body
+              Diagnostic = $responseText
+            }
+          }
+
+          $encodedTag = [Uri]::EscapeDataString($env:RELEASE_TAG)
+          $existingResponse = Invoke-GitHubApiStatus `
+            "repos/$env:RELEASE_REPO/releases/tags/$encodedTag"
+          switch ($existingResponse.Status) {
+            '200' {
+              throw "Release $env:RELEASE_TAG already exists. Automation will not modify it; confirm and delete it manually before rerunning."
+            }
+            '404' {}
+            default {
+              throw "Unexpected existing release status: $($existingResponse.Status)"
+            }
+          }
+
+          $installerPath = Join-Path 'release-assets' $env:INSTALLER_ASSET
+          $portablePath = Join-Path 'release-assets' $env:PORTABLE_ASSET
+          $releaseTitle = "m3u8 Queue Downloader v$env:RELEASE_VERSION"
+          & gh release create $env:RELEASE_TAG $installerPath $portablePath `
+            --repo $env:RELEASE_REPO `
+            --title $releaseTitle `
+            --draft `
+            --verify-tag `
+            --generate-notes
+          $createExit = $LASTEXITCODE
+          if ($createExit -ne 0) {
+            throw "Failed to stage draft GitHub Release for $env:RELEASE_TAG."
+          }
+
+      - name: Verify draft release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseJson = & gh release view $env:RELEASE_TAG `
+            --repo $env:RELEASE_REPO --json isDraft,isPrerelease,assets
+          $viewExit = $LASTEXITCODE
+          if ($viewExit -ne 0) {
+            throw "Failed to read draft release for $env:RELEASE_TAG."
+          }
+
+          $release = $releaseJson | ConvertFrom-Json
+          if (-not $release.isDraft) {
+            throw "Release $env:RELEASE_TAG became public before asset verification."
+          }
+
+          $expectedAssets = @(
+            [pscustomobject]@{
+              Name = $env:INSTALLER_ASSET
+              Length = (Get-Item -LiteralPath (Join-Path 'release-assets' $env:INSTALLER_ASSET)).Length
+            }
+            [pscustomobject]@{
+              Name = $env:PORTABLE_ASSET
+              Length = (Get-Item -LiteralPath (Join-Path 'release-assets' $env:PORTABLE_ASSET)).Length
+            }
+          )
+          if (@($expectedAssets.Name | Sort-Object -CaseSensitive -Unique).Count -ne 2) {
+            throw 'Release asset names must be unique.'
+          }
+
+          $assets = @($release.assets)
+          if ($assets.Count -ne 2) {
+            throw "Expected exactly two remote release assets, found $($assets.Count)."
+          }
+          foreach ($expectedAsset in $expectedAssets) {
+            if ($expectedAsset.Length -le 0) {
+              throw "Local release asset is empty: $($expectedAsset.Name)"
+            }
+            $matches = @($assets | Where-Object { $_.name -ceq $expectedAsset.Name })
+            if ($matches.Count -ne 1) {
+              throw "Missing or duplicate remote release asset: $($expectedAsset.Name)"
+            }
+            if ([int64]$matches[0].size -ne [int64]$expectedAsset.Length) {
+              throw "Remote release asset size does not match local file: $($expectedAsset.Name)"
+            }
+          }
+
+      - name: Reverify release tag source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Invoke-GitHubJson([string]$endpoint) {
+            $jsonLines = & gh api $endpoint 2>&1
+            $apiExit = $LASTEXITCODE
+            $jsonText = @($jsonLines) -join "`n"
+            if ($apiExit -ne 0) {
+              throw "GitHub API request failed for $endpoint (exit $apiExit). Response: $jsonText"
+            }
+            try {
+              return $jsonText | ConvertFrom-Json
+            } catch {
+              throw "GitHub API returned invalid JSON for ${endpoint}: $($_.Exception.Message). Response: $jsonText"
+            }
+          }
+
+          function Resolve-ReleaseTagCommit {
+            if ($env:SOURCE_SHA -cnotmatch '\A[0-9A-Fa-f]{40}\z') {
+              throw "Build source SHA is invalid: $env:SOURCE_SHA"
+            }
+
+            $encodedTag = [Uri]::EscapeDataString($env:RELEASE_TAG)
+            $reference = Invoke-GitHubJson "repos/$env:RELEASE_REPO/git/ref/tags/$encodedTag"
+            $object = $reference.object
+            $seen = [System.Collections.Generic.HashSet[string]]::new(
+              [System.StringComparer]::OrdinalIgnoreCase
+            )
+            $maxTagDepth = 8
+
+            for ($depth = 0; $depth -le $maxTagDepth; $depth += 1) {
+              $type = [string]$object.type
+              $sha = [string]$object.sha
+              if ($sha -cnotmatch '\A[0-9A-Fa-f]{40}\z') {
+                throw "Release tag object has an invalid SHA at depth ${depth}: $sha"
+              }
+              if (-not $seen.Add($sha)) {
+                throw "Release tag peel detected a cycle at SHA $sha."
+              }
+              if ($type -ceq 'commit') {
+                return $sha
+              }
+              if ($type -cne 'tag') {
+                throw "Release tag resolved to unsupported object type '$type' at SHA $sha."
+              }
+              if ($depth -eq $maxTagDepth) {
+                throw "Release tag peel is too deep after $maxTagDepth annotated tags."
+              }
+              $tagObject = Invoke-GitHubJson "repos/$env:RELEASE_REPO/git/tags/$sha"
+              $object = $tagObject.object
+            }
+            throw 'Release tag peel is too deep.'
+          }
+
+          $tagCommit = Resolve-ReleaseTagCommit
+          if ($tagCommit -ine $env:SOURCE_SHA) {
+            throw "Release tag $env:RELEASE_TAG resolves to $tagCommit, not build source $env:SOURCE_SHA. The external app-v* update/delete ruleset must be configured before publishing."
+          }
+
+      - name: Publish verified GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MARK_LATEST: ${{ steps.channel.outputs.mark_latest }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $isPrerelease = $env:RELEASE_VERSION -cmatch '-(?:rc|beta|alpha)(?:\.|$)'
+          $publishArgs = @('release', 'edit', $env:RELEASE_TAG, '--repo', $env:RELEASE_REPO, '--draft=false')
+          if ($isPrerelease) {
+            $publishArgs += '--prerelease'
+            $publishArgs += '--latest=false'
+          } elseif ($env:MARK_LATEST -ceq 'true') {
+            $publishArgs += '--prerelease=false'
+            $publishArgs += '--latest'
+          } elseif ($env:MARK_LATEST -ceq 'false') {
+            $publishArgs += '--prerelease=false'
+            $publishArgs += '--latest=false'
+          } else {
+            throw "Invalid mark_latest policy output: $env:MARK_LATEST"
+          }
+
+          & gh @publishArgs
+          $publishExit = $LASTEXITCODE
+          if ($publishExit -ne 0) {
+            throw "Failed to publish verified GitHub Release $env:RELEASE_TAG."
+          }
+
+      - name: Verify published GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MARK_LATEST: ${{ steps.channel.outputs.mark_latest }}
+          EXPECTED_LATEST_TAG: ${{ steps.channel.outputs.expected_latest_tag }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Invoke-GitHubApiStatus([string]$endpoint) {
+            $responseLines = & gh api -i $endpoint 2>&1
+            $apiExit = $LASTEXITCODE
+            $responseText = @($responseLines) -join "`n"
+            $statusMatches = [regex]::Matches(
+              $responseText,
+              '(?m)^HTTP/\S+\s+([0-9]{3})\b'
+            )
+            if ($statusMatches.Count -ne 1) {
+              throw "Unable to parse GitHub API HTTP status for $endpoint (exit $apiExit). Response: $responseText"
+            }
+
+            $status = $statusMatches[0].Groups[1].Value
+            if ($status -ceq '200') {
+              if ($apiExit -ne 0) {
+                throw "GitHub API reported HTTP 200 with exit $apiExit for $endpoint. Response: $responseText"
+              }
+            } elseif ($status -ceq '404') {
+              # A missing Latest release is valid only when policy expected none.
+            } else {
+              throw "GitHub API returned HTTP $status for $endpoint (exit $apiExit). Response: $responseText"
+            }
+
+            $bodyStart = $responseText.IndexOf('{', [System.StringComparison]::Ordinal)
+            $body = if ($bodyStart -ge 0) { $responseText.Substring($bodyStart) } else { '' }
+            return [pscustomobject]@{
+              Status = $status
+              Body = $body
+              Diagnostic = $responseText
+            }
+          }
+
+          function Get-LatestTag($response) {
+            if ($response.Status -cne '200') {
+              throw "Latest release endpoint returned HTTP $($response.Status). Response: $($response.Diagnostic)"
+            }
+            if ([string]::IsNullOrWhiteSpace($response.Body)) {
+              throw "Latest release response did not contain JSON. Response: $($response.Diagnostic)"
+            }
+            try {
+              $latestRelease = $response.Body | ConvertFrom-Json
+            } catch {
+              throw "Failed to parse Latest release JSON: $($_.Exception.Message). Response: $($response.Diagnostic)"
+            }
+            $latestTag = [string]$latestRelease.tag_name
+            if ([string]::IsNullOrWhiteSpace($latestTag)) {
+              throw 'Latest release response did not contain tag_name.'
+            }
+            return $latestTag
+          }
+
+          $expectedPrerelease = $env:RELEASE_VERSION -cmatch '-(?:rc|beta|alpha)(?:\.|$)'
+          $releaseJson = & gh release view $env:RELEASE_TAG `
+            --repo $env:RELEASE_REPO --json isDraft,isPrerelease,assets
+          $viewExit = $LASTEXITCODE
+          if ($viewExit -ne 0) {
+            throw "Failed to read published release for $env:RELEASE_TAG."
+          }
+
+          $release = $releaseJson | ConvertFrom-Json
+          if ($release.isDraft) {
+            throw "Release $env:RELEASE_TAG is still a draft after publication."
+          }
+          if ([bool]$release.isPrerelease -ne $expectedPrerelease) {
+            throw "Release $env:RELEASE_TAG has an unexpected prerelease state."
+          }
+
+          $expectedAssets = @(
+            [pscustomobject]@{
+              Name = $env:INSTALLER_ASSET
+              Length = (Get-Item -LiteralPath (Join-Path 'release-assets' $env:INSTALLER_ASSET)).Length
+            }
+            [pscustomobject]@{
+              Name = $env:PORTABLE_ASSET
+              Length = (Get-Item -LiteralPath (Join-Path 'release-assets' $env:PORTABLE_ASSET)).Length
+            }
+          )
+          if (@($expectedAssets.Name | Sort-Object -CaseSensitive -Unique).Count -ne 2) {
+            throw 'Release asset names must be unique.'
+          }
+
+          $assets = @($release.assets)
+          if ($assets.Count -ne 2) {
+            throw "Expected exactly two remote release assets, found $($assets.Count)."
+          }
+          foreach ($expectedAsset in $expectedAssets) {
+            if ($expectedAsset.Length -le 0) {
+              throw "Local release asset is empty: $($expectedAsset.Name)"
+            }
+            $matches = @($assets | Where-Object { $_.name -ceq $expectedAsset.Name })
+            if ($matches.Count -ne 1) {
+              throw "Missing or duplicate remote release asset: $($expectedAsset.Name)"
+            }
+            if ([int64]$matches[0].size -ne [int64]$expectedAsset.Length) {
+              throw "Remote release asset size does not match local file: $($expectedAsset.Name)"
+            }
+          }
+
+          $latestResponse = Invoke-GitHubApiStatus `
+            "repos/$env:RELEASE_REPO/releases/latest"
+          if ($env:MARK_LATEST -ceq 'true') {
+            $latestTag = Get-LatestTag $latestResponse
+            if ($latestTag -cne $env:RELEASE_TAG) {
+              throw "Latest release tag $latestTag does not match $env:RELEASE_TAG."
+            }
+          } elseif ($env:MARK_LATEST -ceq 'false') {
+            if ([string]::IsNullOrEmpty($env:EXPECTED_LATEST_TAG)) {
+              if ($latestResponse.Status -cne '404') {
+                $latestTag = Get-LatestTag $latestResponse
+                throw "Expected no Latest release, but found $latestTag after publishing $env:RELEASE_TAG."
+              }
+            } else {
+              $latestTag = Get-LatestTag $latestResponse
+              if ($latestTag -cne $env:EXPECTED_LATEST_TAG) {
+                throw "Latest release changed from $env:EXPECTED_LATEST_TAG to $latestTag while publishing $env:RELEASE_TAG."
+              }
+              if ($latestTag -ceq $env:RELEASE_TAG) {
+                throw "Release $env:RELEASE_TAG unexpectedly displaced the existing Latest release."
+              }
+            }
+          } else {
+            throw "Invalid mark_latest policy output: $env:MARK_LATEST"
+          }
