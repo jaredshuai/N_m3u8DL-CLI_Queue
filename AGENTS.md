@@ -111,7 +111,7 @@ node scripts/prepare-release.mjs package-sync --run-id <已成功的_actions_run
 同步回本地 `artifacts/` 后，应看到：
 
 - 安装包：
-  `artifacts/m3u8-queue-downloader_0.2.0_x64-setup.exe`
+  `artifacts/m3u8-queue-downloader_0.2.1_x64-setup.exe`
 - portable 文件夹：
   `artifacts/m3u8-queue-downloader-portable/`
 
