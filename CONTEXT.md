@@ -18,10 +18,11 @@
 | 概念 | 是什么 |
 |---|---|
 | **任务（Task）** | 一个待下载的 m3u8 链接，带 id、url、保存名、请求头、状态等字段。代码里是 `domain::task::Task` |
-| **任务状态** | 四种：`Waiting`（等待中）、`Downloading`（下载中）、`Completed`（完成）、`Failed`（失败）。**注意**：同一个状态在每一层有各自的类型，详见 `docs/adr/0003-*.md` |
+| **任务状态** | 五种：`Waiting`（等待中）、`Downloading`（下载中）、`Completed`（完成）、`Failed`（失败）、`Cancelled`（用户停止）。**注意**：同一个状态在每一层有各自的类型，详见 `docs/adr/0003-*.md` 和 `docs/adr/0009-*.md` |
 | **队列（Queue）** | 一组排好序的任务，串行处理（同一时间只下载一个） |
 | **活跃任务** | 还没结束的任务——也就是"等待中"或"下载中"的。代码里叫 `is_live_work`，用来判断队列是不是"还活着" |
-| **历史（History）** | 已经到头的任务（完成或失败）留下的不可变记录 |
+| **停止任务（Stop Task）** | 用户主动终止 `Downloading` 子进程，把任务转为 `Cancelled`。它可删除、可手动重试，但不走失败自动重试、不进入历史，也不触发自动关机倒计时。详见 `docs/adr/0009-*.md` |
+| **历史（History）** | 已经到头的完成或失败任务留下的不可变记录；`Cancelled` 当前不进入历史 |
 | **产物（Artifact）** | 下载完成后落在磁盘上的视频文件。ADR-0005 采纳后目标类型是 `ArtifactPath`（application 层 newtype）。详见 `docs/adr/0005-*.md` |
 | **产物目录（Artifact Dir）** | 产物所在目录，ADR-0005 目标类型 `ArtifactDir`（application 层 newtype，absolute non-canonical）。和 `ArtifactPath` 配对：dir 是输入（要盘点的目录），path 是输出（找到的产物路径） |
 | **产物定位（Artifact Location）** | 下载子进程成功退出后，在下载目录里找到产物文件路径的业务策略——扩展名白名单、save_name 精确匹配、save_name 前缀匹配、新鲜度窗口、mtime 排序。策略是 application 层的纯函数 `locate_artifact`，文件系统访问走 `ArtifactInventory` port |
@@ -39,8 +40,8 @@
 - 程序入口：`src-tauri/src/lib.rs`（Tauri 启动 + 注册命令）
 - 装配起点：`src-tauri/src/composition/app_bootstrap.rs` 和 `dependency_graph.rs`
 - 架构规则的"活文档"：`src-tauri/tests/architecture_guard_static.rs`（规则以测试形式存在，改架构会先在这里失败）
-- 产物盘点 port：`src-tauri/src/ports/artifact_inventory.rs`（拟新增，见 `docs/adr/0005-*.md`）
-- 产物定位策略：`src-tauri/src/application/artifact_location.rs`（拟新增，纯函数 `locate_artifact`）
+- 产物盘点 port：`src-tauri/src/ports/artifact_inventory.rs`（ADR-0005 已实施）
+- 产物定位策略：`src-tauri/src/application/artifact_location.rs`（ADR-0005 已实施，纯函数 `locate_artifact`）
 - 前端状态：`src/lib/stores.js`（Svelte 的 store）
 - 前端调用后端的封装：`src/lib/queue-store.js`、`settings-store.js`、`history-store.js`
 

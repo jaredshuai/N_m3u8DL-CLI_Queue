@@ -6,6 +6,7 @@ import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  assertConsistentReleaseVersions,
   ArtifactReplacementTransaction,
   ArtifactValidator,
   GitHubArtifactDownloader,
@@ -113,6 +114,31 @@ test('main dispatches package-sync through the CLI adapter', async () => {
   ]);
 });
 
+test('main dispatches version-check through the version guard', async () => {
+  const calls = [];
+
+  await main(
+    ['node', prepareReleaseScript, 'version-check'],
+    prepareReleaseScriptUrl,
+    {
+      packageSync() {
+        throw new Error('should not run package-sync for version-check');
+      },
+      prepareRelease() {
+        throw new Error('should not run release prepare for version-check');
+      },
+      versionCheck() {
+        calls.push(['versionCheck']);
+      },
+      exit(code) {
+        calls.push(['exit', code]);
+      },
+    },
+  );
+
+  assert.deepEqual(calls, [['versionCheck'], ['exit', 0]]);
+});
+
 test('main dispatches semver release preparation through the CLI adapter', async () => {
   const calls = [];
 
@@ -191,27 +217,68 @@ test('ReleasePrepareUseCase updates version files and reports next steps', () =>
   ]);
 });
 
-test('JsonVersionFiles updates configured JSON version files', () => {
+test('JsonVersionFiles updates configured release version files', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'release-prepare-'));
   const packageJson = path.join(tempRoot, 'package.json');
   const tauriConfig = path.join(tempRoot, 'src-tauri', 'tauri.conf.json');
+  const cargoToml = path.join(tempRoot, 'src-tauri', 'Cargo.toml');
+  const cargoLock = path.join(tempRoot, 'src-tauri', 'Cargo.lock');
   fs.mkdirSync(path.dirname(tauriConfig), { recursive: true });
   fs.writeFileSync(packageJson, `${JSON.stringify({ version: '0.1.0', name: 'app' })}\n`);
   fs.writeFileSync(tauriConfig, `${JSON.stringify({ version: '0.1.0', productName: 'app' })}\n`);
+  fs.writeFileSync(
+    cargoToml,
+    '[package]\nname = "m3u8-queue-downloader"\nversion = "0.1.0"\n',
+  );
+  fs.writeFileSync(
+    cargoLock,
+    '[[package]]\nname = "dependency"\nversion = "9.9.9"\n\n' +
+      '[[package]]\nname = "m3u8-queue-downloader"\nversion = "0.1.0"\n',
+  );
 
-  const updatedFiles = new JsonVersionFiles({
+  const versionFiles = new JsonVersionFiles({
     rootDir: tempRoot,
-    files: [packageJson, tauriConfig],
-  }).updateVersion('0.2.0');
+    files: [packageJson, tauriConfig, cargoToml, cargoLock],
+  });
+  const updatedFiles = versionFiles.updateVersion('0.2.0');
 
   assert.deepEqual(updatedFiles, [
     'package.json',
     path.join('src-tauri', 'tauri.conf.json'),
+    path.join('src-tauri', 'Cargo.toml'),
+    path.join('src-tauri', 'Cargo.lock'),
   ]);
   assert.equal(JSON.parse(fs.readFileSync(packageJson, 'utf8')).version, '0.2.0');
   assert.equal(JSON.parse(fs.readFileSync(tauriConfig, 'utf8')).version, '0.2.0');
+  assert.match(fs.readFileSync(cargoToml, 'utf8'), /^version = "0\.2\.0"$/m);
+  const lock = fs.readFileSync(cargoLock, 'utf8');
+  assert.match(lock, /name = "m3u8-queue-downloader"\nversion = "0\.2\.0"/);
+  assert.match(lock, /name = "dependency"\nversion = "9\.9\.9"/);
+  assert.deepEqual(versionFiles.readVersions(), [
+    { file: 'package.json', version: '0.2.0' },
+    { file: path.join('src-tauri', 'tauri.conf.json'), version: '0.2.0' },
+    { file: path.join('src-tauri', 'Cargo.toml'), version: '0.2.0' },
+    { file: path.join('src-tauri', 'Cargo.lock'), version: '0.2.0' },
+  ]);
+  assert.doesNotThrow(() => {
+    new JsonVersionFiles({
+      rootDir: tempRoot,
+      files: [packageJson, tauriConfig, cargoToml, cargoLock],
+    }).updateVersion('0.2.0');
+  });
 
   fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('assertConsistentReleaseVersions reports version drift', () => {
+  assert.throws(
+    () =>
+      assertConsistentReleaseVersions([
+        { file: 'package.json', version: '0.2.0' },
+        { file: path.join('src-tauri', 'Cargo.lock'), version: '0.1.0' },
+      ]),
+    /package\.json: 0\.2\.0[\s\S]*Cargo\.lock: 0\.1\.0/,
+  );
 });
 
 test('ReleasePrepareReporter writes usage and release instructions', () => {

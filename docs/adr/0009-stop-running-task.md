@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+已采纳并实施（2026-06-24，commit `44afbf3`，PR #13；自 `app-v0.2.0` 起发布）
 
 ## Context
 
@@ -38,11 +38,11 @@ Proposed
 
 `ports/process_runner.rs` 新增 `terminate_task(task_id)`。`TaskRunner` adapter 实现：
 
-- 把 `task_id` 加入 `cancelling: Arc<Mutex<HashSet<String>>>` 集合
-- `kill_process(pid)`（复用现有 Windows `taskkill /PID /T /F` / Unix `SIGTERM`）
-- 从 `running_processes` 移除
-- 直接发 `TaskLifecycleEvent::Cancelled` 事件
-- `spawn_wait_task` 在 `child.wait()` 返回后检查 `cancelling` 集合：若已存在则**不**发 `Failed`，避免重复事件
+- 无 PID 时按幂等成功处理并直接发送 `TaskLifecycleEvent::Cancelled`，避免死亡竞态中的在途 Completed/Failed 重新取得状态权威
+- 找到 PID 时先把 `task_id` 加入 `cancelling: Arc<Mutex<HashSet<String>>>`，再 best-effort 调用 `kill_process(pid)`（Windows `taskkill /PID /T /F` / Unix `SIGTERM`）
+- 仅当 `running_processes` 中仍是原 PID 时才移除，避免停止后立即重试时旧 waiter 删除新进程
+- 直接发送 `TaskLifecycleEvent::Cancelled`；`spawn_wait_task` 消费 cancelling marker 后不再发送重复的 Completed/Failed
+- 新进程注册时清理同 task_id 的旧 marker，避免停止后重试被永久静默
 
 ### 5. 新增 port `QueueRepository::stop_task`
 
@@ -54,7 +54,8 @@ Proposed
 
 - `clear_child_exit_terminal_active_line` 清终端
 - `continue_child_exit_unless_shutting_down` 走 shutdown-gate（与 Completed/Failed 一致）
-- 内部不调用 `prepare_task_failure`，只 emit warn 日志 + `schedule_next_after_child_exit("cancellation")` 继续调度下一个
+- 内部不调用 `prepare_task_failure`，只 emit warn 日志，并通过 `drive_child_exit_queue_and_report_finished("cancellation")` 继续调度/结束本轮
+- 取消不触发自动关机倒计时：用户主动停止不等价于“全部任务自然完成”
 
 ### 7. 新增 `stop_task` Tauri command
 
@@ -64,6 +65,8 @@ Proposed
 2. `process_supervisor.terminate_task(task_id)` — 杀进程 + 发 Cancelled 事件
 
 **顺序很关键**：先 mark Cancelled，再 kill。这样即使 kill 后触发的 lifecycle 事件 race 进来，queue 侧已经是 Cancelled 状态，`continue_child_exit_unless_shutting_down` 里的 shutdown-gate 处理也不会再做错误状态转换。
+
+`terminate_task` 的契约为 always-OK，kill 在 adapter 内 best-effort 执行；因此 mark 成功后不存在“kill 返回错误但队列已是 Cancelled”的半完成命令结果。cancelling marker 负责阻止 waiter 再发送 Completed/Failed。
 
 **不用 `begin_shutdown()` 全局闸**：原计划复用 `shutting_down` flag 禁止新启动，副作用太大（杀一个任务就把整个队列的 spawn 都禁了）。改成 per-task `cancelling` 集合即可。
 
@@ -77,10 +80,11 @@ Proposed
 
 | 场景 | 行为 |
 |---|---|
-| 进程已自然退出（死亡竞态） | `terminate_task` 找不到 PID → 返回 Err；command facade 把这个 race 视为可接受（queue 侧已经 Cancelled，状态权威） |
+| 进程已自然退出（死亡竞态） | `terminate_task` 找不到 PID → `Ok(())`，仍发送 Cancelled 事件；queue 侧已是 Cancelled，状态权威 |
 | 用户连点两次停止 | 第一次 `stopping=true` 防连点；第二次直接 return |
-| 停止后立刻重试 | Cancelled → retry_task 允许 → Waiting → 可被调度 |
-| 杀进程与 lifecycle worker 竞态 | `cancelling` 集合保证 `spawn_wait_task` 不会发重复的 Failed |
+| 停止后立刻重试 | Cancelled → retry_task 允许 → Waiting；新进程注册会清旧 marker，旧 waiter 的 PID 匹配保护不会删除新 PID |
+| 杀进程与 lifecycle worker 竞态 | `cancelling` 集合保证 `spawn_wait_task` 不会发重复的 Completed/Failed |
+| OS kill 失败 | adapter 仍返回 `Ok(())` 并保留 marker；队列状态以 Cancelled 为权威，不把底层 kill 错误暴露为半完成命令 |
 
 ## Consequences
 
@@ -95,7 +99,7 @@ Proposed
 
 - 新增 1 个 domain 状态变体，所有 `match TaskStatus` 的位置都要更新（已修复编译错误）
 - TaskRunner 新增 `cancelling` 字段，与 `shutting_down` 平行（语义独立）
-- Windows 下杀进程用 `taskkill /F`（强制），不做 graceful-then-force 升级——保留现有行为
+- Windows 下杀进程用 `taskkill /F`（强制），不做 graceful-then-force 升级；kill 失败按 best-effort 处理，不向 command 调用方返回错误
 - Cancelled 不进入历史，与 Failed 区别对待——如果未来想把 Cancelled 也归入失败历史，再改 `history_status_from_snapshot` 即可
 
 ## Alternatives considered

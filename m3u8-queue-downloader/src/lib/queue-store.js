@@ -67,15 +67,22 @@ export async function loadQueueState() {
   return loadLatestQueueState();
 }
 
-export async function stopTask(taskId) {
+export async function runStopTask(taskId, { invokeCommand, reloadQueueState }) {
   try {
-    await invoke('stop_task', { taskId });
+    await invokeCommand('stop_task', { taskId });
   } finally {
     // Backend emits a queue-state-changed event via the lifecycle handler, but
     // proactively re-read state so the UI reflects Cancelled immediately even
     // if the lifecycle event races or is delayed.
-    await loadQueueState();
+    await reloadQueueState();
   }
+}
+
+export async function stopTask(taskId) {
+  return runStopTask(taskId, {
+    invokeCommand: invoke,
+    reloadQueueState: loadQueueState,
+  });
 }
 
 export function trackSessionTask(taskId) {

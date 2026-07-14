@@ -142,7 +142,7 @@ portable 目录当前应至少包含：
 npm run release:prepare -- <版本号>
 ```
 
-此命令自动更新三个文件的版本号：`package.json`、`tauri.conf.json`、`Cargo.toml`。
+此命令自动更新四个文件的版本号：`package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock`。
 
 然后提交、打 tag、推送（推送 tag 会自动触发 Release workflow）：
 

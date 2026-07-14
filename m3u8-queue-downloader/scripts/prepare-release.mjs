@@ -11,9 +11,16 @@ const root = path.resolve(scriptDir, '..');
 const repoRoot = path.resolve(root, '..');
 const workspaceRoot = path.resolve(repoRoot, '..');
 const defaultArtifactsDir = path.join(workspaceRoot, 'artifacts');
+const cargoLockPackagePattern = /(\[\[package\]\]\r?\nname = "m3u8-queue-downloader"\r?\nversion = ")([^"]+)(")/;
 
 function prepareRelease(version) {
   return new ReleasePrepareCliAdapter().run(version);
+}
+
+function checkReleaseVersions() {
+  const version = assertConsistentReleaseVersions(new JsonVersionFiles().readVersions());
+  console.log(`release versions consistent: ${version}`);
+  return version;
 }
 
 async function packageSync(argv) {
@@ -29,10 +36,17 @@ export async function main(argv = process.argv, moduleUrl = import.meta.url, con
   const command = args[0];
   const runPackageSync = context.packageSync ?? packageSync;
   const runPrepareRelease = context.prepareRelease ?? prepareRelease;
+  const runVersionCheck = context.versionCheck ?? checkReleaseVersions;
   const exit = context.exit ?? process.exit;
 
   if (command === 'package-sync') {
     await runPackageSync(args.slice(1));
+    exit(0);
+    return;
+  }
+
+  if (command === 'version-check') {
+    runVersionCheck();
     exit(0);
     return;
   }
@@ -77,7 +91,9 @@ export class JsonVersionFiles {
   updateVersion(version) {
     const updatedFiles = [];
     for (const file of this.files) {
-      if (file.endsWith('.toml')) {
+      if (path.basename(file) === 'Cargo.lock') {
+        updateCargoLockVersion(file, version);
+      } else if (file.endsWith('.toml')) {
         updateTomlVersion(file, version);
       } else {
         updateJsonVersion(file, version);
@@ -86,6 +102,27 @@ export class JsonVersionFiles {
     }
     return updatedFiles;
   }
+
+  readVersions() {
+    return this.files.map((file) => ({
+      file: path.relative(this.rootDir, file),
+      version: readReleaseVersion(file),
+    }));
+  }
+}
+
+export function assertConsistentReleaseVersions(versionFiles) {
+  if (versionFiles.length === 0) {
+    throw new Error('No release version files configured');
+  }
+
+  const versions = new Set(versionFiles.map(({ version }) => version));
+  if (versions.size !== 1) {
+    const details = versionFiles.map(({ file, version }) => `  ${file}: ${version}`).join('\n');
+    throw new Error(`Release version mismatch:\n${details}`);
+  }
+
+  return versionFiles[0].version;
 }
 
 export class ReleasePrepareReporter {
@@ -233,6 +270,7 @@ function defaultReleaseVersionFiles() {
     path.join(root, 'package.json'),
     path.join(root, 'src-tauri', 'tauri.conf.json'),
     path.join(root, 'src-tauri', 'Cargo.toml'),
+    path.join(root, 'src-tauri', 'Cargo.lock'),
   ];
 }
 
@@ -246,6 +284,46 @@ function updateTomlVersion(file, version) {
   const content = fs.readFileSync(file, 'utf8');
   const updated = content.replace(/^version = ".*"/m, `version = "${version}"`);
   fs.writeFileSync(file, updated, 'utf8');
+}
+
+function readReleaseVersion(file) {
+  if (path.basename(file) === 'Cargo.lock') {
+    return readCargoLockVersion(file);
+  }
+  if (file.endsWith('.toml')) {
+    return readTomlVersion(file);
+  }
+  return JSON.parse(fs.readFileSync(file, 'utf8')).version;
+}
+
+function readTomlVersion(file) {
+  const content = fs.readFileSync(file, 'utf8');
+  const match = content.match(/^version = "([^"]+)"/m);
+  if (!match) {
+    throw new Error(`TOML version not found: ${file}`);
+  }
+  return match[1];
+}
+
+function updateCargoLockVersion(file, version) {
+  const content = fs.readFileSync(file, 'utf8');
+  if (!cargoLockPackagePattern.test(content)) {
+    throw new Error(`Cargo.lock package entry not found: ${file}`);
+  }
+  const updated = content.replace(
+    cargoLockPackagePattern,
+    (_match, prefix, _currentVersion, suffix) => `${prefix}${version}${suffix}`,
+  );
+  fs.writeFileSync(file, updated, 'utf8');
+}
+
+function readCargoLockVersion(file) {
+  const content = fs.readFileSync(file, 'utf8');
+  const match = content.match(cargoLockPackagePattern);
+  if (!match) {
+    throw new Error(`Cargo.lock package entry not found: ${file}`);
+  }
+  return match[2];
 }
 
 function defaultPackageSyncCliDependencies() {

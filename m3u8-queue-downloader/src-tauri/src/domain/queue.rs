@@ -143,7 +143,7 @@ impl QueueTasks {
 
         task.status = TaskStatus::Cancelled;
         task.error_message = Some("Stopped by user".to_string());
-        StopTaskResult::Stopped(task.clone())
+        StopTaskResult::Stopped
     }
 
     fn update_save_name(&mut self, id: &str, save_name: Option<String>) -> UpdateSaveNameResult {
@@ -299,7 +299,7 @@ pub(crate) enum RetryTaskResult {
 }
 
 pub(crate) enum StopTaskResult {
-    Stopped(Task),
+    Stopped,
     Missing,
     NotDownloading { status: TaskStatus },
 }
@@ -411,7 +411,7 @@ impl QueueAggregate {
 
     pub(crate) fn stop_task(&mut self, id: &str) -> StopTaskResult {
         let result = self.tasks.stop_task(id);
-        if matches!(result, StopTaskResult::Stopped(_)) {
+        if matches!(result, StopTaskResult::Stopped) {
             self.clear_current_task_if_matches(id);
         }
         result
@@ -1170,9 +1170,8 @@ mod tests {
 
         let result = state.stop_task("task-1");
 
-        let StopTaskResult::Stopped(stopped) = result else {
-            panic!("downloading task should stop");
-        };
+        assert!(matches!(result, StopTaskResult::Stopped));
+        let stopped = &state.tasks()[0];
         assert_eq!(stopped.status, TaskStatus::Cancelled);
         assert_eq!(
             stopped.error_message.as_deref(),

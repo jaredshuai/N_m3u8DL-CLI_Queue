@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "node --test src/lib/*.test.js scripts/*.test.mjs",
+    "check": "svelte-check",
+    "check:versions": "node scripts/prepare-release.mjs version-check",
+    "test": "npm run check:versions && npm run check && node --test src/lib/*.test.js scripts/*.test.mjs",
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml --locked",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture",
     "resources:stage": "node scripts/stage-bundled-resources.mjs",
@@ -23,10 +25,12 @@
     "@tauri-apps/api": "^2"
   },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5",
     "@tauri-apps/cli": "^2",
     "svelte": "^5",
-    "@sveltejs/vite-plugin-svelte": "^5",
-    "vite": "^6",
-    "svelte-dnd-action": "^0.9"
+    "svelte-check": "^4.7.2",
+    "svelte-dnd-action": "^0.9",
+    "typescript": "^5.9.3",
+    "vite": "^6"
   }
 }

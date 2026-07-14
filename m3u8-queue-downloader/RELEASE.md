@@ -17,6 +17,9 @@ This repository has three GitHub Actions workflows:
    git commit -am "chore(release): v0.2.0"
    ```
 
+   `release:prepare` updates `package.json`, `src-tauri/tauri.conf.json`,
+   `src-tauri/Cargo.toml`, and the root package entry in `src-tauri/Cargo.lock`.
+
 2. Push the release tag:
 
    ```bash

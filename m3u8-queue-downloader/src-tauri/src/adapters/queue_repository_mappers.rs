@@ -130,7 +130,7 @@ pub(crate) fn application_retry_task_result(
 
 pub(crate) fn application_stop_task_result(id: &str, result: StopTaskResult) -> AppResult<()> {
     match result {
-        StopTaskResult::Stopped(_) => Ok(()),
+        StopTaskResult::Stopped => Ok(()),
         StopTaskResult::Missing => Err(AppError::TaskNotFound { id: id.to_string() }),
         StopTaskResult::NotDownloading { status } => Err(AppError::InvalidTaskStatus {
             action: "stop",
