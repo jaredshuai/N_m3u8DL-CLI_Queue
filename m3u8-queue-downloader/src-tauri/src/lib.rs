@@ -60,10 +60,8 @@ mod tests {
     use crate::application::download_directory::DownloadDirectory;
     use crate::application::process_runner_outcomes::ProcessRunnerShutdownStatus;
     use crate::application::queue_mutation_orchestrator::QueueMutationPorts;
-    use crate::application::ArtifactInventory;
-    use crate::application::Clock;
-    use chrono::{DateTime, TimeZone, Utc};
-    use crate::application::queue_repository_outcomes::{        PrepareTaskFailureOutcome, QueueRunStatus, TaskFailureTransition,
+    use crate::application::queue_repository_outcomes::{
+        PrepareTaskFailureOutcome, QueueRunStatus, TaskFailureTransition,
     };
     use crate::application::queue_requests::AddTaskPayload;
     use crate::application::queue_scheduling_orchestrator::QueueSchedulingPorts;
@@ -82,6 +80,8 @@ mod tests {
     };
     use crate::application::terminal_output_outcomes::TerminalActiveLine;
     use crate::application::terminal_output_page::TerminalOutputPage;
+    use crate::application::ArtifactInventory;
+    use crate::application::Clock;
     use crate::domain::history::HistoryStatus;
     use crate::domain::task::{Task, TaskStatus};
     use crate::ports::diagnostics::Diagnostics;
@@ -94,6 +94,7 @@ mod tests {
     use crate::ports::shutdown_scheduler::ShutdownScheduler;
     use crate::ports::terminal_output_repository::TerminalOutputRepository;
     use crate::test_support::spawn_sleeping_child;
+    use chrono::{DateTime, TimeZone, Utc};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
@@ -902,6 +903,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_child_exit_releases_slot_before_scheduling_next_task() {
+        let queue_path = temp_persistence_path();
+        let history_path = std::env::temp_dir().join(format!("history-{}", Uuid::new_v4()));
+        let queue_manager = Arc::new(QueueManager::new(queue_path.clone()));
+        let history_store = Arc::new(HistoryStore::new(history_path.clone()));
+        let (cancelled_task, _) = add_queue_manager_task(
+            &queue_manager,
+            AddTaskPayload {
+                url: "https://example.com/cancelled.m3u8".to_string(),
+                save_name: None,
+                headers: None,
+            },
+        )
+        .await;
+        let (next_task, _) = add_queue_manager_task(
+            &queue_manager,
+            AddTaskPayload {
+                url: "https://example.com/next.m3u8".to_string(),
+                save_name: None,
+                headers: None,
+            },
+        )
+        .await;
+
+        queue_manager
+            .set_run_status(QueueRunStatus::Running)
+            .await
+            .expect("set running");
+        queue_manager
+            .schedule_next()
+            .await
+            .expect("persist scheduled task")
+            .expect("schedule first task");
+        queue_manager
+            .stop_task(&cancelled_task.id)
+            .await
+            .expect("mark task cancelled");
+
+        let pending = queue_manager.get_state().await;
+        assert_eq!(pending.current_task_id(), Some(cancelled_task.id.as_str()));
+
+        let scheduling_ports =
+            queue_scheduling_orchestrator(queue_manager.as_ref(), history_store.as_ref());
+        scheduling_ports
+            .handle_cancelled_child_exit(&cancelled_task.id, "Stopped by user")
+            .await;
+
+        let state = queue_manager.get_state().await;
+        assert_eq!(state.current_task_id(), Some(next_task.id.as_str()));
+        assert!(state
+            .tasks()
+            .iter()
+            .any(|task| { task.id == cancelled_task.id && task.status == TaskStatus::Cancelled }));
+        assert!(state
+            .tasks()
+            .iter()
+            .any(|task| task.id == next_task.id && task.status == TaskStatus::Downloading));
+
+        let _ = std::fs::remove_file(queue_path);
+        let _ = std::fs::remove_dir_all(history_path);
+    }
+
+    #[tokio::test]
     async fn task_output_progress_events_publish_only_after_live_state_update() {
         let queue_path = temp_persistence_path();
         let queue_manager = Arc::new(QueueManager::new(queue_path.clone()));
@@ -1564,7 +1628,8 @@ mod tests {
         let terminal_ports =
             terminal_history_orchestrator(queue_manager.as_ref(), blocked_history_store.as_ref());
         let result =
-            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None).await;
+            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None)
+                .await;
         assert!(result.is_err());
 
         std::fs::remove_file(&history_path).expect("unblock history path");
@@ -1618,7 +1683,8 @@ mod tests {
         let terminal_ports =
             terminal_history_orchestrator(queue_manager.as_ref(), blocked_history_store.as_ref());
         let result =
-            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None).await;
+            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None)
+                .await;
         assert!(result.is_err());
 
         std::fs::remove_file(&history_path).expect("unblock history path");
@@ -1933,7 +1999,8 @@ mod tests {
         let terminal_ports =
             terminal_history_orchestrator(queue_manager.as_ref(), history_store.as_ref());
         let result =
-            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None).await;
+            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None)
+                .await;
         assert!(result.is_err());
 
         let state = queue_manager.get_state().await;
@@ -1978,7 +2045,8 @@ mod tests {
         let terminal_ports =
             terminal_history_orchestrator(queue_manager.as_ref(), history_store.as_ref());
         let result =
-            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None).await;
+            handle_completed_task_history(&terminal_ports, &task.id, "D:/Videos/test.mp4", None)
+                .await;
 
         assert!(result.is_err());
         let page = history_store

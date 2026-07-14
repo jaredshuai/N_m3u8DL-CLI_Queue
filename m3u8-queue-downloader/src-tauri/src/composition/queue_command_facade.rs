@@ -1,4 +1,5 @@
 use crate::application::app_error::AppResult;
+use crate::application::process_runner_outcomes::TaskTerminationClaimOutcome;
 use crate::application::query_models::TaskView;
 use crate::application::queue_requests::AddTaskPayload;
 use crate::composition::dependency_graph::DependencyGraph;
@@ -86,30 +87,22 @@ impl QueueCommandFacade {
         ports.handle_queue_pause().await
     }
 
-    /// Stop a running (downloading) task: mark it Cancelled on the queue side
-/// first (so any Cancelled lifecycle event finds the queue already in the
-/// desired state), then kill the live child process.
-///
-/// Order rationale (resolves the cubic P1 race between "mark-before-kill"
-/// and "kill-before-mark"): `terminate_task` is always-OK, so there is no
-/// error path where the queue is marked Cancelled but the kill failed and
-/// returned an error — the kill is best-effort inside `terminate_task`.
-/// Combined with mark-first ordering, both races are closed:
-///   - The Cancelled event always finds the queue in the desired state
-///     (no stale-state race — cubic round 3 P1).
-///   - No error is ever returned after the mark, so there's no
-///     "queue Cancelled but process still running, error surfaced"
-///     inconsistency (cubic round 2 P1).
-/// See ADR-0009.
-pub(crate) async fn stop_task(&self, task_id: &str) -> AppResult<()> {
-    let (queue_repository, process_supervisor) = self.dependencies.stop_task_ports();
-    // 1. Mark Cancelled first — clears current_task + persists status.
-    //    Done first so the eventual Cancelled lifecycle event sees the
-    //    queue already in the desired state.
-    queue_repository.stop_task(task_id).await?;
-    // 2. Kill the process. Always-OK: sets cancelling marker + emits
-    //    Cancelled event. The kill is best-effort — on failure the marker
-    //    is kept so spawn_wait_task won't emit a confusing Failed event.
-    process_supervisor.terminate_task(task_id).await
-}
+    /// Claim the exact child generation before changing queue state. A waiter
+    /// that exits after the claim pauses until this method commits or aborts,
+    /// so persistence failure restores the natural Completed/Failed event.
+    pub(crate) async fn stop_task(&self, task_id: &str) -> AppResult<()> {
+        let (queue_repository, process_supervisor) = self.dependencies.stop_task_ports();
+        let claim = match process_supervisor.claim_task_termination(task_id).await? {
+            TaskTerminationClaimOutcome::Claimed(claim) => claim,
+            TaskTerminationClaimOutcome::AlreadyClaimed => return Ok(()),
+            TaskTerminationClaimOutcome::AlreadyExited => return Ok(()),
+        };
+
+        if let Err(err) = queue_repository.stop_task(task_id).await {
+            process_supervisor.abort_task_termination(&claim).await;
+            return Err(err);
+        }
+
+        process_supervisor.terminate_claimed_task(&claim).await
+    }
 }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 pub(crate) type QueueRepositoryFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Repository for queue state, mutations, and run lifecycle (19 methods).
+/// Repository for queue state, mutations, and run lifecycle (20 methods).
 /// Merged from the earlier narrow-trait split (QueueStateReader / QueueMutation / QueueRunLifecycle)
 /// per ADR-0006, since no external consumer ever used the narrow traits directly.
 pub(crate) trait QueueRepository: Send + Sync {
@@ -39,6 +39,10 @@ pub(crate) trait QueueRepository: Send + Sync {
     ) -> QueueRepositoryFuture<'a, AppResult<()>>;
 
     fn stop_task<'a>(&'a self, id: &'a str) -> QueueRepositoryFuture<'a, AppResult<()>>;
+    fn finalize_task_cancellation<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> QueueRepositoryFuture<'a, AppResult<bool>>;
 
     // ---- lifecycle (ex-QueueRunLifecycle) ----
     fn prepare_for_exit<'a>(&'a self) -> QueueRepositoryFuture<'a, AppResult<()>>;
@@ -64,7 +68,9 @@ pub(crate) trait QueueRepository: Send + Sync {
         &'a self,
         id: &'a str,
         output_path: &'a str,
-        artifact_diagnostic: Option<&'a crate::application::artifact_resolution::ArtifactDiagnostic>,
+        artifact_diagnostic: Option<
+            &'a crate::application::artifact_resolution::ArtifactDiagnostic,
+        >,
     ) -> QueueRepositoryFuture<'a, AppResult<Option<TaskSnapshot>>>;
     fn stage_terminal_history_task<'a>(
         &'a self,
@@ -126,6 +132,12 @@ where
     fn stop_task<'a>(&'a self, id: &'a str) -> QueueRepositoryFuture<'a, AppResult<()>> {
         self.as_ref().stop_task(id)
     }
+    fn finalize_task_cancellation<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> QueueRepositoryFuture<'a, AppResult<bool>> {
+        self.as_ref().finalize_task_cancellation(id)
+    }
     fn prepare_for_exit<'a>(&'a self) -> QueueRepositoryFuture<'a, AppResult<()>> {
         self.as_ref().prepare_for_exit()
     }
@@ -161,7 +173,9 @@ where
         &'a self,
         id: &'a str,
         output_path: &'a str,
-        artifact_diagnostic: Option<&'a crate::application::artifact_resolution::ArtifactDiagnostic>,
+        artifact_diagnostic: Option<
+            &'a crate::application::artifact_resolution::ArtifactDiagnostic,
+        >,
     ) -> QueueRepositoryFuture<'a, AppResult<Option<TaskSnapshot>>> {
         self.as_ref()
             .stage_task_completion(id, output_path, artifact_diagnostic)

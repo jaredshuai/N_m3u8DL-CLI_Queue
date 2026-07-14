@@ -1,5 +1,8 @@
 use crate::application::app_error::AppResult;
 use crate::application::process_runner_outcomes::ProcessRunnerShutdownStatus;
+use crate::application::process_runner_outcomes::{
+    TaskTerminationClaim, TaskTerminationClaimOutcome,
+};
 use crate::application::task_process_start_request::TaskProcessStartRequest;
 use std::future::Future;
 use std::pin::Pin;
@@ -19,12 +22,17 @@ pub(crate) trait TaskProcessRunner: Send + Sync {
 pub(crate) trait TaskProcessSupervisor: Send + Sync {
     fn begin_shutdown<'a>(&'a self) -> ProcessRunnerFuture<'a, ()>;
     fn terminate_all_running_processes<'a>(&'a self) -> ProcessRunnerFuture<'a, AppResult<()>>;
-    /// Kill a single running child process by task id and emit a `Cancelled`
-    /// lifecycle event. Safe to call when the process has already exited
-    /// (returns Ok in that case). See ADR-0009.
-    fn terminate_task<'a>(
+    fn claim_task_termination<'a>(
         &'a self,
         task_id: &'a str,
+    ) -> ProcessRunnerFuture<'a, AppResult<TaskTerminationClaimOutcome>>;
+    fn abort_task_termination<'a>(
+        &'a self,
+        claim: &'a TaskTerminationClaim,
+    ) -> ProcessRunnerFuture<'a, ()>;
+    fn terminate_claimed_task<'a>(
+        &'a self,
+        claim: &'a TaskTerminationClaim,
     ) -> ProcessRunnerFuture<'a, AppResult<()>>;
 }
 

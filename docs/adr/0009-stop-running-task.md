@@ -2,7 +2,20 @@
 
 ## Status
 
-已采纳并实施（2026-06-24，commit `44afbf3`，PR #13；自 `app-v0.2.0` 起发布）
+已采纳并实施（2026-06-24，commit `44afbf3`，PR #13；自 `app-v0.2.0` 起发布；2026-07-14 完成 OS 终止语义加固）
+
+## 2026-07-14 OS 终止语义加固
+
+原实现把 cancellation marker 只绑定到 `task_id`，并在 OS kill 命令返回后立即释放队列槽、发送 Cancelled。复核确认这不能表达真实进程生命周期：Unix `SIGTERM` 只表示信号已发送，kill 失败时进程仍可能存活，立即重试还会让新旧 waiter 争用同一 marker。
+
+加固后的协议为：
+
+1. `TaskProcessSupervisor` 先 claim 当前注册的具体进程 generation；claim 之后 waiter 即使先退出，也会等待 commit/abort 决议。
+2. claim 成功后持久化 Cancelled，但保留 `current_task`，继续占用串行执行槽；持久化失败则 abort claim，waiter 恢复原始 Completed/Failed。
+3. 队列持久化成功后执行 OS 终止尝试并 commit claim；即使 kill 返回错误，已持久化的取消意图也不再降级。Cancelled 事件改由匹配 generation 的 waiter 在 `child.wait()` 真正返回后发送。
+4. `handle_cancelled_child_exit` 先持久化 `finalize_task_cancellation` 清除 current slot，再调度下一任务。
+5. kill 失败不再吞掉：命令返回错误，但任务保持 Cancelled + current，防止并发下载；用户可再次停止，进程以后自然退出时仍按 Cancelled 收尾。
+6. Windows 使用 `taskkill /PID /T /F` 并等待 waiter 确认；Unix 把 CLI 放进独立 process group，先向整组发 SIGTERM，3 秒未退出再发 SIGKILL，并再次等待确认。
 
 ## Context
 
@@ -28,21 +41,22 @@
 
 ### 2. 新增 domain `stop_task(id)`
 
-`QueueAggregate::stop_task` + `QueueTasks::stop_task`：仅允许 Downloading 状态的任务转入 Cancelled，`error_message = "Stopped by user"`，同时 `clear_current_task_if_matches(id)` 释放 current_task 占位。
+`QueueAggregate::stop_task` + `QueueTasks::stop_task`：仅允许 Downloading 状态的任务转入 Cancelled，`error_message = "Stopped by user"`。Cancelled 先保留 current_task 占位，直到匹配的进程 waiter 确认退出；`finalize_task_cancellation(id)` 才释放该槽。仍占槽的 Cancelled 任务不能重试或删除，重复 stop 按幂等成功处理。
 
 ### 3. 新增 `TaskLifecycleEvent::Cancelled` 变体
 
 `application/task_process_events.rs` 新增 `Cancelled { id, error_message }`。生命周期 worker（`runtime_facade.rs`）匹配后路由到 `handle_cancelled_child_exit`。
 
-### 4. 新增 port `TaskProcessSupervisor::terminate_task`
+### 4. 新增 port `TaskProcessSupervisor` generation claim 协议
 
-`ports/process_runner.rs` 新增 `terminate_task(task_id)`。`TaskRunner` adapter 实现：
+`ports/process_runner.rs` 通过 `claim_task_termination` / `abort_task_termination` / `terminate_claimed_task` 表达三阶段协议。`TaskRunner` adapter 实现：
 
-- 无 PID 时按幂等成功处理并直接发送 `TaskLifecycleEvent::Cancelled`，避免死亡竞态中的在途 Completed/Failed 重新取得状态权威
-- 找到 PID 时先把 `task_id` 加入 `cancelling: Arc<Mutex<HashSet<String>>>`，再 best-effort 调用 `kill_process(pid)`（Windows `taskkill /PID /T /F` / Unix `SIGTERM`）
-- 仅当 `running_processes` 中仍是原 PID 时才移除，避免停止后立即重试时旧 waiter 删除新进程
-- 直接发送 `TaskLifecycleEvent::Cancelled`；`spawn_wait_task` 消费 cancelling marker 后不再发送重复的 Completed/Failed
-- 新进程注册时清理同 task_id 的旧 marker，避免停止后重试被永久静默
+- `running_processes` 的每个 entry 带单调 generation、claim 状态和退出通知，不再使用按 task_id 共享的 HashSet marker
+- claim 与 waiter 清理在同一个注册表边界上按 generation 匹配；旧 waiter 不能删除或静默新进程
+- 无注册进程时返回 `AlreadyExited`，停止操作输给已经发生的自然退出，原 Completed/Failed 事件继续取得权威
+- claim 后若队列持久化失败，abort 让 waiter 恢复原始 Completed/Failed；成功后执行 OS 终止尝试并 commit，kill 错误仍返回调用方
+- 同一 generation 已有 claim 时返回 `AlreadyClaimed`，并发重复命令不能 abort 原 claim；已 committed 的进程仍可再次 claim 以重试 OS kill
+- Cancelled 事件由 waiter 在 `child.wait()` 返回后发送，OS 命令返回本身不再被视为退出确认
 
 ### 5. 新增 port `QueueRepository::stop_task`
 
@@ -53,26 +67,26 @@
 `application/queue_scheduling_orchestrator.rs` 新增 `handle_cancelled_child_exit` + `cancel_child_exit`：
 
 - `clear_child_exit_terminal_active_line` 清终端
+- `finalize_task_cancellation` 持久化释放匹配的 current slot；缺失/非当前事件幂等忽略
 - `continue_child_exit_unless_shutting_down` 走 shutdown-gate（与 Completed/Failed 一致）
 - 内部不调用 `prepare_task_failure`，只 emit warn 日志，并通过 `drive_child_exit_queue_and_report_finished("cancellation")` 继续调度/结束本轮
 - 取消不触发自动关机倒计时：用户主动停止不等价于“全部任务自然完成”
 
 ### 7. 新增 `stop_task` Tauri command
 
-`composition/queue_command_facade.rs::stop_task` 编排两步：
+`composition/queue_command_facade.rs::stop_task` 编排三阶段协议：
 
-1. `queue_repository.stop_task(task_id)` — 队列侧先标 Cancelled + clear current_task
-2. `process_supervisor.terminate_task(task_id)` — 杀进程 + 发 Cancelled 事件
+1. `claim_task_termination(task_id)` — 原子 claim 当前进程 generation；无进程则自然退出胜出并幂等返回
+2. `queue_repository.stop_task(task_id)` — 持久化 Cancelled，但保留 current slot；失败时 abort claim
+3. `terminate_claimed_task(claim)` — 请求 OS 终止、等待 waiter 确认；waiter 随后发 Cancelled 事件完成队列收尾
 
-**顺序很关键**：先 mark Cancelled，再 kill。这样即使 kill 后触发的 lifecycle 事件 race 进来，queue 侧已经是 Cancelled 状态，`continue_child_exit_unless_shutting_down` 里的 shutdown-gate 处理也不会再做错误状态转换。
+这个顺序同时关闭两种半完成状态：队列持久化失败时尚未杀进程且 waiter 恢复自然事件；kill 失败时队列虽已是 Cancelled，但 current slot 仍被占用，不会启动第二个下载进程。
 
-`terminate_task` 的契约为 always-OK，kill 在 adapter 内 best-effort 执行；因此 mark 成功后不存在“kill 返回错误但队列已是 Cancelled”的半完成命令结果。cancelling marker 负责阻止 waiter 再发送 Completed/Failed。
-
-**不用 `begin_shutdown()` 全局闸**：原计划复用 `shutting_down` flag 禁止新启动，副作用太大（杀一个任务就把整个队列的 spawn 都禁了）。改成 per-task `cancelling` 集合即可。
+**不用 `begin_shutdown()` 全局闸**：原计划复用 `shutting_down` flag 禁止新启动，副作用太大（杀一个任务就把整个队列的 spawn 都禁了）。generation claim 只冻结目标进程的 waiter 决议，队列槽则由持久化的 `current_task` 精确占用。
 
 ### 8. 前端
 
-- `TaskCard.svelte`：当 `task.status === 'downloading'`，在卡片 actions 区显示 **⏹ 停止** 按钮；点击调用 `stopTask(task.id)`。新增 `stopping` 瞬态状态防连点（按钮显示"停止中..."并 disabled）。
+- `TaskCard.svelte`：Downloading 显示停止按钮；Cancelled 且仍是 `currentTaskId` 时显示“停止中”，保留停止按钮供 OS kill 失败后重试，并隐藏重试/删除操作直到进程退出。
 - `TaskCard.svelte`：新增 `cancelled` 状态徽章（灰色）和 error-msg 显示（同样灰色调）。
 - `queue-store.js`：新增 `stopTask(taskId)` 导出，`invoke('stop_task')` + 落地 `loadQueueState()` 双保险刷新。
 
@@ -80,11 +94,12 @@
 
 | 场景 | 行为 |
 |---|---|
-| 进程已自然退出（死亡竞态） | `terminate_task` 找不到 PID → `Ok(())`，仍发送 Cancelled 事件；queue 侧已是 Cancelled，状态权威 |
-| 用户连点两次停止 | 第一次 `stopping=true` 防连点；第二次直接 return |
-| 停止后立刻重试 | Cancelled → retry_task 允许 → Waiting；新进程注册会清旧 marker，旧 waiter 的 PID 匹配保护不会删除新 PID |
-| 杀进程与 lifecycle worker 竞态 | `cancelling` 集合保证 `spawn_wait_task` 不会发重复的 Completed/Failed |
-| OS kill 失败 | adapter 仍返回 `Ok(())` 并保留 marker；队列状态以 Cancelled 为权威，不把底层 kill 错误暴露为半完成命令 |
+| 进程已自然退出（死亡竞态） | claim 找不到注册进程 → `AlreadyExited`，不再改成 Cancelled；已发生的自然 Completed/Failed 胜出 |
+| 用户连点两次停止 | 前端以 `stopping` 防连点；后端重复 claim 返回 `AlreadyClaimed`，不干扰原操作 |
+| 停止后立刻重试/删除 | Cancelled 仍占 current slot 时拒绝；waiter 确认退出并 finalize 后才允许 |
+| 杀进程与 lifecycle worker 竞态 | generation claim 使 waiter 在 commit/abort 前等待，且只清理自己的注册记录 |
+| OS kill 失败 | 返回错误；Cancelled + current 保持安全阻塞，可再次停止，真实退出后自动 finalize |
+| Unix 子进程树 | CLI 使用独立 process group；TERM 发给整组，超时后 KILL 整组 |
 
 ## Consequences
 
@@ -92,14 +107,15 @@
 
 - 用户能立即中止卡住的下载任务，UI 反馈即时
 - domain 新增 Cancelled 语义清晰，与 Failed 区分（不重试）
-- 复用 shutdown-gate 模式，不引入新机制
+- generation claim 与 current-slot 占用共同保证停止期间不会并发启动下一进程
 - 单任务粒度，不影响队列里其他任务
 
 **负向 / 取舍：**
 
 - 新增 1 个 domain 状态变体，所有 `match TaskStatus` 的位置都要更新（已修复编译错误）
-- TaskRunner 新增 `cancelling` 字段，与 `shutting_down` 平行（语义独立）
-- Windows 下杀进程用 `taskkill /F`（强制），不做 graceful-then-force 升级；kill 失败按 best-effort 处理，不向 command 调用方返回错误
+- TaskRunner 为每个运行进程保存 generation + watch 状态；共享 marker 集合已删除
+- Windows 下杀进程用 `taskkill /T /F`（强制）并确认退出；Unix 使用 process-group TERM→KILL 升级
+- kill 失败会显式返回，队列通过保留 current slot 维持串行不变量
 - Cancelled 不进入历史，与 Failed 区别对待——如果未来想把 Cancelled 也归入失败历史，再改 `history_status_from_snapshot` 即可
 
 ## Alternatives considered
@@ -114,4 +130,4 @@
 
 ### C. 复用 shutdown-gate 模式（`shutting_down` flag）
 
-被否决。`begin_shutdown` 是全局闸，杀一个任务会把整个队列的 spawn 都禁了。`cancelling` 是 per-task 集合，更精确。
+被否决。`begin_shutdown` 是全局闸，杀一个任务会把整个队列的 spawn 都禁了。generation claim 只约束目标进程，持久化的 current slot 只阻塞该轮串行调度，粒度更精确。

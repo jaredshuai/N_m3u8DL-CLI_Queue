@@ -21,9 +21,9 @@ use crate::application::terminal_history_use_cases::{
     handle_completed_task_history, handle_terminal_failure_task_history,
     TerminalHistoryRecordOutcome,
 };
-use crate::application::Diagnostics;
 use crate::application::ArtifactInventory;
 use crate::application::Clock;
+use crate::application::Diagnostics;
 use crate::application::DownloadDirectoryResolver;
 use crate::application::FrontendEventPublisher;
 use crate::application::HistoryRepository;
@@ -559,7 +559,9 @@ impl<'a> QueueSchedulingPorts<'a> {
         download_dir: &crate::application::artifact_inventory::ArtifactDir,
         save_name: Option<&str>,
     ) {
-        let resolution = self.resolve_completed_artifact(download_dir, save_name).await;
+        let resolution = self
+            .resolve_completed_artifact(download_dir, save_name)
+            .await;
         let output_path = match &resolution {
             crate::application::artifact_resolution::ArtifactResolution::Located(path) => {
                 Some(path.as_str().to_string())
@@ -593,10 +595,10 @@ impl<'a> QueueSchedulingPorts<'a> {
         download_dir: &crate::application::artifact_inventory::ArtifactDir,
         save_name: Option<&str>,
     ) -> crate::application::artifact_resolution::ArtifactResolution {
+        use crate::application::artifact_inventory::InventoryMoment;
         use crate::application::artifact_location::{
             locate_artifact, ArtifactLocatePolicy, ArtifactLocateRequest,
         };
-        use crate::application::artifact_inventory::InventoryMoment;
         use crate::application::artifact_resolution::ArtifactResolution;
 
         let snapshot = match self.artifact_inventory.snapshot(download_dir).await {
@@ -660,16 +662,27 @@ impl<'a> QueueSchedulingPorts<'a> {
 
     /// High-level cancelled child-exit intent. The queue side has already been
     /// transitioned to `Cancelled` by the command facade's `stop_task` call before
-    /// the process was killed, so the orchestrator only performs terminal cleanup,
+    /// the process was killed. The orchestrator releases that task's current slot,
     /// acknowledges shutdown if needed, and drives queue continuation.
     /// Distinct from `Failed`: skips the retry policy entirely. See ADR-0009.
-    pub(crate) async fn handle_cancelled_child_exit(
-        &self,
-        task_id: &str,
-        _error_message: &str,
-    ) {
+    pub(crate) async fn handle_cancelled_child_exit(&self, task_id: &str, _error_message: &str) {
         self.clear_child_exit_terminal_active_line(task_id);
         self.continue_child_exit_unless_shutting_down(|| async {
+            match self
+                .queue_repository
+                .finalize_task_cancellation(task_id)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(err) => {
+                    self.diagnostics.warn(&format!(
+                        "Failed to finalize cancellation for task {}: {}",
+                        task_id, err
+                    ));
+                    return;
+                }
+            }
             self.diagnostics
                 .warn(&format!("Task {} cancelled by user", task_id));
             // Drive queue continuation (mark changed, schedule next, finish

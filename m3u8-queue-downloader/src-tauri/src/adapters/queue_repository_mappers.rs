@@ -6,12 +6,13 @@ use crate::application::queue_repository_outcomes::{
 };
 use crate::application::task_snapshot::TaskSnapshot;
 use crate::domain::queue::{
-    AddTaskOutcome as DomainAddTaskOutcome, ClearPendingHistoryOutcome, FinishRunOutcome,
+    AddTaskOutcome as DomainAddTaskOutcome, ClearPendingHistoryOutcome,
+    FinalizeTaskCancellationResult, FinishRunOutcome,
     PrepareTaskFailureOutcome as DomainPrepareTaskFailureOutcome,
     QueueRunStatus as DomainQueueRunStatus, RemoveTaskResult, RetryTaskResult,
     ScheduleNextTaskOutcome, StageTaskCompletionOutcome as DomainStageTaskCompletionOutcome,
-    StageTerminalHistoryResult, StopTaskResult, TaskFailureTransition as DomainTaskFailureTransition,
-    UpdateSaveNameResult,
+    StageTerminalHistoryResult, StopTaskResult,
+    TaskFailureTransition as DomainTaskFailureTransition, UpdateSaveNameResult,
 };
 
 pub(crate) fn domain_run_status(status: ApplicationQueueRunStatus) -> DomainQueueRunStatus {
@@ -137,5 +138,24 @@ pub(crate) fn application_stop_task_result(id: &str, result: StopTaskResult) -> 
             id: id.to_string(),
             status: format!("{:?}", status),
         }),
+    }
+}
+
+pub(crate) fn application_finalize_task_cancellation_result(
+    id: &str,
+    result: FinalizeTaskCancellationResult,
+) -> AppResult<bool> {
+    match result {
+        FinalizeTaskCancellationResult::Finalized => Ok(true),
+        FinalizeTaskCancellationResult::Missing | FinalizeTaskCancellationResult::NotCurrent => {
+            Ok(false)
+        }
+        FinalizeTaskCancellationResult::NotCancelled { status } => {
+            Err(AppError::InvalidTaskStatus {
+                action: "finalize cancellation",
+                id: id.to_string(),
+                status: format!("{:?}", status),
+            })
+        }
     }
 }

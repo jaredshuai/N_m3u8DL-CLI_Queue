@@ -8,6 +8,7 @@ import { derived, writable } from 'svelte/store';
 
 export const tasks = writable([]);
 export const queueRunning = writable(false);
+export const currentTaskId = writable(null);
 export const sessionProgress = writable(createSessionProgressState());
 export const sessionCompletedCount = derived(
   sessionProgress,
@@ -18,6 +19,7 @@ export function createQueueStateLoader({
   invokeQueueState,
   setTasks,
   setQueueRunning,
+  setCurrentTaskId = () => {},
   onError = console.error,
 }) {
   let activeLoad = null;
@@ -34,6 +36,7 @@ export function createQueueStateLoader({
         const normalized = (state.tasks ?? []).map(normalizeTaskProgress);
         setTasks(normalized);
         setQueueRunning(state.isRunning ?? false);
+        setCurrentTaskId(state.currentTaskId ?? null);
         return true;
       } catch (err) {
         if (reloadRequested) continue;
@@ -61,6 +64,7 @@ const loadLatestQueueState = createQueueStateLoader({
   invokeQueueState: () => invoke('get_queue_state'),
   setTasks: (nextTasks) => tasks.set(nextTasks),
   setQueueRunning: (running) => queueRunning.set(running),
+  setCurrentTaskId: (taskId) => currentTaskId.set(taskId),
 });
 
 export async function loadQueueState() {
@@ -83,6 +87,10 @@ export async function stopTask(taskId) {
     invokeCommand: invoke,
     reloadQueueState: loadQueueState,
   });
+}
+
+export function isTaskTerminationPending(task, activeTaskId) {
+  return task?.status === 'cancelled' && task.id === activeTaskId;
 }
 
 export function trackSessionTask(taskId) {

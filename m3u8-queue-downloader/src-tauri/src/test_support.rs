@@ -18,16 +18,14 @@ pub async fn spawn_success_child() -> Child {
 
 #[cfg(not(target_os = "windows"))]
 pub async fn spawn_sleeping_child() -> Child {
-    Command::new("sh")
-        .args(["-c", "sleep 2"])
-        .spawn()
-        .expect("spawn sleeping child")
+    let mut command = Command::new("sh");
+    command.args(["-c", "sleep 2"]).process_group(0);
+    command.spawn().expect("spawn sleeping child")
 }
 
 #[cfg(not(target_os = "windows"))]
 pub async fn spawn_success_child() -> Child {
-    Command::new("sh")
-        .args(["-c", "exit 0"])
-        .spawn()
-        .expect("spawn success child")
+    let mut command = Command::new("sh");
+    command.args(["-c", "exit 0"]).process_group(0);
+    command.spawn().expect("spawn success child")
 }

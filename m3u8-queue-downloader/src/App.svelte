@@ -16,6 +16,7 @@
   } from './lib/cli-console.js';
   import {
     completedHistory,
+    currentTaskId,
     failedHistory,
     appNotice,
     appSettings,
@@ -25,6 +26,7 @@
     loadHistoryPage,
     loadInitialHistory,
     loadQueueState,
+    isTaskTerminationPending,
     setupListeners,
     shutdownNotice,
     tasks,
@@ -288,6 +290,7 @@
               <TaskCard
                 {task}
                 draggable={false}
+                terminationPending={isTaskTerminationPending(task, $currentTaskId)}
                 onOpenCliConsole={handleOpenCliConsole}
                 cliConsoleActive={cliConsole.open && cliConsole.taskId === task.id}
               />

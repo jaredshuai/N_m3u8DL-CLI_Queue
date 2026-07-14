@@ -2,7 +2,9 @@ use crate::adapters::progress_parser::{parse_progress, parse_speed, parse_thread
 use crate::adapters::terminal_parser::{decode_cli_bytes_lossy, TerminalBuffer};
 use crate::application::app_error::{AppError, AppResult};
 use crate::application::artifact_inventory::ArtifactDir;
-use crate::application::process_runner_outcomes::ProcessRunnerShutdownStatus;
+use crate::application::process_runner_outcomes::{
+    ProcessRunnerShutdownStatus, TaskTerminationClaim, TaskTerminationClaimOutcome,
+};
 use crate::application::task_process_events::{TaskLifecycleEvent, TaskOutputEvent};
 use crate::application::task_process_start_request::TaskProcessStartRequest;
 use crate::ports::process_runner::{
@@ -10,26 +12,54 @@ use crate::ports::process_runner::{
 };
 #[cfg(test)]
 use std::collections::HashMap;
-use std::collections::{HashMap as StdHashMap, HashSet};
+use std::collections::HashMap as StdHashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{path::BaseDirectory, Manager};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
 use tokio::sync::mpsc;
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::{watch, Mutex, OwnedMutexGuard};
+use tokio::time::{timeout, Duration};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessTerminationState {
+    Running,
+    Claimed,
+    Committed,
+    Aborted,
+}
+
+#[derive(Clone)]
+struct RunningProcess {
+    pid: u32,
+    generation: u64,
+    termination_tx: watch::Sender<ProcessTerminationState>,
+    exit_rx: watch::Receiver<bool>,
+}
+
+struct ProcessWaitRegistration {
+    generation: u64,
+    termination_rx: watch::Receiver<ProcessTerminationState>,
+    exit_tx: watch::Sender<bool>,
+}
+
+#[cfg(test)]
+struct PendingTestChild {
+    child: Child,
+    registration: ProcessWaitRegistration,
+}
 
 pub struct TaskRunner {
-    running_processes: Arc<Mutex<StdHashMap<String, u32>>>,
+    running_processes: Arc<Mutex<StdHashMap<String, RunningProcess>>>,
+    next_process_generation: AtomicU64,
     shutting_down: Arc<Mutex<bool>>,
-    /// Task ids currently being cancelled by an explicit `terminate_task` call.
-    /// `spawn_wait_task` checks this set to decide whether to emit `Cancelled`
-    /// (rather than `Failed`) when the process exits. See ADR-0009.
-    cancelling: Arc<Mutex<HashSet<String>>>,
     lifecycle_sender: Option<mpsc::UnboundedSender<TaskLifecycleEvent>>,
     output_sender: Option<mpsc::UnboundedSender<TaskOutputEvent>>,
     #[cfg(test)]
-    pending_test_children: Arc<Mutex<HashMap<String, Child>>>,
+    pending_test_children: Arc<Mutex<HashMap<String, PendingTestChild>>>,
 }
 
 pub(crate) struct TauriTaskProcessRunner {
@@ -101,12 +131,32 @@ impl TaskProcessSupervisor for TaskRunner {
         Box::pin(async move { TaskRunner::terminate_all_running_processes(self).await })
     }
 
-    fn terminate_task<'a>(&'a self, task_id: &'a str) -> ProcessRunnerFuture<'a, AppResult<()>> {
-        Box::pin(async move { TaskRunner::terminate_task(self, task_id).await })
+    fn claim_task_termination<'a>(
+        &'a self,
+        task_id: &'a str,
+    ) -> ProcessRunnerFuture<'a, AppResult<TaskTerminationClaimOutcome>> {
+        Box::pin(async move { TaskRunner::claim_task_termination(self, task_id).await })
+    }
+
+    fn abort_task_termination<'a>(
+        &'a self,
+        claim: &'a TaskTerminationClaim,
+    ) -> ProcessRunnerFuture<'a, ()> {
+        Box::pin(async move { TaskRunner::abort_task_termination(self, claim).await })
+    }
+
+    fn terminate_claimed_task<'a>(
+        &'a self,
+        claim: &'a TaskTerminationClaim,
+    ) -> ProcessRunnerFuture<'a, AppResult<()>> {
+        Box::pin(async move { TaskRunner::terminate_claimed_task(self, claim).await })
     }
 }
 
 const MAX_CLI_SEARCH_DEPTH: usize = 8;
+const PROCESS_EXIT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(unix)]
+const GRACEFUL_TERMINATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KillProcessResult {
@@ -129,8 +179,8 @@ impl TaskRunner {
     pub fn new() -> Self {
         Self {
             running_processes: Arc::new(Mutex::new(StdHashMap::new())),
+            next_process_generation: AtomicU64::new(1),
             shutting_down: Arc::new(Mutex::new(false)),
-            cancelling: Arc::new(Mutex::new(HashSet::new())),
             lifecycle_sender: None,
             output_sender: None,
             #[cfg(test)]
@@ -142,8 +192,8 @@ impl TaskRunner {
     pub fn with_lifecycle_sender(sender: mpsc::UnboundedSender<TaskLifecycleEvent>) -> Self {
         Self {
             running_processes: Arc::new(Mutex::new(StdHashMap::new())),
+            next_process_generation: AtomicU64::new(1),
             shutting_down: Arc::new(Mutex::new(false)),
-            cancelling: Arc::new(Mutex::new(HashSet::new())),
             lifecycle_sender: Some(sender),
             output_sender: None,
             #[cfg(test)]
@@ -157,8 +207,8 @@ impl TaskRunner {
     ) -> Self {
         Self {
             running_processes: Arc::new(Mutex::new(StdHashMap::new())),
+            next_process_generation: AtomicU64::new(1),
             shutting_down: Arc::new(Mutex::new(false)),
-            cancelling: Arc::new(Mutex::new(HashSet::new())),
             lifecycle_sender: Some(lifecycle_sender),
             output_sender: Some(output_sender),
             #[cfg(test)]
@@ -228,6 +278,8 @@ impl TaskRunner {
 
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x08000000);
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         let mut child = cmd
             .spawn()
@@ -245,8 +297,7 @@ impl TaskRunner {
         let pid = child
             .id()
             .ok_or_else(|| AppError::message("Failed to get CLI process ID"))?;
-        self.register_running_task(task_id.clone(), pid).await;
-        drop(start_permit);
+        let registration = self.register_running_task(task_id.clone(), pid).await;
 
         let task_id_stdout = task_id.clone();
         let output_sender_stdout = self.output_sender.clone();
@@ -266,7 +317,8 @@ impl TaskRunner {
             .await;
         });
 
-        self.spawn_wait_task(task_id, child, save_name, download_dir, pid);
+        self.spawn_wait_task(task_id, child, save_name, download_dir, registration);
+        drop(start_permit);
         Ok(())
     }
 
@@ -281,30 +333,27 @@ impl TaskRunner {
             let processes = self.running_processes.lock().await;
             processes
                 .iter()
-                .map(|(task_id, pid)| (task_id.clone(), *pid))
+                .map(|(task_id, process)| (task_id.clone(), process.clone()))
                 .collect::<Vec<_>>()
         };
 
         let mut errors = Vec::new();
-        for (task_id, pid) in &running {
-            match kill_process(*pid).await {
-                Ok(KillProcessResult::Killed) | Ok(KillProcessResult::AlreadyExited) => {}
+        for (task_id, process) in &running {
+            match kill_process(process.pid).await {
+                Ok(KillProcessResult::Killed) | Ok(KillProcessResult::AlreadyExited) => {
+                    if let Err(err) = confirm_process_exit_after_kill(
+                        process.pid,
+                        process.exit_rx.clone(),
+                        task_id,
+                    )
+                    .await
+                    {
+                        errors.push(format!("Failed to terminate task {task_id}: {err}"));
+                    }
+                }
                 Err(err) => {
                     errors.push(format!("Failed to terminate task {task_id}: {err}"));
                 }
-            }
-        }
-
-        let mut processes = self.running_processes.lock().await;
-        for (task_id, _) in &running {
-            processes.remove(task_id);
-        }
-
-        #[cfg(test)]
-        {
-            let mut pending = self.pending_test_children.lock().await;
-            for (task_id, _) in &running {
-                pending.remove(task_id);
             }
         }
 
@@ -315,75 +364,116 @@ impl TaskRunner {
         Ok(())
     }
 
-    /// Kill the running child for `task_id`, mark it as `cancelling`, and emit
-    /// a `Cancelled` lifecycle event so the orchestrator skips the retry policy.
-    ///
-    /// Always-OK from the caller's perspective. Without a live PID the method
-    /// emits Cancelled directly and returns — no stale marker is left behind
-    /// since there is no waiter to consume it. See cubic P1/P2 on PR #13.
-    pub async fn terminate_task(&self, task_id: &str) -> AppResult<()> {
-        // 1. Look up PID atomically. No PID means child already exited.
-        let pid = {
-            let processes = self.running_processes.lock().await;
-            processes.get(task_id).copied()
+    pub async fn claim_task_termination(
+        &self,
+        task_id: &str,
+    ) -> AppResult<TaskTerminationClaimOutcome> {
+        let processes = self.running_processes.lock().await;
+        let Some(process) = processes.get(task_id) else {
+            return Ok(TaskTerminationClaimOutcome::AlreadyExited);
         };
-        let Some(pid) = pid else {
-            // Emit Cancelled without a marker to prevent in-flight
-            // Completed/Failed from overwriting queue state.
-            if let Some(sender) = &self.lifecycle_sender {
-                let _ = sender.send(TaskLifecycleEvent::Cancelled {
-                    id: task_id.to_string(),
-                    error_message: "Stopped by user".to_string(),
-                });
+
+        let termination_state = *process.termination_tx.borrow();
+        match termination_state {
+            ProcessTerminationState::Claimed => {
+                return Ok(TaskTerminationClaimOutcome::AlreadyClaimed);
             }
+            ProcessTerminationState::Committed => {}
+            ProcessTerminationState::Running | ProcessTerminationState::Aborted => {
+                process
+                    .termination_tx
+                    .send(ProcessTerminationState::Claimed)
+                    .map_err(|_| AppError::message("Task process waiter is no longer available"))?;
+            }
+        }
+
+        Ok(TaskTerminationClaimOutcome::Claimed(TaskTerminationClaim {
+            task_id: task_id.to_string(),
+            generation: process.generation,
+        }))
+    }
+
+    pub async fn abort_task_termination(&self, claim: &TaskTerminationClaim) {
+        let processes = self.running_processes.lock().await;
+        if let Some(process) = processes
+            .get(&claim.task_id)
+            .filter(|process| process.generation == claim.generation)
+        {
+            let termination_state = *process.termination_tx.borrow();
+            if termination_state == ProcessTerminationState::Claimed {
+                let _ = process
+                    .termination_tx
+                    .send(ProcessTerminationState::Aborted);
+            }
+        }
+    }
+
+    pub async fn terminate_claimed_task(&self, claim: &TaskTerminationClaim) -> AppResult<()> {
+        self.terminate_claimed_task_with(claim, kill_process).await
+    }
+
+    async fn terminate_claimed_task_with<F, Fut>(
+        &self,
+        claim: &TaskTerminationClaim,
+        kill: F,
+    ) -> AppResult<()>
+    where
+        F: FnOnce(u32) -> Fut,
+        Fut: Future<Output = AppResult<KillProcessResult>>,
+    {
+        let Some(process) = ({
+            let processes = self.running_processes.lock().await;
+            processes
+                .get(&claim.task_id)
+                .filter(|process| process.generation == claim.generation)
+                .cloned()
+        }) else {
             return Ok(());
         };
 
-        // 2. Found a PID — there is guaranteed to be a spawn_wait_task
-        //    waiter that will consume this marker.
+        let kill_result = kill(process.pid).await;
         {
-            let mut cancelling = self.cancelling.lock().await;
-            cancelling.insert(task_id.to_string());
-        }
-
-        // 3. Best-effort kill. On failure the marker stays so the waiter
-        //    does not send a confusing Completed/Failed.
-        let _ = kill_process(pid).await;
-
-        // 4. Remove the PID entry only if it still matches our PID.
-        //    If a retry already replaced it, don't delete the new entry.
-        {
-            let mut processes = self.running_processes.lock().await;
-            if processes.get(task_id) == Some(&pid) {
-                processes.remove(task_id);
+            let processes = self.running_processes.lock().await;
+            if let Some(process) = processes
+                .get(&claim.task_id)
+                .filter(|process| process.generation == claim.generation)
+            {
+                let termination_state = *process.termination_tx.borrow();
+                if termination_state == ProcessTerminationState::Claimed {
+                    let _ = process
+                        .termination_tx
+                        .send(ProcessTerminationState::Committed);
+                }
             }
         }
 
-        #[cfg(test)]
-        {
-            let mut pending = self.pending_test_children.lock().await;
-            pending.remove(task_id);
+        match kill_result {
+            Ok(KillProcessResult::Killed) | Ok(KillProcessResult::AlreadyExited) => {
+                confirm_process_exit_after_kill(process.pid, process.exit_rx, &claim.task_id).await
+            }
+            Err(err) => Err(err),
         }
-
-        // 5. Emit Cancelled event.
-        if let Some(sender) = &self.lifecycle_sender {
-            let _ = sender.send(TaskLifecycleEvent::Cancelled {
-                id: task_id.to_string(),
-                error_message: "Stopped by user".to_string(),
-            });
-        }
-
-        Ok(())
     }
 
-    async fn register_running_task(&self, task_id: String, pid: u32) {
+    async fn register_running_task(&self, task_id: String, pid: u32) -> ProcessWaitRegistration {
+        let generation = self.next_process_generation.fetch_add(1, Ordering::Relaxed);
+        let (termination_tx, termination_rx) = watch::channel(ProcessTerminationState::Running);
+        let (exit_tx, exit_rx) = watch::channel(false);
         let mut processes = self.running_processes.lock().await;
-        processes.insert(task_id.clone(), pid);
-        // Clear any stale cancellation marker from a previous stop/retry
-        // cycle. A new child for the same task_id should not inherit an
-        // old marker. See Codex P1/P2 on PR #13.
-        let mut cancelling = self.cancelling.lock().await;
-        cancelling.remove(&task_id);
+        processes.insert(
+            task_id,
+            RunningProcess {
+                pid,
+                generation,
+                termination_tx,
+                exit_rx,
+            },
+        );
+        ProcessWaitRegistration {
+            generation,
+            termination_rx,
+            exit_tx,
+        }
     }
 
     fn spawn_wait_task(
@@ -392,57 +482,57 @@ impl TaskRunner {
         child: Child,
         save_name: Option<String>,
         download_dir: PathBuf,
-        expected_pid: u32,
+        registration: ProcessWaitRegistration,
     ) {
         let running_processes = Arc::clone(&self.running_processes);
         let lifecycle_sender = self.lifecycle_sender.clone();
-        let cancelling = Arc::clone(&self.cancelling);
 
         tokio::spawn(async move {
             let mut child = child;
             let result = child.wait().await;
-            cleanup_running_task(&running_processes, &task_id, expected_pid).await;
-
-            // If the task was explicitly cancelled via terminate_task, the
-            // Cancelled event has already been sent. Skip the process exit
-            // result to avoid a duplicate Failed event. See ADR-0009.
-            // Consume the marker so a future retry with the same task_id
-            // is not permanently muted.
-            {
-                let mut cancelling_set = cancelling.lock().await;
-                if cancelling_set.remove(&task_id) {
-                    return;
-                }
-            }
+            let termination_state = resolve_process_exit(
+                &running_processes,
+                &task_id,
+                registration.generation,
+                registration.termination_rx,
+            )
+            .await;
 
             // ADR-0005: the adapter no longer locates the artifact. It only
             // reports the raw facts (download_dir + save_name) and lets the
             // application's handle_completed_child_exit do the snapshot +
             // locate_artifact work.
-            let event = match result {
-                Ok(exit_status) if exit_status.success() => {
-                    let download_dir_string = download_dir.to_string_lossy().to_string();
-                    TaskLifecycleEvent::Completed {
-                        id: task_id,
-                        download_dir: ArtifactDir::new(download_dir_string),
-                        save_name,
-                    }
+            let event = if termination_state == ProcessTerminationState::Committed {
+                TaskLifecycleEvent::Cancelled {
+                    id: task_id,
+                    error_message: "Stopped by user".to_string(),
                 }
-                Ok(exit_status) => {
-                    let error_msg = format!(
-                        "Process exited with code: {}",
-                        exit_status.code().unwrap_or(-1)
-                    );
-                    TaskLifecycleEvent::Failed {
-                        id: task_id,
-                        error_message: error_msg,
+            } else {
+                match result {
+                    Ok(exit_status) if exit_status.success() => {
+                        let download_dir_string = download_dir.to_string_lossy().to_string();
+                        TaskLifecycleEvent::Completed {
+                            id: task_id,
+                            download_dir: ArtifactDir::new(download_dir_string),
+                            save_name,
+                        }
                     }
-                }
-                Err(e) => {
-                    let error_msg = format!("Process error: {}", e);
-                    TaskLifecycleEvent::Failed {
-                        id: task_id,
-                        error_message: error_msg,
+                    Ok(exit_status) => {
+                        let error_msg = format!(
+                            "Process exited with code: {}",
+                            exit_status.code().unwrap_or(-1)
+                        );
+                        TaskLifecycleEvent::Failed {
+                            id: task_id,
+                            error_message: error_msg,
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Process error: {}", e);
+                        TaskLifecycleEvent::Failed {
+                            id: task_id,
+                            error_message: error_msg,
+                        }
                     }
                 }
             };
@@ -450,71 +540,82 @@ impl TaskRunner {
             if let Some(sender) = lifecycle_sender {
                 let _ = sender.send(event);
             }
+            let _ = registration.exit_tx.send(true);
         });
     }
 
     #[cfg(test)]
     pub(crate) async fn insert_running_task_for_test(&self, task_id: String, child: Child) {
         let pid = child.id().expect("test child pid");
-        self.register_running_task(task_id.clone(), pid).await;
+        let registration = self.register_running_task(task_id.clone(), pid).await;
 
         let mut pending = self.pending_test_children.lock().await;
-        pending.insert(task_id, child);
+        pending.insert(
+            task_id,
+            PendingTestChild {
+                child,
+                registration,
+            },
+        );
     }
 
     #[cfg(test)]
     pub(crate) async fn begin_wait_for_test(&self, task_id: &str) {
-        let child = {
+        let PendingTestChild {
+            child,
+            registration,
+        } = {
             let mut pending = self.pending_test_children.lock().await;
             pending.remove(task_id).expect("pending test child")
         };
         let running_processes = Arc::clone(&self.running_processes);
         let lifecycle_sender = self.lifecycle_sender.clone();
-        let cancelling = Arc::clone(&self.cancelling);
         let task_id = task_id.to_string();
-        let expected_pid = child.id().expect("test child pid");
 
         tokio::spawn(async move {
             let mut child = child;
             let result = child.wait().await;
-            cleanup_running_task(&running_processes, &task_id, expected_pid).await;
-
-            // Mirror spawn_wait_task's cancelling guard so test paths also
-            // honor terminate_task and skip the duplicate Failed event.
-            // Consume the marker so a future retry with the same task_id
-            // is not permanently muted.
-            {
-                let mut cancelling_set = cancelling.lock().await;
-                if cancelling_set.remove(&task_id) {
-                    return;
-                }
-            }
+            let termination_state = resolve_process_exit(
+                &running_processes,
+                &task_id,
+                registration.generation,
+                registration.termination_rx,
+            )
+            .await;
 
             if let Some(sender) = lifecycle_sender {
-                let event = match result {
-                    Ok(status) if status.success() => TaskLifecycleEvent::Completed {
+                let event = if termination_state == ProcessTerminationState::Committed {
+                    TaskLifecycleEvent::Cancelled {
                         id: task_id,
-                        // Test helper: no real download_dir is available here.
-                        // The application-side test stub (NoopArtifactInventory)
-                        // returns a Missing snapshot, so the artifact resolves
-                        // to None — equivalent to the old empty-string behavior.
-                        download_dir: ArtifactDir::new(String::new()),
-                        save_name: None,
-                    },
-                    Ok(status) => TaskLifecycleEvent::Failed {
-                        id: task_id,
-                        error_message: format!(
-                            "Process exited with code: {}",
-                            status.code().unwrap_or(-1)
-                        ),
-                    },
-                    Err(err) => TaskLifecycleEvent::Failed {
-                        id: task_id,
-                        error_message: format!("Process error: {err}"),
-                    },
+                        error_message: "Stopped by user".to_string(),
+                    }
+                } else {
+                    match result {
+                        Ok(status) if status.success() => TaskLifecycleEvent::Completed {
+                            id: task_id,
+                            // Test helper: no real download_dir is available here.
+                            // The application-side test stub (NoopArtifactInventory)
+                            // returns a Missing snapshot, so the artifact resolves
+                            // to None — equivalent to the old empty-string behavior.
+                            download_dir: ArtifactDir::new(String::new()),
+                            save_name: None,
+                        },
+                        Ok(status) => TaskLifecycleEvent::Failed {
+                            id: task_id,
+                            error_message: format!(
+                                "Process exited with code: {}",
+                                status.code().unwrap_or(-1)
+                            ),
+                        },
+                        Err(err) => TaskLifecycleEvent::Failed {
+                            id: task_id,
+                            error_message: format!("Process error: {err}"),
+                        },
+                    }
                 };
                 let _ = sender.send(event);
             }
+            let _ = registration.exit_tx.send(true);
         });
     }
 
@@ -742,18 +843,101 @@ fn send_output_event(
     }
 }
 
-async fn cleanup_running_task(
-    running_processes: &Arc<Mutex<StdHashMap<String, u32>>>,
+async fn resolve_process_exit(
+    running_processes: &Arc<Mutex<StdHashMap<String, RunningProcess>>>,
     task_id: &str,
-    expected_pid: u32,
-) {
-    let mut processes = running_processes.lock().await;
-    if processes.get(task_id) == Some(&expected_pid) {
-        processes.remove(task_id);
+    expected_generation: u64,
+    mut termination_rx: watch::Receiver<ProcessTerminationState>,
+) -> ProcessTerminationState {
+    loop {
+        {
+            let mut processes = running_processes.lock().await;
+            let state = processes
+                .get(task_id)
+                .filter(|process| process.generation == expected_generation)
+                .map(|process| *process.termination_tx.borrow());
+
+            match state {
+                Some(ProcessTerminationState::Claimed) => {}
+                Some(state) => {
+                    processes.remove(task_id);
+                    return state;
+                }
+                None => {
+                    let state = *termination_rx.borrow();
+                    return if state == ProcessTerminationState::Claimed {
+                        ProcessTerminationState::Aborted
+                    } else {
+                        state
+                    };
+                }
+            }
+        }
+
+        if termination_rx.changed().await.is_err() {
+            return ProcessTerminationState::Aborted;
+        }
     }
-    // If the PID changed (e.g. stop + immediate retry with same task_id),
-        // the new process must not be removed by the stale waiter. The old
-    // PID simply doesn't match so this is a no-op. See Codex P1 PR #13.
+}
+
+async fn confirm_process_exit_after_kill(
+    pid: u32,
+    mut exit_rx: watch::Receiver<bool>,
+    task_id: &str,
+) -> AppResult<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = pid;
+        if wait_for_process_exit(&mut exit_rx, PROCESS_EXIT_CONFIRM_TIMEOUT, task_id).await? {
+            return Ok(());
+        }
+        return Err(AppError::message(format!(
+            "Timed out waiting for task {task_id} to exit after taskkill"
+        )));
+    }
+
+    #[cfg(unix)]
+    {
+        if wait_for_process_exit(&mut exit_rx, GRACEFUL_TERMINATION_TIMEOUT, task_id).await? {
+            return Ok(());
+        }
+
+        force_kill_process(pid).await?;
+        if wait_for_process_exit(&mut exit_rx, PROCESS_EXIT_CONFIRM_TIMEOUT, task_id).await? {
+            return Ok(());
+        }
+        Err(AppError::message(format!(
+            "Timed out waiting for task {task_id} to exit after SIGKILL"
+        )))
+    }
+}
+
+async fn wait_for_process_exit(
+    exit_rx: &mut watch::Receiver<bool>,
+    wait_timeout: Duration,
+    task_id: &str,
+) -> AppResult<bool> {
+    if *exit_rx.borrow() {
+        return Ok(true);
+    }
+
+    match timeout(wait_timeout, async {
+        loop {
+            exit_rx.changed().await.map_err(|_| {
+                AppError::message(format!(
+                    "Process waiter for task {task_id} closed before reporting exit"
+                ))
+            })?;
+            if *exit_rx.borrow() {
+                return Ok::<(), AppError>(());
+            }
+        }
+    })
+    .await
+    {
+        Ok(result) => result.map(|()| true),
+        Err(_) => Ok(false),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -793,10 +977,21 @@ async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
     )))
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(unix)]
 async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
+    send_process_group_signal(pid, "-TERM").await
+}
+
+#[cfg(unix)]
+async fn force_kill_process(pid: u32) -> AppResult<KillProcessResult> {
+    send_process_group_signal(pid, "-KILL").await
+}
+
+#[cfg(unix)]
+async fn send_process_group_signal(pid: u32, signal: &str) -> AppResult<KillProcessResult> {
+    let process_group = format!("-{pid}");
     let output = tokio::process::Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
+        .args([signal, "--", process_group.as_str()])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -813,7 +1008,7 @@ async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
     }
 
     Err(AppError::message(format!(
-        "kill exited with code {}: {}",
+        "kill {signal} exited with code {}: {}",
         output.status.code().unwrap_or(-1),
         stderr.trim()
     )))
@@ -821,7 +1016,12 @@ async fn kill_process(pid: u32) -> AppResult<KillProcessResult> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_cli_in_ancestors, read_cli_stream, should_emit_active_line, TaskRunner};
+    use super::{
+        find_cli_in_ancestors, read_cli_stream, should_emit_active_line, ProcessTerminationState,
+        TaskRunner,
+    };
+    use crate::application::app_error::AppError;
+    use crate::application::process_runner_outcomes::TaskTerminationClaimOutcome;
     use crate::application::task_process_events::{TaskLifecycleEvent, TaskOutputEvent};
     use crate::test_support::{spawn_sleeping_child, spawn_success_child};
     use std::fs;
@@ -919,6 +1119,7 @@ mod tests {
         runner
             .insert_running_task_for_test(task_id.clone(), child)
             .await;
+        runner.begin_wait_for_test(&task_id).await;
 
         runner
             .terminate_all_running_processes()
@@ -961,10 +1162,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminate_task_sends_cancelled_event_and_skips_failed() {
+    async fn termination_claim_reports_already_exited_without_emitting_event() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let runner = TaskRunner::with_lifecycle_sender(tx);
-        let task_id = "task-cancel".to_string();
+
+        let outcome = runner
+            .claim_task_termination("nonexistent")
+            .await
+            .expect("claim termination");
+
+        assert!(matches!(
+            outcome,
+            TaskTerminationClaimOutcome::AlreadyExited
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn claimed_termination_emits_cancelled_only_after_waiter_observes_exit() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner = TaskRunner::with_lifecycle_sender(tx);
+        let task_id = "task-claimed-cancel".to_string();
         let child = spawn_sleeping_child().await;
 
         runner
@@ -972,12 +1190,23 @@ mod tests {
             .await;
         runner.begin_wait_for_test(&task_id).await;
 
-        runner
-            .terminate_task(&task_id)
+        let TaskTerminationClaimOutcome::Claimed(claim) = runner
+            .claim_task_termination(&task_id)
             .await
-            .expect("terminate task");
+            .expect("claim termination")
+        else {
+            panic!("running child should be claimable");
+        };
 
-        // terminate_task itself sends the Cancelled event synchronously.
+        assert!(timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .is_err());
+
+        runner
+            .terminate_claimed_task(&claim)
+            .await
+            .expect("terminate claimed child");
+
         let event = timeout(Duration::from_secs(2), rx.recv())
             .await
             .expect("lifecycle event timeout")
@@ -986,36 +1215,199 @@ mod tests {
             event,
             TaskLifecycleEvent::Cancelled { id, .. } if id == task_id
         ));
-
-        // spawn_wait_task should see the cancelling flag and NOT emit a
-        // second Failed event — the channel must now be drained / empty.
-        let leftover = timeout(Duration::from_secs(1), rx.recv()).await;
-        assert!(
-            leftover.is_err() || leftover.unwrap().is_none(),
-            "no duplicate lifecycle event expected after cancel"
-        );
-
         assert!(!runner.is_task_running(&task_id).await);
     }
 
     #[tokio::test]
-    async fn terminate_task_emits_cancelled_even_without_live_process() {
+    async fn aborted_termination_claim_restores_natural_exit_event() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let runner = TaskRunner::with_lifecycle_sender(tx);
+        let task_id = "task-aborted-cancel".to_string();
+        let child = spawn_sleeping_child().await;
 
-        let result = runner.terminate_task("nonexistent").await;
+        runner
+            .insert_running_task_for_test(task_id.clone(), child)
+            .await;
+        runner.begin_wait_for_test(&task_id).await;
 
-        // always-OK. Cancelled event is emitted even without a live PID
-        // to prevent in-flight Completed/Failed from overwriting Cancelled.
-        assert!(result.is_ok());
+        let TaskTerminationClaimOutcome::Claimed(claim) = runner
+            .claim_task_termination(&task_id)
+            .await
+            .expect("claim termination")
+        else {
+            panic!("running child should be claimable");
+        };
+        runner.abort_task_termination(&claim).await;
+
+        let event = timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("natural lifecycle event timeout")
+            .expect("natural lifecycle event");
+        assert!(matches!(
+            event,
+            TaskLifecycleEvent::Completed { id, .. } if id == task_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn kill_failure_is_returned_while_claimed_process_remains_tracked() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner = TaskRunner::with_lifecycle_sender(tx);
+        let task_id = "task-kill-failure".to_string();
+        let child = spawn_sleeping_child().await;
+
+        runner
+            .insert_running_task_for_test(task_id.clone(), child)
+            .await;
+        runner.begin_wait_for_test(&task_id).await;
+        let TaskTerminationClaimOutcome::Claimed(claim) = runner
+            .claim_task_termination(&task_id)
+            .await
+            .expect("claim termination")
+        else {
+            panic!("running child should be claimable");
+        };
+
+        let result = runner
+            .terminate_claimed_task_with(&claim, |_| async {
+                Err(AppError::message("simulated permission denial"))
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(runner.is_task_running(&task_id).await);
+
+        let event = timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("cancelled lifecycle event timeout")
+            .expect("cancelled lifecycle event");
+        assert!(matches!(
+            event,
+            TaskLifecycleEvent::Cancelled { id, .. } if id == task_id
+        ));
+        assert!(!runner.is_task_running(&task_id).await);
+    }
+
+    #[tokio::test]
+    async fn waiter_rechecks_claim_state_inside_the_registry_cleanup_boundary() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner = TaskRunner::with_lifecycle_sender(tx);
+        let task_id = "task-atomic-claim".to_string();
+        let child = spawn_success_child().await;
+
+        runner
+            .insert_running_task_for_test(task_id.clone(), child)
+            .await;
+        let processes = runner.running_processes.lock().await;
+        let termination_tx = processes
+            .get(&task_id)
+            .expect("registered process")
+            .termination_tx
+            .clone();
+        runner.begin_wait_for_test(&task_id).await;
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let _ = termination_tx.send(ProcessTerminationState::Claimed);
+        drop(processes);
+
+        assert!(timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .is_err());
+        termination_tx
+            .send(ProcessTerminationState::Committed)
+            .expect("commit cancellation");
 
         let event = timeout(Duration::from_secs(2), rx.recv())
             .await
-            .expect("lifecycle event timeout")
-            .expect("lifecycle event");
+            .expect("cancelled lifecycle event timeout")
+            .expect("cancelled lifecycle event");
         assert!(matches!(
             event,
-            TaskLifecycleEvent::Cancelled { id, .. } if id == "nonexistent"
+            TaskLifecycleEvent::Cancelled { id, .. } if id == task_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn abort_does_not_downgrade_a_committed_cancellation() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner = TaskRunner::with_lifecycle_sender(tx);
+        let task_id = "task-committed-cancel".to_string();
+        let child = spawn_sleeping_child().await;
+
+        runner
+            .insert_running_task_for_test(task_id.clone(), child)
+            .await;
+        runner.begin_wait_for_test(&task_id).await;
+
+        let TaskTerminationClaimOutcome::Claimed(first_claim) = runner
+            .claim_task_termination(&task_id)
+            .await
+            .expect("first claim")
+        else {
+            panic!("running child should be claimable");
+        };
+        runner
+            .terminate_claimed_task_with(&first_claim, |_| async {
+                Err(AppError::message("simulated permission denial"))
+            })
+            .await
+            .expect_err("kill failure should be returned");
+
+        let TaskTerminationClaimOutcome::Claimed(retry_claim) = runner
+            .claim_task_termination(&task_id)
+            .await
+            .expect("retry claim")
+        else {
+            panic!("committed child should remain claimable for a kill retry");
+        };
+        runner.abort_task_termination(&retry_claim).await;
+
+        let event = timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("cancelled lifecycle event timeout")
+            .expect("cancelled lifecycle event");
+        assert!(matches!(
+            event,
+            TaskLifecycleEvent::Cancelled { id, .. } if id == task_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_claim_cannot_abort_the_original_claim() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner = TaskRunner::with_lifecycle_sender(tx);
+        let task_id = "task-duplicate-claim".to_string();
+        let child = spawn_success_child().await;
+
+        runner
+            .insert_running_task_for_test(task_id.clone(), child)
+            .await;
+        let TaskTerminationClaimOutcome::Claimed(original_claim) = runner
+            .claim_task_termination(&task_id)
+            .await
+            .expect("original claim")
+        else {
+            panic!("running child should be claimable");
+        };
+        let duplicate_outcome = runner
+            .claim_task_termination(&task_id)
+            .await
+            .expect("duplicate claim");
+        if let TaskTerminationClaimOutcome::Claimed(duplicate_claim) = duplicate_outcome {
+            runner.abort_task_termination(&duplicate_claim).await;
+        }
+
+        runner.begin_wait_for_test(&task_id).await;
+        assert!(timeout(Duration::from_secs(1), rx.recv()).await.is_err());
+
+        runner.abort_task_termination(&original_claim).await;
+        let event = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("natural lifecycle event timeout")
+            .expect("natural lifecycle event");
+        assert!(matches!(
+            event,
+            TaskLifecycleEvent::Completed { id, .. } if id == task_id
         ));
     }
 

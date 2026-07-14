@@ -304,6 +304,13 @@ pub(crate) enum StopTaskResult {
     NotDownloading { status: TaskStatus },
 }
 
+pub(crate) enum FinalizeTaskCancellationResult {
+    Finalized,
+    Missing,
+    NotCancelled { status: TaskStatus },
+    NotCurrent,
+}
+
 pub(crate) enum UpdateSaveNameResult {
     Updated,
     Missing,
@@ -402,19 +409,44 @@ impl QueueAggregate {
     }
 
     pub(crate) fn remove_task(&mut self, id: &str) -> RemoveTaskResult {
+        if let Some(status) = self.current_task_status(id) {
+            return RemoveTaskResult::InvalidStatus { status };
+        }
         self.tasks.remove_task(id)
     }
 
     pub(crate) fn retry_task(&mut self, id: &str) -> RetryTaskResult {
+        if let Some(status) = self.current_task_status(id) {
+            return RetryTaskResult::InvalidStatus { status };
+        }
         self.tasks.retry_task(id)
     }
 
     pub(crate) fn stop_task(&mut self, id: &str) -> StopTaskResult {
-        let result = self.tasks.stop_task(id);
-        if matches!(result, StopTaskResult::Stopped) {
-            self.clear_current_task_if_matches(id);
+        if matches!(self.current_task_status(id), Some(TaskStatus::Cancelled)) {
+            return StopTaskResult::Stopped;
         }
-        result
+        self.tasks.stop_task(id)
+    }
+
+    pub(crate) fn finalize_task_cancellation(
+        &mut self,
+        id: &str,
+    ) -> FinalizeTaskCancellationResult {
+        let Some(task) = self.tasks.as_slice().iter().find(|task| task.id == id) else {
+            return FinalizeTaskCancellationResult::Missing;
+        };
+        if !task.status.is_cancelled() {
+            return FinalizeTaskCancellationResult::NotCancelled {
+                status: task.status.clone(),
+            };
+        }
+        if self.current_task_id() != Some(id) {
+            return FinalizeTaskCancellationResult::NotCurrent;
+        }
+
+        self.clear_current_task_if_matches(id);
+        FinalizeTaskCancellationResult::Finalized
     }
 
     pub(crate) fn update_save_name(
@@ -498,6 +530,17 @@ impl QueueAggregate {
 
     fn has_current_task(&self) -> bool {
         self.current_task.is_assigned()
+    }
+
+    fn current_task_status(&self, id: &str) -> Option<TaskStatus> {
+        if self.current_task_id() != Some(id) {
+            return None;
+        }
+        self.tasks
+            .as_slice()
+            .iter()
+            .find(|task| task.id == id)
+            .map(|task| task.status.clone())
     }
 
     fn is_current_task(&self, id: &str) -> bool {
@@ -888,8 +931,7 @@ mod tests {
             ..QueueAggregate::default()
         };
 
-        let StageTaskCompletionOutcome::Staged(completed) =
-            state.stage_task_completion("task-1")
+        let StageTaskCompletionOutcome::Staged(completed) = state.stage_task_completion("task-1")
         else {
             panic!("completion should stage");
         };
@@ -1158,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_task_marks_downloading_task_as_cancelled() {
+    fn stop_task_marks_cancelled_but_keeps_current_slot_until_process_exit() {
         let mut task = task_with_id("task-1");
         task.status = TaskStatus::Downloading;
         let mut state = QueueAggregate {
@@ -1173,11 +1215,87 @@ mod tests {
         assert!(matches!(result, StopTaskResult::Stopped));
         let stopped = &state.tasks()[0];
         assert_eq!(stopped.status, TaskStatus::Cancelled);
-        assert_eq!(
-            stopped.error_message.as_deref(),
-            Some("Stopped by user")
-        );
+        assert_eq!(stopped.error_message.as_deref(), Some("Stopped by user"));
+        assert_eq!(state.current_task_id(), Some("task-1"));
+        assert_eq!(state.tasks()[0].status, TaskStatus::Cancelled);
+    }
+
+    #[test]
+    fn stop_task_is_idempotent_for_cancelled_current_slot() {
+        let mut task = task_with_id("task-1");
+        task.status = TaskStatus::Cancelled;
+        let mut state = QueueAggregate {
+            tasks: QueueTasks::from_tasks(vec![task]),
+            current_task: QueueCurrentTask::from_task_id(Some("task-1".to_string())),
+            ..QueueAggregate::default()
+        };
+
+        let result = state.stop_task("task-1");
+
+        assert!(matches!(result, StopTaskResult::Stopped));
+        assert_eq!(state.current_task_id(), Some("task-1"));
+        assert_eq!(state.tasks()[0].status, TaskStatus::Cancelled);
+    }
+
+    #[test]
+    fn finalize_task_cancellation_releases_matching_current_slot() {
+        let mut task = task_with_id("task-1");
+        task.status = TaskStatus::Cancelled;
+        let mut state = QueueAggregate {
+            tasks: QueueTasks::from_tasks(vec![task]),
+            current_task: QueueCurrentTask::from_task_id(Some("task-1".to_string())),
+            run_status: QueueRunStatus::Running,
+            ..QueueAggregate::default()
+        };
+
+        let result = state.finalize_task_cancellation("task-1");
+
+        assert!(matches!(result, FinalizeTaskCancellationResult::Finalized));
         assert!(state.current_task_id().is_none());
+        assert_eq!(state.tasks()[0].status, TaskStatus::Cancelled);
+    }
+
+    #[test]
+    fn retry_rejects_cancelled_task_while_process_still_owns_current_slot() {
+        let mut task = task_with_id("task-1");
+        task.status = TaskStatus::Cancelled;
+        let mut state = QueueAggregate {
+            tasks: QueueTasks::from_tasks(vec![task]),
+            current_task: QueueCurrentTask::from_task_id(Some("task-1".to_string())),
+            ..QueueAggregate::default()
+        };
+
+        let result = state.retry_task("task-1");
+
+        assert!(matches!(
+            result,
+            RetryTaskResult::InvalidStatus {
+                status: TaskStatus::Cancelled
+            }
+        ));
+        assert_eq!(state.current_task_id(), Some("task-1"));
+        assert_eq!(state.tasks()[0].status, TaskStatus::Cancelled);
+    }
+
+    #[test]
+    fn remove_rejects_cancelled_task_while_process_still_owns_current_slot() {
+        let mut task = task_with_id("task-1");
+        task.status = TaskStatus::Cancelled;
+        let mut state = QueueAggregate {
+            tasks: QueueTasks::from_tasks(vec![task]),
+            current_task: QueueCurrentTask::from_task_id(Some("task-1".to_string())),
+            ..QueueAggregate::default()
+        };
+
+        let result = state.remove_task("task-1");
+
+        assert!(matches!(
+            result,
+            RemoveTaskResult::InvalidStatus {
+                status: TaskStatus::Cancelled
+            }
+        ));
+        assert_eq!(state.current_task_id(), Some("task-1"));
         assert_eq!(state.tasks()[0].status, TaskStatus::Cancelled);
     }
 

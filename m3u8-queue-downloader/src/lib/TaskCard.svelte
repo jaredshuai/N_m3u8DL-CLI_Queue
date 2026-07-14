@@ -4,7 +4,14 @@
   import { loadQueueState, stopTask } from './queue-store.js';
   import { appSettings, clearHistoryTask, trackSessionTask } from './stores.js';
 
-  let { task, draggable = false, historical = false, onOpenCliConsole = null, cliConsoleActive = false } = $props();
+  let {
+    task,
+    draggable = false,
+    historical = false,
+    terminationPending = false,
+    onOpenCliConsole = null,
+    cliConsoleActive = false,
+  } = $props();
 
   let statusKey = $derived(
     task.status === 'downloading' ? 'down' :
@@ -19,7 +26,7 @@
     task.status === 'waiting' ? '等待中' :
     task.status === 'completed' ? '已完成' :
     task.status === 'failed' ? '失败' :
-    task.status === 'cancelled' ? '已停止' : task.status
+    task.status === 'cancelled' ? (terminationPending ? '停止中' : '已停止') : task.status
   );
 
   let displayTitle = $derived(
@@ -190,14 +197,14 @@
             {cliConsoleActive ? '正在查看 CLI 终端' : '打开 CLI 终端'}
           </button>
         {/if}
-        {#if statusKey === 'down'}
+        {#if statusKey === 'down' || (statusKey === 'cancel' && terminationPending)}
           <button class="action-btn danger" onclick={handleStop} disabled={stopping} title="停止">
             {stopping ? '停止中...' : '⏹'}
           </button>
         {/if}
         {#if statusKey === 'wait'}
           <button class="action-btn danger" onclick={handleRemove} title="删除">✕</button>
-        {:else if statusKey === 'fail' || statusKey === 'cancel'}
+        {:else if statusKey === 'fail' || (statusKey === 'cancel' && !terminationPending)}
           <button class="action-btn accent" onclick={handleRetry} title="重试">🔄</button>
           <button
             class="action-btn danger"

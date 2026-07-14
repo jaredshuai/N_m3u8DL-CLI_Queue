@@ -1,7 +1,7 @@
 use crate::adapters::queue_repository_mappers::{
-    application_add_task_outcome, application_pending_history_clear_outcome,
-    application_prepare_task_failure_outcome, application_remove_task_result,
-    application_retry_task_result, application_run_finish_outcome,
+    application_add_task_outcome, application_finalize_task_cancellation_result,
+    application_pending_history_clear_outcome, application_prepare_task_failure_outcome,
+    application_remove_task_result, application_retry_task_result, application_run_finish_outcome,
     application_schedule_next_outcome, application_stop_task_result,
     application_task_completion_staging_outcome, application_terminal_history_staging_outcome,
     application_update_save_name_result, domain_run_status,
@@ -67,6 +67,20 @@ impl QueueManager {
                 application_stop_task_result(id, state.stop_task(id))?;
                 Ok(())
             })
+            .await
+    }
+
+    pub async fn finalize_task_cancellation(&self, id: &str) -> AppResult<bool> {
+        self.store
+            .update_and_persist_when(
+                |state| {
+                    application_finalize_task_cancellation_result(
+                        id,
+                        state.finalize_task_cancellation(id),
+                    )
+                },
+                |finalized| *finalized,
+            )
             .await
     }
 
@@ -395,6 +409,13 @@ impl QueueRepository for QueueManager {
         Box::pin(async move { QueueManager::stop_task(self, id).await })
     }
 
+    fn finalize_task_cancellation<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> QueueRepositoryFuture<'a, AppResult<bool>> {
+        Box::pin(async move { QueueManager::finalize_task_cancellation(self, id).await })
+    }
+
     // ---- lifecycle (ex-QueueRunLifecycle) ----
     fn prepare_for_exit<'a>(&'a self) -> QueueRepositoryFuture<'a, AppResult<()>> {
         Box::pin(async move { QueueManager::prepare_for_exit(self).await })
@@ -438,7 +459,9 @@ impl QueueRepository for QueueManager {
         &'a self,
         id: &'a str,
         output_path: &'a str,
-        artifact_diagnostic: Option<&'a crate::application::artifact_resolution::ArtifactDiagnostic>,
+        artifact_diagnostic: Option<
+            &'a crate::application::artifact_resolution::ArtifactDiagnostic,
+        >,
     ) -> QueueRepositoryFuture<'a, AppResult<Option<TaskSnapshot>>> {
         Box::pin(async move {
             QueueManager::stage_task_completion(self, id, output_path, artifact_diagnostic).await

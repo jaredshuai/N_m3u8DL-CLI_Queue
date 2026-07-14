@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createQueueStateLoader, runStopTask } from './queue-store.js';
+import {
+  createQueueStateLoader,
+  isTaskTerminationPending,
+  runStopTask,
+} from './queue-store.js';
 
 function deferred() {
   let resolve;
@@ -17,6 +21,7 @@ test('createQueueStateLoader serializes rapid reloads and applies only the lates
   const second = deferred();
   const appliedTasks = [];
   const appliedRunning = [];
+  const appliedCurrentTaskIds = [];
   let invokeCount = 0;
   const loader = createQueueStateLoader({
     invokeQueueState: (() => {
@@ -28,6 +33,7 @@ test('createQueueStateLoader serializes rapid reloads and applies only the lates
     })(),
     setTasks: (tasks) => appliedTasks.push(tasks.map((task) => task.id)),
     setQueueRunning: (running) => appliedRunning.push(running),
+    setCurrentTaskId: (taskId) => appliedCurrentTaskIds.push(taskId),
     onError: () => {},
   });
 
@@ -45,6 +51,7 @@ test('createQueueStateLoader serializes rapid reloads and applies only the lates
 
   second.resolve({
     tasks: [{ id: 'newer', progress: 0.2 }],
+    currentTaskId: 'newer',
     isRunning: true,
   });
 
@@ -53,6 +60,7 @@ test('createQueueStateLoader serializes rapid reloads and applies only the lates
 
   assert.deepEqual(appliedTasks, [['newer']]);
   assert.deepEqual(appliedRunning, [true]);
+  assert.deepEqual(appliedCurrentTaskIds, ['newer']);
 });
 
 test('runStopTask invokes the stop command before reloading queue state', async () => {
@@ -90,4 +98,19 @@ test('runStopTask reloads queue state when the stop command fails', async () => 
   );
 
   assert.deepEqual(calls, [['invoke'], ['reload']]);
+});
+
+test('isTaskTerminationPending identifies only the cancelled current task', () => {
+  assert.equal(
+    isTaskTerminationPending({ id: 'task-1', status: 'cancelled' }, 'task-1'),
+    true,
+  );
+  assert.equal(
+    isTaskTerminationPending({ id: 'task-1', status: 'cancelled' }, 'task-2'),
+    false,
+  );
+  assert.equal(
+    isTaskTerminationPending({ id: 'task-1', status: 'downloading' }, 'task-1'),
+    false,
+  );
 });
