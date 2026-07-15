@@ -5,13 +5,15 @@
 - Task 1: complete
 - Task 2: complete
 - Task 3: complete
-- Task 4: pending
-- Task 5: pending
-- Task 6: pending
+- Task 4: complete
+- Task 5: complete
+- Task 6: complete
+- Task 7: complete
 
 The executable behavior source of truth is `.github/workflows/release.yml` plus
-`m3u8-queue-downloader/scripts/release-workflow.test.mjs`. This plan records
-task state, required invariants, and operator commands without copying workflow
+`m3u8-queue-downloader/scripts/release-workflow.test.mjs` and
+`m3u8-queue-downloader/scripts/prepare-release.test.mjs`. This plan records task
+state, required invariants, and operator commands without copying workflow
 PowerShell blocks.
 
 ## Goal
@@ -23,17 +25,16 @@ or published Releases.
 
 ## Current Workflow Contract
 
-The contract file contains these nine tests:
+All release workflow contract tests cover the README entry, job/permission and
+token boundaries, approved Action commit pins, the content-addressed ffmpeg ZIP
+and unconditional verification/extraction step, metadata transport, existing
+Release handling, native-command exit guards, exact asset name/size/digest,
+repository immutability, Latest policy, and both remote tag peel checks.
 
-1. `README exposes the latest release download page and both package choices`
-2. `release workflow has a read-only build job and a minimal publish job`
-3. `release metadata is validated before outputs and run scripts read expressions only through env`
-4. `GitHub token is step-scoped only where the step actually calls gh`
-5. `release lifecycle never mutates an existing release and publishes only after verification`
-6. `every native node command in pwsh blocks has an immediate exit-code guard`
-7. `release assets are transferred explicitly and verified by exact local and remote size`
-8. `publication policy serializes Latest decisions and handles ascending and descending versions`
-9. `release tag source is peeled to the build commit before create and before publish`
+All prepare-release contract tests separately lock the shared strict version
+grammar, the executable command order printed by
+`ReleasePrepareReporter.nextSteps`, every pre-tag failure/success path, and the
+exact read-only git/GitHub API calls through fake dependencies.
 
 The workflow order guarded by those tests is:
 
@@ -41,8 +42,8 @@ The workflow order guarded by those tests is:
    build, prepare assets, verify local assets, upload the Actions artifact.
 2. Publish job: download the artifact, verify local assets, determine
    prerelease/Latest policy, verify the remote tag source, create a draft,
-   verify draft assets, reverify the remote tag source, publish, then verify the
-   public Release.
+   verify draft asset names/sizes/digests, reverify the remote tag source,
+   publish, then verify the public Release including `isImmutable=true`.
 
 The publish job is serialized by `release-publication`. Repository credentials
 are available only to individual steps that invoke `gh`.
@@ -58,11 +59,12 @@ are available only to individual steps that invoke `gh`.
 
 Completed outcomes:
 
-- The suite now has the nine tests listed above.
+- All executable release workflow contract tests pass together.
 - Metadata uses environment boundaries, Base64 version transport, strict UTF-8,
   strict project SemVer, and guarded native commands.
 - Existing Releases are never mutated by automation.
-- Local, draft, and published assets are verified by exact names and byte size.
+- Local, draft, and published assets are verified by exact names and byte size;
+  draft and published assets also require exact SHA256 digests.
 - Latest policy and both remote tag peel checks are contract-protected.
 
 ## Task 2: Hardened Tag-Only Release Workflow
@@ -106,12 +108,17 @@ Completed outcomes:
   actual asset list.
 - The README contract extracts only the `## 下载` section and checks the exact
   URL, asset names, compatibility note, platform, and bundled components.
-- AGENTS and design documentation use the workflow and contract test as their
-  behavior source of truth.
+- AGENTS and design documentation use the workflow plus both contract tests as
+  their behavior source of truth.
 
 ## Task 4: Prepare Version 0.2.2
 
-**Status:** pending
+**Status:** complete
+
+Completion record: version `0.2.2` was prepared in exactly the five version
+files, with `package-lock.json` refreshed using `--package-lock-only
+--ignore-scripts`. The version commit was pushed to `master` before any tag was
+created.
 
 **Version files in the final Task 4 commit:**
 
@@ -159,11 +166,14 @@ Do not create or push the tag during Task 4.
 
 ## Task 5: Verify The Release Candidate
 
-**Status:** pending
+**Status:** complete
+
+Completion record: the release candidate checks completed before tag creation.
+No local Tauri package was substituted for the GitHub Actions Release build.
 
 Run from `m3u8-queue-downloader` unless noted otherwise:
 
-1. Verify the nine release/README contracts:
+1. Verify all release/README contract tests:
 
    ```powershell
    node --test scripts/release-workflow.test.mjs
@@ -199,7 +209,19 @@ this machine's local packaging remains secondary to the tag workflow.
 
 ## Task 6: Configure Tag Protection And Publish app-v0.2.2
 
-**Status:** pending
+**Status:** complete
+
+Completion record:
+
+- Active no-bypass tag ruleset: `18966944`
+- Successful Release workflow run: `29387505665`
+- Public Release: `https://github.com/jaredshuai/N_m3u8DL-CLI_Queue/releases/tag/app-v0.2.2`
+- Public Latest: `app-v0.2.2`
+
+Repository Immutable Releases was enabled after `app-v0.2.2` was published, so
+that existing Release remains mutable. It is not deleted, replaced, or reused,
+and its protected tag is never moved. Future workflow runs require the newly
+published Release to report `isImmutable=true`.
 
 ### 1. Put the reviewed commits on master
 
@@ -210,25 +232,18 @@ creating the release tag.
 git push origin master
 ```
 
-### 2. Configure and verify the external tag ruleset
+### 2. External controls used for app-v0.2.2
 
-Before creating or pushing `app-v0.2.2`, use repository settings to create or
-confirm one active ruleset with:
+Task 6 configured and verified ruleset `18966944` before creating
+`app-v0.2.2`. Repository Immutable Releases was enabled later, so the existing
+Release remains mutable. This records the historical publication; it is not the
+procedure for future tags.
 
-- target `tag`
-- ref include `refs/tags/app-v*`
-- rules `update` and `deletion`
-- no bypass actors
-
-Inspect the active repository rulesets with:
-
-```powershell
-gh api repos/jaredshuai/N_m3u8DL-CLI_Queue/rulesets
-gh api repos/jaredshuai/N_m3u8DL-CLI_Queue/rulesets/<ruleset-id>
-```
-
-Do not proceed until the detailed ruleset confirms all four properties. This is
-an external prerequisite and must not be assumed from repository files.
+Future tags must use
+`node scripts/prepare-release.mjs pre-tag <version>` after pushing `master`.
+That gate mechanically verifies clean `master`, `HEAD == origin/master`, all
+five version files, local/remote tag absence, the complete named ruleset, and
+the immutable-releases API before tag creation.
 
 ### 3. Create and push the immutable tag
 
@@ -289,7 +304,7 @@ gh release download app-v0.2.2 --dir <temporary-directory>
 - **Publish job failed after a successful windows job:** `--failed` preserves the
   successful build job and its existing `release-assets` artifact, then reruns
   the failed publish path. Do not request a full rerun: rebuilding would attempt
-  to upload the same fixed `upload-artifact@v4` artifact name again.
+  to upload the same fixed `upload-artifact` v4.6.2 artifact name again.
 - **Windows build job failed:** `--failed` reruns that failed job and the
   necessary downstream publish work after the build succeeds.
 - **Existing published Release:** do not delete, replace, or reuse it. Return to
@@ -299,3 +314,47 @@ gh release download app-v0.2.2 --dir <temporary-directory>
 
 The workflow itself never performs existing-Release cleanup, and the recovery
 procedure never uses a full workflow rerun.
+
+## Task 7: Harden Future Release Supply Chain
+
+**Status:** complete
+
+**Files:**
+
+- `.github/workflows/release.yml`
+- `m3u8-queue-downloader/scripts/release-workflow.test.mjs`
+- `m3u8-queue-downloader/scripts/prepare-release.mjs`
+- `m3u8-queue-downloader/scripts/prepare-release.test.mjs`
+- `AGENTS.md`
+- `docs/superpowers/specs/2026-07-14-release-download-page-design.md`
+- `docs/superpowers/plans/2026-07-14-release-download-page.md`
+
+Completed outcomes:
+
+- `release:prepare` now accepts exactly the workflow version grammar and prints
+  the lockfile/check/stage/commit/push/pre-tag-gate/tag sequence in that order.
+- `node scripts/prepare-release.mjs pre-tag <version>` is the only pre-tag
+  operator gate. It requires clean `master` at `origin/master`, validates all
+  five version files and tag absence, reads the exact named no-bypass ruleset,
+  and requires repository Immutable Releases through API version `2026-03-10`.
+  Unit tests inject fake git/gh dependencies; Task 7 does not run the real gate
+  from its feature branch.
+- Existing same-tag draft and published Releases produce opposite, explicit
+  recovery instructions after a read-only state query; automation always throws
+  without mutation.
+- Draft and published assets require exact remote `assets.digest` values derived
+  from local SHA256; future published Releases also require `isImmutable=true`.
+- Every Release workflow action is pinned to the approved commit:
+  - `actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5` (`v4.3.1`)
+  - `actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020` (`v4.4.0`)
+  - `actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830` (`v4.3.0`)
+  - `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` (`v4.6.2`)
+  - `dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30` (`stable`)
+  - `tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5` (`v0.6.2`)
+- The ffmpeg cache key includes SHA256
+  `5005b9d49fad0a4fb2c34eb60fbb25739d00d01651255258c2f408c7ee8dc7be`;
+  the cache stores only `upstream-bundle.zip`, and every cache hit/miss verifies
+  that digest and exactly `6,846,809` bytes before guarded replacement of the
+  extraction directory.
+- No workflow, Release, or tag was triggered. The published `app-v0.2.2` tag
+  remains at its original release commit and is not moved to Task 7 changes.

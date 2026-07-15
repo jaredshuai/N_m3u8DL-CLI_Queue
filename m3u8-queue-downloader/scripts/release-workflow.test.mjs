@@ -26,6 +26,32 @@ const publishStepsBlock = publishJob &&
 const windowsSteps = windowsStepsBlock ? extractNamedSteps(windowsStepsBlock.text) : [];
 const publishSteps = publishStepsBlock ? extractNamedSteps(publishStepsBlock.text) : [];
 const allSteps = [...windowsSteps, ...publishSteps];
+const approvedActionPins = new Map([
+  ['actions/checkout', {
+    sha: '34e114876b0b11c390a56381ad16ebd13914f8d5',
+    comment: 'v4.3.1',
+  }],
+  ['actions/setup-node', {
+    sha: '49933ea5288caeca8642d1e84afbd3f7d6820020',
+    comment: 'v4.4.0',
+  }],
+  ['actions/cache', {
+    sha: '0057852bfaa89a56745cba8c7296529d2fc39830',
+    comment: 'v4.3.0',
+  }],
+  ['actions/upload-artifact', {
+    sha: 'ea165f8d65b6e75b540449e92b4886f43607fa02',
+    comment: 'v4.6.2',
+  }],
+  ['dtolnay/rust-toolchain', {
+    sha: '4be7066ada62dd38de10e7b70166bc74ed198c30',
+    comment: 'stable',
+  }],
+  ['tauri-apps/tauri-action', {
+    sha: '84b9d35b5fc46c1e45415bdb6144030364f7ebc5',
+    comment: 'v0.6.2',
+  }],
+]);
 
 test('README exposes the latest release download page and both package choices', () => {
   assert.ok(downloadSection, 'README must contain one ## 下载 section');
@@ -119,7 +145,10 @@ test('release workflow has a read-only build job and a minimal publish job', () 
   );
 
   const checkout = requireStep(windowsSteps, 'Checkout');
-  assert.match(checkout.text, /^        uses:\s*actions\/checkout@v4\s*$/m);
+  assert.match(
+    checkout.text,
+    /^        uses:\s*actions\/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5\s+# v4\.3\.1\s*$/m,
+  );
   assert.deepEqual(
     trimmedBlockLines(requireBlock(checkout.text, /^        with:\s*$/, 8)),
     ['with:', 'persist-credentials: false'],
@@ -147,6 +176,117 @@ test('release workflow has a read-only build job and a minimal publish job', () 
     tauri.text,
     /GITHUB_TOKEN|GH_TOKEN|tagName|releaseId|releaseDraft|prerelease|releaseName|releaseBody/,
     'Tauri action must not receive a token or release publishing inputs',
+  );
+});
+
+test('release workflow pins every action to an approved commit SHA', () => {
+  const useLines = workflow.split('\n').filter((line) => /^\s*uses:\s*/.test(line));
+  const observedCounts = new Map();
+
+  for (const line of useLines) {
+    const match = /^\s*uses:\s*([^@\s]+)@([^\s#]+)(?:\s+#\s*(\S.*?))?\s*$/.exec(line);
+    assert.ok(match, `unable to parse action use: ${line}`);
+    const [, action, ref, comment] = match;
+    assert.match(ref, /^[0-9a-f]{40}$/, `${action} must use a full lowercase commit SHA`);
+
+    const approved = approvedActionPins.get(action);
+    assert.ok(approved, `unapproved action in release workflow: ${action}`);
+    assert.equal(ref, approved.sha, `${action} must use the approved commit`);
+    assert.equal(comment, approved.comment, `${action} must retain its version comment`);
+    observedCounts.set(action, (observedCounts.get(action) ?? 0) + 1);
+  }
+
+  assert.deepEqual(
+    Object.fromEntries(observedCounts),
+    {
+      'actions/checkout': 1,
+      'actions/setup-node': 1,
+      'dtolnay/rust-toolchain': 1,
+      'actions/cache': 1,
+      'actions/upload-artifact': 2,
+      'tauri-apps/tauri-action': 1,
+    },
+  );
+
+  const rust = requireStep(windowsSteps, 'Setup Rust');
+  assert.deepEqual(
+    trimmedBlockLines(requireBlock(rust.text, /^        with:\s*$/, 8)),
+    ['with:', 'toolchain: stable'],
+    'the pinned rust-toolchain action must still select stable explicitly',
+  );
+});
+
+test('ffmpeg upstream bundle is content-addressed and verified before extraction', () => {
+  const cache = requireStep(windowsSteps, 'Cache ffmpeg upstream bundle');
+  assert.deepEqual(
+    trimmedBlockLines(requireBlock(cache.text, /^        with:\s*$/, 8)),
+    [
+      'with:',
+      'path: upstream-bundle.zip',
+      'key: ffmpeg-upstream-3.0.2-sha256-5005b9d49fad0a4fb2c34eb60fbb25739d00d01651255258c2f408c7ee8dc7be',
+    ],
+  );
+
+  const fetch = requireStep(windowsSteps, 'Fetch ffmpeg from upstream release');
+  assert.match(fetch.text, /^        if:\s*steps\.cache-ffmpeg\.outputs\.cache-hit != 'true'\s*$/m);
+  const fetchRun = normalizePowerShell(extractRunBlock(fetch.text) ?? '');
+  assert.match(fetchRun, /gh release download 3\.0\.2/);
+  assert.match(fetchRun, /--output upstream-bundle\.zip/);
+  assert.doesNotMatch(
+    fetchRun,
+    /expectedBundleSize|expectedBundleSha256|Get-FileHash|Expand-Archive|Remove-Item/,
+    'cache miss step must only download the ZIP',
+  );
+
+  const verify = requireStep(windowsSteps, 'Verify and extract ffmpeg upstream bundle');
+  assert.equal(
+    extractIndentedBlock(verify.text, /^        if:\s*/, 8),
+    null,
+    'verification must run on both cache hits and cache misses',
+  );
+  const verifyRun = normalizePowerShell(extractRunBlock(verify.text) ?? '');
+  assert.match(verifyRun, /\$expectedBundleSize\s*=\s*6846809/);
+  assert.match(
+    verifyRun,
+    /\$expectedBundleSha256\s*=\s*'5005b9d49fad0a4fb2c34eb60fbb25739d00d01651255258c2f408c7ee8dc7be'/,
+  );
+  assert.match(verifyRun, /Test-Path\s+-LiteralPath\s+\$bundlePath\s+-PathType\s+Leaf/);
+  assert.match(verifyRun, /Get-Item\s+-LiteralPath\s+\$bundlePath/);
+  assert.match(verifyRun, /\[int64\]\$bundle\.Length\s+-ne\s*\[int64\]\$expectedBundleSize/);
+  assert.match(
+    verifyRun,
+    /Get-FileHash\s+-LiteralPath\s+\$bundle\.FullName\s+-Algorithm\s+SHA256/,
+  );
+  assert.match(verifyRun, /\.Hash\.ToLowerInvariant\(\)/);
+  assert.match(verifyRun, /\$bundleSha256\s+-cne\s+\$expectedBundleSha256/);
+  assert.match(verifyRun, /function\s+Assert-WorkspaceChild/);
+  assert.match(verifyRun, /StartsWith\(\$workspacePrefix/);
+  assert.match(
+    verifyRun,
+    /\$upstreamBundleDir\s*=\s*Assert-WorkspaceChild\s+\(Join-Path\s+\$workspaceRoot\s+'upstream-bundle'\)/,
+  );
+  assert.match(
+    verifyRun,
+    /Remove-Item\s+-LiteralPath\s+\$upstreamBundleDir\s+-Recurse\s+-Force/,
+  );
+  assert.match(
+    verifyRun,
+    /Expand-Archive\s+-LiteralPath\s+\$bundle\.FullName\s+-DestinationPath\s+\$upstreamBundleDir\s+-Force/,
+  );
+
+  const sizeIndex = verifyRun.indexOf('$expectedBundleSize');
+  const hashIndex = verifyRun.indexOf('Get-FileHash');
+  const cleanupIndex = verifyRun.indexOf('Remove-Item');
+  const expandIndex = verifyRun.indexOf('Expand-Archive');
+  assert.ok(
+    sizeIndex >= 0 && sizeIndex < hashIndex && hashIndex < cleanupIndex && cleanupIndex < expandIndex,
+    'ffmpeg ZIP must be verified before the guarded extraction directory is replaced',
+  );
+
+  const build = requireStep(windowsSteps, 'Build bundled legacy CLI');
+  assert.ok(
+    cache.start < fetch.start && fetch.start < verify.start && verify.start < build.start,
+    'cache/download/verify-extract/build steps must remain in safety order',
   );
 });
 
@@ -336,12 +476,42 @@ test('release lifecycle never mutates an existing release and publishes only aft
     stageRun,
     /\$portablePath\s*=\s*Join-Path\s+'release-assets'\s+\$env:PORTABLE_ASSET/,
   );
-  assert.doesNotMatch(stageRun, /\bgh\s+release\s+view\b/);
   assertHttpStatusHelper(stageRun, 'Stage draft GitHub Release');
   assert.match(stageRun, /\[Uri\]::EscapeDataString\(\$env:RELEASE_TAG\)/);
   assert.match(stageRun, /releases\/tags\/\$encodedTag/);
   assert.match(stageRun, /switch\s*\(\$existingResponse\.Status\)/);
-  assert.match(stageRun, /['"]200['"]\s*\{[\s\S]*?already exists[\s\S]*?\}/);
+  assert.match(
+    stageRun,
+    /['"]200['"]\s*\{[\s\S]*?gh\s+release\s+view\s+\$env:RELEASE_TAG[\s\S]*?--json\s+isDraft,isImmutable,url/,
+  );
+  assert.match(stageRun, /\$existingViewExit\s*=\s*\$LASTEXITCODE/);
+  assert.match(stageRun, /\$existingRelease\s*=\s*\$existingJson\s*\|\s*ConvertFrom-Json/);
+  assert.match(stageRun, /\$existingRelease\.url/);
+  assert.match(stageRun, /\$existingRelease\.isImmutable/);
+
+  const existingViewIndex = stageRun.indexOf('gh release view');
+  const existingExitIndex = stageRun.indexOf('$existingViewExit = $LASTEXITCODE');
+  const existingParseIndex = stageRun.indexOf('$existingRelease = $existingJson | ConvertFrom-Json');
+  assert.ok(
+    existingViewIndex >= 0 &&
+      existingViewIndex < existingExitIndex &&
+      existingExitIndex < existingParseIndex,
+    'existing release view must be exit-checked before its JSON is parsed',
+  );
+
+  const draftBranch = /if\s*\(\[bool\]\$existingRelease\.isDraft\)\s*\{([\s\S]*?)\n\s*\}/
+    .exec(stageRun)?.[1] ?? '';
+  assert.match(draftBranch, /Automation will not modify/i);
+  assert.match(draftBranch, /delete only the draft Release object/i);
+  assert.match(draftBranch, /never clean up, delete, or move the tag/i);
+  assert.match(draftBranch, /gh run rerun \$env:RELEASE_RUN_ID --failed/);
+  assert.doesNotMatch(draftBranch, /higher version|new tag/i);
+
+  const publishedGuidance = stageRun.slice(stageRun.indexOf('Published Release'));
+  assert.match(publishedGuidance, /never delete or reuse/i);
+  assert.match(publishedGuidance, /higher version/i);
+  assert.match(publishedGuidance, /new tag/i);
+  assert.doesNotMatch(publishedGuidance, /delete only the draft Release object/i);
   assert.match(stageRun, /['"]404['"]\s*\{\s*\}/);
   assert.match(stageRun, /Unable to parse GitHub API HTTP status/);
   assert.match(stageRun, /GitHub API returned HTTP \$status/);
@@ -370,7 +540,13 @@ test('release lifecycle never mutates an existing release and publishes only aft
   );
   assert.ok(publish.start < verifyPublished.start);
   assert.match(extractRunBlock(verifyDraft.text) ?? '', /if\s*\(-not\s+\$release\.isDraft\)/);
-  assert.match(extractRunBlock(verifyPublished.text) ?? '', /if\s*\(\$release\.isDraft\)/);
+  const verifyPublishedRun = extractRunBlock(verifyPublished.text) ?? '';
+  assert.match(verifyPublishedRun, /if\s*\(\$release\.isDraft\)/);
+  assert.match(verifyPublishedRun, /if\s*\(-not\s+\[bool\]\$release\.isImmutable\)/);
+  assert.match(
+    verifyPublishedRun,
+    /Repository Immutable Releases must be enabled before creating the tag/i,
+  );
 
   assert.deepEqual(
     publishSteps.map((step) => step.name),
@@ -419,9 +595,12 @@ test('every native node command in pwsh blocks has an immediate exit-code guard'
   assert.match(buildRun, /throw\s+'Failed to validate bundled runtime resources\.'/);
 });
 
-test('release assets are transferred explicitly and verified by exact local and remote size', () => {
+test('release assets are transferred explicitly and verified by exact name, size, and digest', () => {
   const upload = requireStep(windowsSteps, 'Upload release assets');
-  assert.match(upload.text, /^        uses:\s*actions\/upload-artifact@v4\s*$/m);
+  assert.match(
+    upload.text,
+    /^        uses:\s*actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\s+# v4\.6\.2\s*$/m,
+  );
   assert.deepEqual(
     trimmedBlockLines(requireBlock(upload.text, /^        with:\s*$/, 8)),
     [
@@ -452,6 +631,19 @@ test('release assets are transferred explicitly and verified by exact local and 
   ]) {
     assertRemoteAssetVerification(extractRunBlock(step.text) ?? '', step.name);
   }
+
+  const verifyDraftRun = extractRunBlock(
+    requireStep(publishSteps, 'Verify draft release assets').text,
+  ) ?? '';
+  assert.match(verifyDraftRun, /--json\s+isDraft,isPrerelease,assets/);
+
+  const verifyPublishedRun = extractRunBlock(
+    requireStep(publishSteps, 'Verify published GitHub Release').text,
+  ) ?? '';
+  assert.match(
+    verifyPublishedRun,
+    /--json\s+isDraft,isPrerelease,isImmutable,assets/,
+  );
 });
 
 test('publication policy serializes Latest decisions and handles ascending and descending versions', () => {
@@ -551,6 +743,9 @@ function assertRemoteAssetVerification(run, stepName) {
   assert.match(run, /\$env:INSTALLER_ASSET/);
   assert.match(run, /\$env:PORTABLE_ASSET/);
   assert.match(run, /Get-Item\s+-LiteralPath/);
+  assert.match(run, /Get-FileHash\s+-LiteralPath\s+\$path\s+-Algorithm\s+SHA256/);
+  assert.match(run, /\.Hash\.ToLowerInvariant\(\)/);
+  assert.match(run, /Digest\s*=\s*"sha256:\$hash"/);
   assert.match(run, /\.Length\s+-le\s+0/);
   assert.match(run, /\$assets\.Count\s+-ne\s+2/);
   assert.match(run, /\$_\.name\s+-ceq\s+\$expectedAsset\.Name/);
@@ -560,6 +755,10 @@ function assertRemoteAssetVerification(run, stepName) {
     /\[int64\]\$matches\[0\]\.size\s+-ne\s+\[int64\]\$expectedAsset\.Length/,
     `${stepName} must compare remote size with the local release-assets file length`,
   );
+  assert.match(run, /\$remoteDigest\s*=\s*\[string\]\$matches\[0\]\.digest/);
+  assert.match(run, /\[string\]::IsNullOrWhiteSpace\(\$remoteDigest\)/);
+  assert.match(run, /\$remoteDigest\s+-cne\s+\$expectedAsset\.Digest/);
+  assert.match(run, /Remote release asset digest/i);
 }
 
 function assertNativeGhExitChecked(run, stepName) {
@@ -668,7 +867,13 @@ function assertMetadataExtractionCases(metadataRun) {
   initializeProbeRepository(tempRoot);
 
   try {
-    for (const version of ['1.2.3', '1.2.3-rc.1']) {
+    for (const version of [
+      '1.2.3',
+      '1.2.3-rc',
+      '1.2.3-rc.1',
+      '1.2.3-beta.0.exp.sha-5114f85',
+      '1.2.3-alpha.001a',
+    ]) {
       const result = runMetadataProbe(
         metadataRun, tempRoot, packagePath, outputPath, version, `app-v${version}`,
       );
@@ -678,7 +883,22 @@ function assertMetadataExtractionCases(metadataRun) {
     }
 
     for (const version of [
-      '1.2.3\r', '1.2.3\n', ' 1.2.3', '1.2.3 ', '١.٢.٣',
+      '01.2.3',
+      '1.02.3',
+      '1.2.03',
+      '1.2.3-preview',
+      '1.2.3-preview.1',
+      '1.2.3+build.1',
+      '1.2.3-rc+build.1',
+      '1.2.3-rc.01',
+      '1.2.3-rc.',
+      '1.2.3-rc..1',
+      '1.2.3-..',
+      '1.2.3\r',
+      '1.2.3\n',
+      ' 1.2.3',
+      '1.2.3 ',
+      '\uFF11.\uFF12.\uFF13',
     ]) {
       const result = runMetadataProbe(
         metadataRun, tempRoot, packagePath, outputPath, version, 'app-v0.0.0',

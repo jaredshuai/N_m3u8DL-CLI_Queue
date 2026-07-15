@@ -19,12 +19,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 'lts/*'
 
@@ -85,7 +85,9 @@ jobs:
           "portable=m3u8-queue-downloader_${version}_portable_x64.zip" >> $env:GITHUB_OUTPUT
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
 
       - name: Install frontend dependencies
         working-directory: m3u8-queue-downloader
@@ -101,10 +103,10 @@ jobs:
 
       - name: Cache ffmpeg upstream bundle
         id: cache-ffmpeg
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: upstream-bundle
-          key: ffmpeg-upstream-3.0.2
+          path: upstream-bundle.zip
+          key: ffmpeg-upstream-3.0.2-sha256-5005b9d49fad0a4fb2c34eb60fbb25739d00d01651255258c2f408c7ee8dc7be
 
       - name: Fetch ffmpeg from upstream release
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
@@ -120,7 +122,42 @@ jobs:
           if ($downloadExit -ne 0) {
             throw 'Failed to download the ffmpeg upstream bundle.'
           }
-          Expand-Archive upstream-bundle.zip -DestinationPath upstream-bundle -Force
+
+      - name: Verify and extract ffmpeg upstream bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workspaceRoot = (Resolve-Path '.').Path
+
+          function Assert-WorkspaceChild([string]$path) {
+            $fullPath = [System.IO.Path]::GetFullPath($path)
+            $workspacePrefix = $workspaceRoot.TrimEnd('\') + '\'
+            if (-not $fullPath.StartsWith($workspacePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw "Refusing to modify path outside workspace: $fullPath"
+            }
+            return $fullPath
+          }
+
+          $bundlePath = Join-Path $workspaceRoot 'upstream-bundle.zip'
+          if (-not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) {
+            throw "ffmpeg upstream bundle was not found: $bundlePath"
+          }
+          $expectedBundleSize = 6846809
+          $expectedBundleSha256 = '5005b9d49fad0a4fb2c34eb60fbb25739d00d01651255258c2f408c7ee8dc7be'
+          $bundle = Get-Item -LiteralPath $bundlePath
+          if ([int64]$bundle.Length -ne [int64]$expectedBundleSize) {
+            throw "Unexpected ffmpeg upstream bundle size: $($bundle.Length) bytes."
+          }
+          $bundleSha256 = (Get-FileHash -LiteralPath $bundle.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($bundleSha256 -cne $expectedBundleSha256) {
+            throw "Unexpected ffmpeg upstream bundle SHA256: $bundleSha256"
+          }
+
+          $upstreamBundleDir = Assert-WorkspaceChild (Join-Path $workspaceRoot 'upstream-bundle')
+          if (Test-Path -LiteralPath $upstreamBundleDir) {
+            Remove-Item -LiteralPath $upstreamBundleDir -Recurse -Force
+          }
+          Expand-Archive -LiteralPath $bundle.FullName -DestinationPath $upstreamBundleDir -Force
 
       - name: Build bundled legacy CLI
         shell: pwsh
@@ -138,7 +175,7 @@ jobs:
           Pop-Location
 
       - name: Upload bundled runtime resources
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bundled-runtime-resources
           path: |
@@ -148,7 +185,7 @@ jobs:
           retention-days: 1
 
       - name: Build Tauri release bundles
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         with:
           projectPath: m3u8-queue-downloader
 
@@ -241,7 +278,7 @@ jobs:
           }
 
       - name: Upload release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-assets
           path: release-assets/*
@@ -526,7 +563,29 @@ jobs:
             "repos/$env:RELEASE_REPO/releases/tags/$encodedTag"
           switch ($existingResponse.Status) {
             '200' {
-              throw "Release $env:RELEASE_TAG already exists. Automation will not modify it; confirm and delete it manually before rerunning."
+              $existingJson = & gh release view $env:RELEASE_TAG `
+                --repo $env:RELEASE_REPO --json isDraft,isImmutable,url
+              $existingViewExit = $LASTEXITCODE
+              if ($existingViewExit -ne 0) {
+                throw "Failed to inspect existing Release $env:RELEASE_TAG."
+              }
+              try {
+                $existingRelease = $existingJson | ConvertFrom-Json
+              } catch {
+                throw "Failed to parse existing Release JSON for $env:RELEASE_TAG: $($_.Exception.Message)"
+              }
+              if (
+                $null -eq $existingRelease.isDraft -or
+                $null -eq $existingRelease.isImmutable -or
+                [string]::IsNullOrWhiteSpace([string]$existingRelease.url)
+              ) {
+                throw "Existing Release metadata is incomplete for $env:RELEASE_TAG."
+              }
+
+              if ([bool]$existingRelease.isDraft) {
+                throw "Draft Release $env:RELEASE_TAG already exists at $($existingRelease.url) (isImmutable=$([bool]$existingRelease.isImmutable)). Automation will not modify it. After manual inspection confirms it is unpublished and disposable, delete only the draft Release object; never clean up, delete, or move the tag. Then run: gh run rerun $env:RELEASE_RUN_ID --failed"
+              }
+              throw "Published Release $env:RELEASE_TAG already exists at $($existingRelease.url) (isImmutable=$([bool]$existingRelease.isImmutable)). Automation will not modify it; never delete or reuse it. Prepare a higher version and publish from a new tag."
             }
             '404' {}
             default {
@@ -566,15 +625,20 @@ jobs:
             throw "Release $env:RELEASE_TAG became public before asset verification."
           }
 
+          function Get-ExpectedAsset([string]$name) {
+            $path = Join-Path 'release-assets' $name
+            $file = Get-Item -LiteralPath $path
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            return [pscustomobject]@{
+              Name = $name
+              Length = $file.Length
+              Digest = "sha256:$hash"
+            }
+          }
+
           $expectedAssets = @(
-            [pscustomobject]@{
-              Name = $env:INSTALLER_ASSET
-              Length = (Get-Item -LiteralPath (Join-Path 'release-assets' $env:INSTALLER_ASSET)).Length
-            }
-            [pscustomobject]@{
-              Name = $env:PORTABLE_ASSET
-              Length = (Get-Item -LiteralPath (Join-Path 'release-assets' $env:PORTABLE_ASSET)).Length
-            }
+            Get-ExpectedAsset $env:INSTALLER_ASSET
+            Get-ExpectedAsset $env:PORTABLE_ASSET
           )
           if (@($expectedAssets.Name | Sort-Object -CaseSensitive -Unique).Count -ne 2) {
             throw 'Release asset names must be unique.'
@@ -594,6 +658,13 @@ jobs:
             }
             if ([int64]$matches[0].size -ne [int64]$expectedAsset.Length) {
               throw "Remote release asset size does not match local file: $($expectedAsset.Name)"
+            }
+            $remoteDigest = [string]$matches[0].digest
+            if ([string]::IsNullOrWhiteSpace($remoteDigest)) {
+              throw "Remote release asset digest is missing: $($expectedAsset.Name)"
+            }
+            if ($remoteDigest -cne $expectedAsset.Digest) {
+              throw "Remote release asset digest does not match local SHA256: $($expectedAsset.Name)"
             }
           }
 
@@ -750,7 +821,7 @@ jobs:
 
           $expectedPrerelease = $env:RELEASE_VERSION -cmatch '-(?:rc|beta|alpha)(?:\.|$)'
           $releaseJson = & gh release view $env:RELEASE_TAG `
-            --repo $env:RELEASE_REPO --json isDraft,isPrerelease,assets
+            --repo $env:RELEASE_REPO --json isDraft,isPrerelease,isImmutable,assets
           $viewExit = $LASTEXITCODE
           if ($viewExit -ne 0) {
             throw "Failed to read published release for $env:RELEASE_TAG."
@@ -760,19 +831,27 @@ jobs:
           if ($release.isDraft) {
             throw "Release $env:RELEASE_TAG is still a draft after publication."
           }
+          if (-not [bool]$release.isImmutable) {
+            throw "Published Release $env:RELEASE_TAG is not immutable. Repository Immutable Releases must be enabled before creating the tag."
+          }
           if ([bool]$release.isPrerelease -ne $expectedPrerelease) {
             throw "Release $env:RELEASE_TAG has an unexpected prerelease state."
           }
 
+          function Get-ExpectedAsset([string]$name) {
+            $path = Join-Path 'release-assets' $name
+            $file = Get-Item -LiteralPath $path
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            return [pscustomobject]@{
+              Name = $name
+              Length = $file.Length
+              Digest = "sha256:$hash"
+            }
+          }
+
           $expectedAssets = @(
-            [pscustomobject]@{
-              Name = $env:INSTALLER_ASSET
-              Length = (Get-Item -LiteralPath (Join-Path 'release-assets' $env:INSTALLER_ASSET)).Length
-            }
-            [pscustomobject]@{
-              Name = $env:PORTABLE_ASSET
-              Length = (Get-Item -LiteralPath (Join-Path 'release-assets' $env:PORTABLE_ASSET)).Length
-            }
+            Get-ExpectedAsset $env:INSTALLER_ASSET
+            Get-ExpectedAsset $env:PORTABLE_ASSET
           )
           if (@($expectedAssets.Name | Sort-Object -CaseSensitive -Unique).Count -ne 2) {
             throw 'Release asset names must be unique.'
@@ -792,6 +871,13 @@ jobs:
             }
             if ([int64]$matches[0].size -ne [int64]$expectedAsset.Length) {
               throw "Remote release asset size does not match local file: $($expectedAsset.Name)"
+            }
+            $remoteDigest = [string]$matches[0].digest
+            if ([string]::IsNullOrWhiteSpace($remoteDigest)) {
+              throw "Remote release asset digest is missing: $($expectedAsset.Name)"
+            }
+            if ($remoteDigest -cne $expectedAsset.Digest) {
+              throw "Remote release asset digest does not match local SHA256: $($expectedAsset.Name)"
             }
           }
 

@@ -12,9 +12,24 @@ const repoRoot = path.resolve(root, '..');
 const workspaceRoot = path.resolve(repoRoot, '..');
 const defaultArtifactsDir = path.join(workspaceRoot, 'artifacts');
 const cargoLockPackagePattern = /(\[\[package\]\]\r?\nname = "m3u8-queue-downloader"\r?\nversion = ")([^"]+)(")/;
+const releaseVersionPattern = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:rc|beta|alpha)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?![\s\S])/;
+const releaseRepository = 'jaredshuai/N_m3u8DL-CLI_Queue';
+const releaseTagRulesetName = 'Protect app-v release tags';
+const releaseGitHubApiVersion = '2026-03-10';
+const expectedPreTagVersionFiles = [
+  'package.json',
+  'package-lock.json',
+  'src-tauri/tauri.conf.json',
+  'src-tauri/Cargo.toml',
+  'src-tauri/Cargo.lock',
+];
 
 function prepareRelease(version) {
   return new ReleasePrepareCliAdapter().run(version);
+}
+
+function preTag(version) {
+  return new PreTagCliAdapter().run(version);
 }
 
 function checkReleaseVersions() {
@@ -36,6 +51,7 @@ export async function main(argv = process.argv, moduleUrl = import.meta.url, con
   const command = args[0];
   const runPackageSync = context.packageSync ?? packageSync;
   const runPrepareRelease = context.prepareRelease ?? prepareRelease;
+  const runPreTag = context.preTag ?? preTag;
   const runVersionCheck = context.versionCheck ?? checkReleaseVersions;
   const exit = context.exit ?? process.exit;
 
@@ -48,6 +64,11 @@ export async function main(argv = process.argv, moduleUrl = import.meta.url, con
   if (command === 'version-check') {
     runVersionCheck();
     exit(0);
+    return;
+  }
+
+  if (command === 'pre-tag') {
+    await runPreTag(args[1]);
     return;
   }
 
@@ -67,6 +88,132 @@ export class ReleasePrepareCliAdapter {
     }
 
     this.dependencies.releasePrepareUseCase.run({ version });
+  }
+}
+
+export class PreTagCliAdapter {
+  constructor(dependencies = defaultPreTagCliDependencies()) {
+    this.dependencies = dependencies;
+  }
+
+  run(version) {
+    if (!isValidReleaseVersion(version)) {
+      this.dependencies.reporter.preTagUsage();
+      this.dependencies.exit(1);
+      return;
+    }
+
+    try {
+      const result = this.dependencies.preTagUseCase.run({ version });
+      this.dependencies.reporter.preTagVerified(result);
+      this.dependencies.exit(0);
+    } catch (error) {
+      this.dependencies.reporter.preTagFailed(error);
+      this.dependencies.exit(1);
+    }
+  }
+}
+
+export class PreTagUseCase {
+  constructor(dependencies = defaultPreTagUseCaseDependencies()) {
+    this.dependencies = dependencies;
+  }
+
+  run({ version }) {
+    const gateway = this.dependencies.gateway;
+    const branch = runPreTagStep(
+      'Failed to read current git branch',
+      () => gateway.currentBranch(),
+    );
+    if (branch !== 'master') {
+      throw new Error(`Pre-tag gate requires branch master; current branch is ${branch || '(detached)'}.`);
+    }
+
+    const status = runPreTagStep(
+      'Failed to inspect the git working tree',
+      () => gateway.workingTreeStatus(),
+    );
+    if (status !== '') {
+      throw new Error(`Pre-tag gate requires a clean working tree; git status --porcelain returned: ${status}`);
+    }
+
+    runPreTagStep('Failed to fetch origin master', () => gateway.fetchOriginMaster());
+    const headSha = runPreTagStep('Failed to resolve HEAD', () => gateway.currentHeadSha());
+    const originMasterSha = runPreTagStep(
+      'Failed to resolve origin/master',
+      () => gateway.originMasterHeadSha(),
+    );
+    if (headSha !== originMasterSha) {
+      throw new Error(`HEAD ${headSha} does not match origin/master ${originMasterSha}.`);
+    }
+
+    const versionFiles = runPreTagStep(
+      'Failed to read release version files',
+      () => this.dependencies.versionFiles.readVersions(),
+    );
+    assertExpectedPreTagVersionFiles(versionFiles);
+    const fileVersion = assertConsistentReleaseVersions(versionFiles);
+    if (fileVersion !== version) {
+      throw new Error(
+        `Requested release version ${version} does not match version files ${fileVersion}.`,
+      );
+    }
+
+    const tag = `app-v${version}`;
+    const localTagExists = runPreTagStep(
+      `Failed to inspect local release tag ${tag}`,
+      () => gateway.localTagExists(tag),
+    );
+    if (localTagExists) {
+      throw new Error(`Local release tag ${tag} already exists.`);
+    }
+
+    const remoteTagExists = runPreTagStep(
+      `Failed to inspect remote release tag ${tag}`,
+      () => gateway.remoteTagExists(tag),
+    );
+    if (remoteTagExists) {
+      throw new Error(`Remote release tag ${tag} already exists.`);
+    }
+
+    const rulesets = runPreTagStep(
+      'Failed to query repository tag rulesets',
+      () => gateway.listRepositoryTagRulesets(),
+    );
+    if (!Array.isArray(rulesets)) {
+      throw new Error('Repository tag rulesets response must be an array.');
+    }
+    const matchingRulesets = rulesets.filter(({ name }) => name === releaseTagRulesetName);
+    if (matchingRulesets.length !== 1) {
+      throw new Error(
+        `Expected exactly one repository tag ruleset named ${releaseTagRulesetName}; found ${matchingRulesets.length}.`,
+      );
+    }
+
+    const rulesetSummary = matchingRulesets[0];
+    const ruleset = runPreTagStep(
+      `Failed to read release tag ruleset ${rulesetSummary.id}`,
+      () => gateway.getRepositoryRuleset(rulesetSummary.id),
+    );
+    assertReleaseTagRuleset(ruleset);
+
+    const immutableReleases = runPreTagStep(
+      'Failed to query repository Immutable Releases',
+      () => gateway.getImmutableReleases(),
+    );
+    if (immutableReleases?.enabled !== true) {
+      throw new Error('Repository Immutable Releases must be enabled before creating the tag.');
+    }
+
+    return {
+      version,
+      tag,
+      branch,
+      headSha,
+      rulesetId: ruleset.id,
+      rulesetName: ruleset.name,
+      immutableReleasesEnabled: true,
+    };
   }
 }
 
@@ -111,6 +258,20 @@ export class JsonVersionFiles {
   }
 }
 
+export class PreTagVersionFiles {
+  constructor(options = {}) {
+    this.rootDir = options.rootDir ?? root;
+    this.files = options.files ?? defaultPreTagVersionFiles();
+  }
+
+  readVersions() {
+    return this.files.map((file) => ({
+      file: path.relative(this.rootDir, file),
+      version: readPreTagReleaseVersion(file),
+    }));
+  }
+}
+
 export function assertConsistentReleaseVersions(versionFiles) {
   if (versionFiles.length === 0) {
     throw new Error('No release version files configured');
@@ -132,8 +293,30 @@ export class ReleasePrepareReporter {
   }
 
   usage() {
-    this.error('Usage: npm run release:prepare -- <semver>');
+    this.error('Usage: npm run release:prepare -- <version>');
+    this.error('Allowed: X.Y.Z or X.Y.Z-(rc|beta|alpha)[.<SemVer prerelease identifier>...]');
+    this.error('ASCII numeric identifiers must not have leading zeroes; build metadata is not supported.');
     this.error('Example: npm run release:prepare -- 0.2.0');
+  }
+
+  preTagUsage() {
+    this.error('Usage: node scripts/prepare-release.mjs pre-tag <version>');
+    this.error('Allowed: X.Y.Z or X.Y.Z-(rc|beta|alpha)[.<SemVer prerelease identifier>...]');
+    this.error('ASCII numeric identifiers must not have leading zeroes; build metadata is not supported.');
+  }
+
+  preTagFailed(error) {
+    this.error(`Pre-tag gate failed: ${errorMessage(error)}`);
+  }
+
+  preTagVerified(result) {
+    this.log(`Pre-tag gate passed for ${result.tag}:`);
+    this.log(`  branch: ${result.branch}`);
+    this.log(`  HEAD == origin/master: ${result.headSha}`);
+    this.log(`  version files: ${result.version}`);
+    this.log('  local and remote tag: absent');
+    this.log(`  ruleset: ${result.rulesetName} (${result.rulesetId})`);
+    this.log('  repository Immutable Releases: enabled');
   }
 
   versionFilesUpdated(files, version) {
@@ -144,9 +327,18 @@ export class ReleasePrepareReporter {
 
   nextSteps(version) {
     this.log('\nNext steps:');
-    this.log(`  git commit -am "chore(release): v${version}"`);
+    this.log('  npm install --package-lock-only --ignore-scripts');
+    this.log('  npm run check:versions');
+    this.log('  git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock');
+    this.log(`  git commit -m "chore(release): v${version}"`);
+    this.log('  git push origin master');
+    this.log('');
+    this.log('Run the mechanical pre-tag gate:');
+    this.log(`  node scripts/prepare-release.mjs pre-tag ${version}`);
+    this.log('');
+    this.log('Only after the pre-tag gate passes:');
     this.log(`  git tag app-v${version}`);
-    this.log(`  git push origin master app-v${version}`);
+    this.log(`  git push origin app-v${version}`);
   }
 }
 
@@ -265,9 +457,35 @@ function defaultReleasePrepareUseCaseDependencies() {
   };
 }
 
+function defaultPreTagCliDependencies() {
+  const reporter = new ReleasePrepareReporter();
+  return {
+    reporter,
+    preTagUseCase: new PreTagUseCase(),
+    exit: process.exit,
+  };
+}
+
+function defaultPreTagUseCaseDependencies() {
+  return {
+    gateway: new LocalPreTagGateway(),
+    versionFiles: new PreTagVersionFiles(),
+  };
+}
+
 function defaultReleaseVersionFiles() {
   return [
     path.join(root, 'package.json'),
+    path.join(root, 'src-tauri', 'tauri.conf.json'),
+    path.join(root, 'src-tauri', 'Cargo.toml'),
+    path.join(root, 'src-tauri', 'Cargo.lock'),
+  ];
+}
+
+function defaultPreTagVersionFiles() {
+  return [
+    path.join(root, 'package.json'),
+    path.join(root, 'package-lock.json'),
     path.join(root, 'src-tauri', 'tauri.conf.json'),
     path.join(root, 'src-tauri', 'Cargo.toml'),
     path.join(root, 'src-tauri', 'Cargo.lock'),
@@ -294,6 +512,28 @@ function readReleaseVersion(file) {
     return readTomlVersion(file);
   }
   return JSON.parse(fs.readFileSync(file, 'utf8')).version;
+}
+
+function readPreTagReleaseVersion(file) {
+  if (path.basename(file) === 'package-lock.json') {
+    return readPackageLockVersion(file);
+  }
+  return readReleaseVersion(file);
+}
+
+function readPackageLockVersion(file) {
+  const packageLock = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const rootVersion = packageLock.version;
+  const packageEntryVersion = packageLock.packages?.['']?.version;
+  if (typeof rootVersion !== 'string' || typeof packageEntryVersion !== 'string') {
+    throw new Error(`${path.basename(file)} must contain string versions at root and packages[""]`);
+  }
+  if (rootVersion !== packageEntryVersion) {
+    throw new Error(
+      `${path.basename(file)} root version ${rootVersion} does not match packages[""] version ${packageEntryVersion}`,
+    );
+  }
+  return rootVersion;
 }
 
 function readTomlVersion(file) {
@@ -349,6 +589,80 @@ function defaultPackageSyncDependencies() {
     }),
     releaseReporter: new ReleaseReporter(console.log),
   };
+}
+
+export class LocalPreTagGateway {
+  constructor(options = {}) {
+    this.repo = options.repo ?? releaseRepository;
+    this.apiVersion = options.apiVersion ?? releaseGitHubApiVersion;
+    this.gitOutput = options.gitOutput ?? runGitOutput;
+    this.gitStatus = options.gitStatus ?? runGitStatus;
+    this.ghJson = options.ghJson ?? runGhJson;
+  }
+
+  currentBranch() {
+    return this.gitOutput(['branch', '--show-current']);
+  }
+
+  workingTreeStatus() {
+    return this.gitOutput(['status', '--porcelain']);
+  }
+
+  fetchOriginMaster() {
+    this.gitOutput(['fetch', 'origin', 'master']);
+  }
+
+  currentHeadSha() {
+    return this.gitOutput(['rev-parse', 'HEAD']);
+  }
+
+  originMasterHeadSha() {
+    return this.gitOutput(['rev-parse', 'origin/master']);
+  }
+
+  localTagExists(tag) {
+    return referenceExists(
+      this.gitStatus(['show-ref', '--verify', '--quiet', `refs/tags/${tag}`]),
+      1,
+      `local tag ${tag}`,
+    );
+  }
+
+  remoteTagExists(tag) {
+    return referenceExists(
+      this.gitStatus([
+        'ls-remote', '--exit-code', '--tags', 'origin', `refs/tags/${tag}`,
+      ]),
+      2,
+      `remote tag ${tag}`,
+    );
+  }
+
+  listRepositoryTagRulesets() {
+    return this.ghJson([
+      'api', '--method', 'GET',
+      '-H', `X-GitHub-Api-Version: ${this.apiVersion}`,
+      `repos/${this.repo}/rulesets`,
+      '-f', 'targets=tag',
+      '-F', 'includes_parents=false',
+    ]);
+  }
+
+  getRepositoryRuleset(id) {
+    return this.ghJson([
+      'api', '--method', 'GET',
+      '-H', `X-GitHub-Api-Version: ${this.apiVersion}`,
+      `repos/${this.repo}/rulesets/${id}`,
+    ]);
+  }
+
+  getImmutableReleases() {
+    return this.ghJson([
+      'api', '--method', 'GET',
+      '-H', `X-GitHub-Api-Version: ${this.apiVersion}`,
+      `repos/${this.repo}/immutable-releases`,
+    ]);
+  }
 }
 
 export class PackageRunValidator {
@@ -450,7 +764,97 @@ export class ReleaseReporter {
 }
 
 function isValidReleaseVersion(version) {
-  return Boolean(version) && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version);
+  return typeof version === 'string' && releaseVersionPattern.test(version);
+}
+
+function runPreTagStep(label, operation) {
+  try {
+    return operation();
+  } catch (error) {
+    throw new Error(`${label}: ${errorMessage(error)}`);
+  }
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function assertExpectedPreTagVersionFiles(versionFiles) {
+  if (!Array.isArray(versionFiles)) {
+    throw new Error('Pre-tag version files response must be an array.');
+  }
+  const actualFiles = versionFiles.map(({ file }) => String(file).replaceAll('\\', '/'));
+  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedPreTagVersionFiles)) {
+    throw new Error(
+      `Pre-tag gate must read exactly these five version files: ${expectedPreTagVersionFiles.join(', ')}. Found: ${actualFiles.join(', ')}`,
+    );
+  }
+}
+
+function assertReleaseTagRuleset(ruleset) {
+  if (!ruleset || typeof ruleset !== 'object') {
+    throw new Error('Release tag ruleset response must be an object.');
+  }
+  if (ruleset.name !== releaseTagRulesetName) {
+    throw new Error(
+      `Release tag ruleset name must be ${releaseTagRulesetName}; got ${String(ruleset.name)}.`,
+    );
+  }
+  if (ruleset.enforcement !== 'active') {
+    throw new Error(
+      `Release tag ruleset enforcement must be active; got ${String(ruleset.enforcement)}.`,
+    );
+  }
+  if (ruleset.target !== 'tag') {
+    throw new Error(`Release tag ruleset target must be tag; got ${String(ruleset.target)}.`);
+  }
+
+  const include = ruleset.conditions?.ref_name?.include;
+  if (JSON.stringify(include) !== JSON.stringify(['refs/tags/app-v*'])) {
+    throw new Error(
+      `Release tag ruleset include must be exactly refs/tags/app-v*; got ${JSON.stringify(include)}.`,
+    );
+  }
+  const exclude = ruleset.conditions?.ref_name?.exclude;
+  if (JSON.stringify(exclude) !== JSON.stringify([])) {
+    throw new Error(
+      `Release tag ruleset exclude must be empty; got ${JSON.stringify(exclude)}.`,
+    );
+  }
+
+  const ruleTypes = Array.isArray(ruleset.rules)
+    ? ruleset.rules.map(({ type }) => type).sort()
+    : null;
+  if (JSON.stringify(ruleTypes) !== JSON.stringify(['deletion', 'update'])) {
+    throw new Error(
+      `Release tag ruleset rule types must be exactly deletion and update; got ${JSON.stringify(ruleTypes)}.`,
+    );
+  }
+  if (JSON.stringify(ruleset.bypass_actors) !== JSON.stringify([])) {
+    throw new Error(
+      `Release tag ruleset bypass actors must be empty; got ${JSON.stringify(ruleset.bypass_actors)}.`,
+    );
+  }
+  if (ruleset.current_user_can_bypass !== 'never') {
+    throw new Error(
+      `Release tag ruleset current_user_can_bypass must be never; got ${String(ruleset.current_user_can_bypass)}.`,
+    );
+  }
+}
+
+function referenceExists(result, absentStatus, label) {
+  if (result.error) {
+    throw new Error(`${label} check failed: ${errorMessage(result.error)}`);
+  }
+  if (result.status === 0) {
+    return true;
+  }
+  if (result.status === absentStatus) {
+    return false;
+  }
+  throw new Error(
+    `${label} check failed with exit ${String(result.status)}: ${String(result.stderr ?? '').trim()}`,
+  );
 }
 
 function parsePackageArgs(argv) {
@@ -523,6 +927,20 @@ function requireValue(argv, index, flag) {
     throw new Error(`Missing value for ${flag}`);
   }
   return value;
+}
+
+function runGitOutput(args) {
+  return execFileSync('git', ['-C', repoRoot, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function runGitStatus(args) {
+  return spawnSync('git', ['-C', repoRoot, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 }
 
 function ensureGhInstalled() {

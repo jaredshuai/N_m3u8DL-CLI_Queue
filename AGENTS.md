@@ -106,7 +106,17 @@ node scripts/prepare-release.mjs package-sync --run-id <已成功的_actions_run
 - 构建完成后，会把产物自动下载回根目录外层的 `artifacts/`。
 - 打包的是 **GitHub 上已经存在的分支**，不是本地未推送改动。
 
+## 当前发布状态
+
+- 公开 Latest Release 已完成：`app-v0.2.2`
+  - Release：`https://github.com/jaredshuai/N_m3u8DL-CLI_Queue/releases/tag/app-v0.2.2`
+  - 成功 workflow run：`29387505665`
+- tag ruleset `18966944` 已 active：target `tag`、include `refs/tags/app-v*`、同时禁止 update/deletion、无 bypass。
+- 仓库级 Immutable Releases 已启用，但启用时间晚于 `app-v0.2.2` 发布，因此现有 `0.2.2` Release 仍是 mutable；不要删除、替换或尝试追溯修正它。未来 Release 必须由 workflow 验证 `isImmutable=true`。
+
 ## 当前约定产物
+
+这里记录的是本地 `Package GUI` 同步目录，不是公开 Latest Release。Task 7 未执行新的 `package:sync`，所以本地同步产物仍为 `0.2.1`：
 
 同步回本地 `artifacts/` 后，应看到：
 
@@ -123,22 +133,26 @@ portable 目录当前应至少包含：
 
 ## GitHub Actions 约定
 
-Release 行为以 `.github/workflows/release.yml` 和
-`m3u8-queue-downloader/scripts/release-workflow.test.mjs` 为 source of truth；
+Release 与 `release:prepare` 行为以 `.github/workflows/release.yml`、
+`m3u8-queue-downloader/scripts/release-workflow.test.mjs` 和
+`m3u8-queue-downloader/scripts/prepare-release.test.mjs` 为 source of truth；
 本文只记录操作入口和必须保持的不变量，避免复制 workflow 脚本造成漂移。
 
 - `Package GUI`
   - 用于测试包/日常包
   - 产出 installer + portable 目录
   - 本地 `package:sync` 默认使用它
-  - 三个 workflow 均缓存 ffmpeg upstream bundle（`actions/cache`，key `ffmpeg-upstream-3.0.2`）
+  - 本地同步产物版本与公开 Release 版本相互独立；未实际运行 `package:sync` 时不要更新“当前约定产物”版本
 - `Release`
   - workflow 触发任何 `app-v*` tag push；没有分支或手工触发入口。外部 active ruleset 保证匹配 tag 只能创建一次，之后不可更新或删除
   - build job 只有 `contents: read`；publish job 只有 `contents: write` + `actions: read`，且不 checkout 或重新构建。`GH_TOKEN` 只绑定到实际调用 `gh` 的 step
+  - 所有 `uses:` 都必须固定到批准的 40 位 commit SHA，并保留版本注释；Tauri action 仍只负责 build，不接收发布参数或 token
+  - Release workflow 只缓存 ffmpeg upstream zip，content-addressed key 固定绑定其 SHA256；无论 cache hit/miss，都必须先校验 ZIP 恰好 `6,846,809` bytes 和 SHA256 `5005b9d49fad0a4fb2c34eb60fbb25739d00d01651255258c2f408c7ee8dc7be`，再清理受 workspace-child guard 约束的固定解压目录并展开
   - 自 `0.2.2` 起，Release 资产固定为 `m3u8-queue-downloader_<版本>_x64-setup.exe` 和 `m3u8-queue-downloader_<版本>_portable_x64.zip`
-  - 本地、draft、published 三阶段都校验两个精确资产名和字节大小；draft 校验通过且远端 tag 再次匹配 build `source_sha` 后才公开
+  - 本地、draft、published 三阶段都校验恰好两个精确资产名和字节大小；draft 与 published 还要求远端 `assets.digest` 精确匹配本地 SHA256
+  - draft 校验通过且远端 tag 再次匹配 build `source_sha` 后才公开；published 校验还必须确认 `isImmutable=true`
   - publish 使用全局 `release-publication` concurrency。没有当前 Latest 时，首个 stable 成为 Latest；更高 stable 更新 Latest；相同或更低 stable（包括旧版本 backfill）使用 `latest=false`；prerelease 永不成为 Latest
-  - existing same-tag draft：自动化不修改。人工确认其未公开且可安全丢弃后，只删除 draft Release，保留并且不移动 tag，不使用任何 cleanup tag 操作；随后通过 Actions rerun 重跑同一 tag workflow
+  - existing same-tag draft：自动化读取状态后立即失败且不修改。人工确认其未公开且可安全丢弃后，只删除 draft Release 对象，保留并且不 cleanup/delete/move tag；随后运行 `gh run rerun <run-id> --failed`
   - existing same-tag published：绝不删除、覆盖或复用；必须准备更高的新版本并创建新 tag
 
 ## 发版流程
@@ -151,26 +165,28 @@ npm run release:prepare -- <版本号>
 
 此命令自动更新四个文件的版本号：`package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock`。
 
-先提交版本变更并把 reviewed commits 推送到 `master`：
+随后必须按以下顺序更新 lockfile、核验版本、精确暂存五个版本文件、提交并先推送 `master`：
 
-```bash
-git commit -am "chore(release): v<版本号>"
+```powershell
+npm install --package-lock-only --ignore-scripts
+npm run check:versions
+git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+git commit -m "chore(release): v<版本号>"
 git push origin master
 ```
 
-在创建或推送任何新 `app-v*` tag 前，必须先确认仓库存在一条 **active** tag ruleset，并逐项核实：
+push `master` 后，在创建任何新 `app-v*` tag 前运行唯一的机械门槛：
 
-- target 为 `tag`
-- include pattern 为 `refs/tags/app-v*`
-- rules 同时包含 `update` 和 `deletion`
-- 没有 bypass actor 或其他 bypass 条件
+```powershell
+node scripts/prepare-release.mjs pre-tag <版本号>
+```
 
-这是发布前的外部安全前提，不得写成或假定为已经配置；当前发布计划由 Task 6 负责实际配置并确认。
+此命令不更新版本文件、不创建 tag。它只能在 clean `master` 上通过，并机械执行：`git fetch origin master`、确认 `HEAD == origin/master`、确认五个版本文件均等于请求版本、确认本地/远端 tag 都不存在、通过操作者本地 `gh` 凭据确认唯一的 `Protect app-v release tags` ruleset 完整满足 active/tag/精确 include/空 exclude/update+deletion/无 bypass，以及确认 repository Immutable Releases 为 enabled。任一步失败都必须先修复，不得继续创建 tag。
 
 该 ruleset 使匹配 `refs/tags/app-v*` 的 tag 在首次创建后不能 update 或
 delete；没有 bypass，因此不要通过移动、重推或删除 tag 来恢复发布。
 
-确认 ruleset 后再创建和推送 tag（tag push 会自动触发 Release workflow）：
+`pre-tag` gate 成功后，最后才创建和单独推送 tag（tag push 会自动触发 Release workflow）：
 
 ```bash
 git tag app-v<版本号>
