@@ -11,6 +11,10 @@ const repoRoot = path.resolve(scriptDir, '..', '..');
 const workflow = normalizeNewlines(
   fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8'),
 );
+const readme = normalizeNewlines(
+  fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8'),
+);
+const downloadSection = extractMarkdownSection(readme, '下载');
 const onBlock = extractIndentedBlock(workflow, /^on:\s*$/, 0);
 const jobsBlock = extractIndentedBlock(workflow, /^jobs:\s*$/, 0);
 const windowsJob = jobsBlock && extractIndentedBlock(jobsBlock.text, /^  windows:\s*$/, 2);
@@ -22,6 +26,44 @@ const publishStepsBlock = publishJob &&
 const windowsSteps = windowsStepsBlock ? extractNamedSteps(windowsStepsBlock.text) : [];
 const publishSteps = publishStepsBlock ? extractNamedSteps(publishStepsBlock.text) : [];
 const allSteps = [...windowsSteps, ...publishSteps];
+
+test('README exposes the latest release download page and both package choices', () => {
+  assert.ok(downloadSection, 'README must contain one ## 下载 section');
+  assert.deepEqual(
+    extractMarkdownLinks(downloadSection),
+    ['https://github.com/jaredshuai/N_m3u8DL-CLI_Queue/releases/latest'],
+    'download section must link only to this repository latest Release page',
+  );
+  assert.deepEqual(
+    extractInlineCode(downloadSection),
+    [
+      'm3u8-queue-downloader_<版本>_x64-setup.exe',
+      'm3u8-queue-downloader_<版本>_portable_x64.zip',
+      'portable.zip',
+    ],
+    'download section must list both 0.2.2+ asset patterns and the 0.2.1 legacy portable name',
+  );
+  assert.match(
+    downloadSection,
+    /^从 0\.2\.2 起，Release 使用以下版本化资产名：$/m,
+  );
+  assert.match(
+    downloadSection,
+    /^- \*\*安装版\*\*：`m3u8-queue-downloader_<版本>_x64-setup\.exe`$/m,
+  );
+  assert.match(
+    downloadSection,
+    /^- \*\*便携版\*\*：`m3u8-queue-downloader_<版本>_portable_x64\.zip`，解压后直接运行$/m,
+  );
+  assert.match(
+    downloadSection,
+    /^两个版本都已内置 N_m3u8DL-CLI 和 ffmpeg，仅支持 Windows x64。$/m,
+  );
+  assert.match(
+    downloadSection,
+    /^兼容提示：若 Latest 仍为 0\.2\.1，其便携包资产名为 `portable\.zip`；安装包请按该 Release 页面列出的实际资产选择。$/m,
+  );
+});
 
 test('release workflow has a read-only build job and a minimal publish job', () => {
   assert.ok(onBlock, 'release workflow must define one top-level on block');
@@ -744,6 +786,26 @@ function extractChildKeys(source, indent) {
 
 function normalizeNewlines(value) {
   return value.replace(/\r\n?/g, '\n');
+}
+
+function extractMarkdownSection(source, heading) {
+  const lines = source.split('\n');
+  const starts = lines.flatMap((line, index) =>
+    line === `## ${heading}` ? [index] : []);
+  if (starts.length !== 1) return null;
+
+  let end = starts[0] + 1;
+  while (end < lines.length && !/^##\s+/.test(lines[end])) end += 1;
+  return lines.slice(starts[0], end).join('\n');
+}
+
+function extractMarkdownLinks(source) {
+  return [...source.matchAll(/\[[^\]]+\]\((https?:\/\/[^)]+)\)/g)]
+    .map((match) => match[1]);
+}
+
+function extractInlineCode(source) {
+  return [...source.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
 }
 
 function extractIndentedBlock(source, headerPattern, indent) {

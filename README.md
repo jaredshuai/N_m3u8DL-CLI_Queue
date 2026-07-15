@@ -4,6 +4,19 @@
 
 真正的下载由 N_m3u8DL-CLI（命令行工具）完成，本仓库提供的是它的**队列管理界面**（Tauri + Svelte）。
 
+## 下载
+
+前往 [GitHub Releases 最新版本](https://github.com/jaredshuai/N_m3u8DL-CLI_Queue/releases/latest) 下载：
+
+从 0.2.2 起，Release 使用以下版本化资产名：
+
+- **安装版**：`m3u8-queue-downloader_<版本>_x64-setup.exe`
+- **便携版**：`m3u8-queue-downloader_<版本>_portable_x64.zip`，解压后直接运行
+
+两个版本都已内置 N_m3u8DL-CLI 和 ffmpeg，仅支持 Windows x64。
+
+兼容提示：若 Latest 仍为 0.2.1，其便携包资产名为 `portable.zip`；安装包请按该 Release 页面列出的实际资产选择。
+
 ## 仓库结构
 
 ```

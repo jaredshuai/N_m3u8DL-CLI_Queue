@@ -1,579 +1,301 @@
 # Release Download Page Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+## Status
 
-**Goal:** Publish `app-v0.2.2` through a tag-only GitHub Release that exposes a verified Windows installer and portable archive, with a README download entry.
+- Task 1: complete
+- Task 2: complete
+- Task 3: complete
+- Task 4: pending
+- Task 5: pending
+- Task 6: pending
 
-**Architecture:** Keep daily packaging in `Package GUI`. Refactor only the tag-triggered `Release` workflow so Tauri builds locally, a draft Release stages both verified assets, and a final explicit publish step makes the page public. Add a small Node contract test that guards the workflow ordering and README link without introducing a YAML dependency.
+The executable behavior source of truth is `.github/workflows/release.yml` plus
+`m3u8-queue-downloader/scripts/release-workflow.test.mjs`. This plan records
+task state, required invariants, and operator commands without copying workflow
+PowerShell blocks.
 
-**Tech Stack:** GitHub Actions, PowerShell, GitHub CLI, Tauri Action, Node.js built-in test runner, Markdown, existing release preparation script.
+## Goal
 
----
+Publish `app-v0.2.2` from an immutable tag with a verified Windows x64 installer
+and portable archive, expose the Latest Release page from README, and preserve a
+clear recovery path for failed draft publication without modifying release tags
+or published Releases.
 
-## File Map
+## Current Workflow Contract
 
-- Modify `.github/workflows/release.yml`: tag-only build, local asset verification, draft staging, remote verification, final publication.
-- Create `m3u8-queue-downloader/scripts/release-workflow.test.mjs`: static release workflow and README contract tests.
-- Modify `README.md`: user-facing Latest Release download section.
-- Modify version files through `npm run release:prepare -- 0.2.2`:
-  `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and
-  `src-tauri/Cargo.lock`.
-- Refresh `m3u8-queue-downloader/package-lock.json` after the version bump.
-- Update `AGENTS.md` only if release asset names or documented release behavior become inaccurate.
+The contract file contains these nine tests:
 
-## Chunk 1: Release Workflow Contract
+1. `README exposes the latest release download page and both package choices`
+2. `release workflow has a read-only build job and a minimal publish job`
+3. `release metadata is validated before outputs and run scripts read expressions only through env`
+4. `GitHub token is step-scoped only where the step actually calls gh`
+5. `release lifecycle never mutates an existing release and publishes only after verification`
+6. `every native node command in pwsh blocks has an immediate exit-code guard`
+7. `release assets are transferred explicitly and verified by exact local and remote size`
+8. `publication policy serializes Latest decisions and handles ascending and descending versions`
+9. `release tag source is peeled to the build commit before create and before publish`
 
-### Task 1: Add Failing Workflow And README Contract Tests
+The workflow order guarded by those tests is:
 
-**Files:**
-- Create: `m3u8-queue-downloader/scripts/release-workflow.test.mjs`
-- Test: `m3u8-queue-downloader/scripts/release-workflow.test.mjs`
+1. Build job: checkout without persisted credentials, resolve metadata, test,
+   build, prepare assets, verify local assets, upload the Actions artifact.
+2. Publish job: download the artifact, verify local assets, determine
+   prerelease/Latest policy, verify the remote tag source, create a draft,
+   verify draft assets, reverify the remote tag source, publish, then verify the
+   public Release.
 
-- [ ] **Step 1: Write the failing tests**
+The publish job is serialized by `release-publication`. Repository credentials
+are available only to individual steps that invoke `gh`.
 
-```js
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+## Task 1: Release Workflow Contract
 
-const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(scriptDir, '..', '..');
-const workflow = fs.readFileSync(
-  path.join(repoRoot, '.github', 'workflows', 'release.yml'),
-  'utf8',
-);
-
-test('release workflow publishes only app version tags', () => {
-  assert.match(workflow, /tags:\s*\n\s*- ['"]app-v\*['"]/);
-  assert.doesNotMatch(workflow, /workflow_dispatch:/);
-
-  const windowsJob = workflow.indexOf('  windows:');
-  const steps = workflow.indexOf('    steps:', windowsJob);
-  const jobToken = workflow.indexOf(
-    '      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}',
-    windowsJob,
-  );
-  assert.ok(windowsJob >= 0);
-  assert.ok(windowsJob < jobToken);
-  assert.ok(jobToken < steps);
-});
-
-test('release workflow verifies assets before staging and publishes only after remote verification', () => {
-  const localVerify = workflow.indexOf('Verify local release assets');
-  const draftCreate = workflow.indexOf('Stage draft GitHub Release');
-  const remoteVerify = workflow.indexOf('Verify draft release assets');
-  const publish = workflow.indexOf('Publish verified GitHub Release');
-
-  assert.ok(localVerify >= 0);
-  assert.ok(localVerify < draftCreate);
-  assert.ok(draftCreate < remoteVerify);
-  assert.ok(remoteVerify < publish);
-  assert.match(workflow, /gh release create[\s\S]*--draft[\s\S]*--verify-tag[\s\S]*--generate-notes/);
-  assert.match(workflow, /gh release edit[\s\S]*--draft=false/);
-});
-
-test('release workflow names installer and portable assets explicitly', () => {
-  assert.match(workflow, /m3u8-queue-downloader_\$\{version\}_x64-setup\.exe/);
-  assert.match(workflow, /m3u8-queue-downloader_\$\{version\}_portable_x64\.zip/);
-});
-```
-
-- [ ] **Step 2: Run the focused test and verify RED**
-
-Run:
-
-```powershell
-node --test scripts/release-workflow.test.mjs
-```
-
-Working directory: `m3u8-queue-downloader`
-
-Expected: failures for `workflow_dispatch`, missing staged publication steps,
-and generic `portable.zip`.
-
-### Task 2: Refactor The Tag-Only Release Workflow
+**Status:** complete
 
 **Files:**
-- Modify: `.github/workflows/release.yml`
-- Test: `m3u8-queue-downloader/scripts/release-workflow.test.mjs`
 
-- [ ] **Step 1: Restrict release creation to immutable tags**
+- `.github/workflows/release.yml`
+- `m3u8-queue-downloader/scripts/release-workflow.test.mjs`
 
-Replace the trigger with:
+Completed outcomes:
 
-```yaml
-on:
-  push:
-    tags:
-      - 'app-v*'
-```
+- The suite now has the nine tests listed above.
+- Metadata uses environment boundaries, Base64 version transport, strict UTF-8,
+  strict project SemVer, and guarded native commands.
+- Existing Releases are never mutated by automation.
+- Local, draft, and published assets are verified by exact names and byte size.
+- Latest policy and both remote tag peel checks are contract-protected.
 
-Remove the manual draft/prerelease inputs. Prerelease state is derived from the
-tag suffix. Add a job-level token so every `gh` step is authenticated:
+## Task 2: Hardened Tag-Only Release Workflow
 
-```yaml
-jobs:
-  windows:
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
+**Status:** complete
 
-The Tauri Action may continue receiving `GITHUB_TOKEN` in its own step env;
-`GH_TOKEN` is specifically for GitHub CLI commands across staging,
-verification, and publication steps.
+**File:** `.github/workflows/release.yml`
 
-- [ ] **Step 2: Resolve and validate release metadata before tests/build**
+Completed outcomes:
 
-Add a PowerShell step with id `release`:
+- The only trigger is an `app-v*` tag push.
+- The build job has `contents: read`; the separate publish job has only
+  `contents: write` and `actions: read`.
+- The build job emits validated version, `source_sha`, installer name, and
+  portable name outputs.
+- The publish job does not check out or build source.
+- The first stable Release becomes Latest when no Latest exists; a higher stable
+  advances Latest; equal or lower stable backfill keeps the current Latest;
+  prerelease never becomes Latest.
+- Any existing same-tag Release stops automation before draft creation.
 
-```powershell
-$version = node -p "require('./m3u8-queue-downloader/package.json').version"
-$expectedTag = "app-v$version"
-if ('${{ github.ref_name }}' -ne $expectedTag) {
-  throw "Release tag ${{ github.ref_name }} does not match package version $version."
-}
+## Task 3: README Download Entry And Release Documentation
 
-"version=$version" >> $env:GITHUB_OUTPUT
-"installer=m3u8-queue-downloader_${version}_x64-setup.exe" >> $env:GITHUB_OUTPUT
-"portable=m3u8-queue-downloader_${version}_portable_x64.zip" >> $env:GITHUB_OUTPUT
-```
-
-- [ ] **Step 3: Make Tauri Action build without publishing**
-
-Keep `tauri-apps/tauri-action@v0` with `projectPath`, but remove `tagName`,
-`releaseName`, `releaseBody`, `releaseDraft`, and `prerelease` inputs.
-
-- [ ] **Step 4: Stage the installer and portable archive under exact names**
-
-Replace the existing portable preparation/upload steps with one root-level
-PowerShell step:
-
-```powershell
-$workspaceRoot = (Resolve-Path '.').Path
-$projectRoot = Join-Path $workspaceRoot 'm3u8-queue-downloader'
-$portableRoot = Join-Path $projectRoot '.portable-dist'
-$portableDir = Join-Path $portableRoot 'm3u8-queue-downloader-portable'
-$releaseAssetsRoot = Join-Path $workspaceRoot 'release-assets'
-
-function Assert-WorkspaceChild([string]$path) {
-  $fullPath = [System.IO.Path]::GetFullPath($path)
-  $workspacePrefix = $workspaceRoot.TrimEnd('\') + '\'
-  if (-not $fullPath.StartsWith($workspacePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to modify path outside workspace: $fullPath"
-  }
-  return $fullPath
-}
-
-$portableRoot = Assert-WorkspaceChild $portableRoot
-$releaseAssetsRoot = Assert-WorkspaceChild $releaseAssetsRoot
-foreach ($target in @($portableRoot, $releaseAssetsRoot)) {
-  if (Test-Path -LiteralPath $target) {
-    Remove-Item -LiteralPath $target -Recurse -Force
-  }
-}
-
-New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
-New-Item -ItemType Directory -Path $releaseAssetsRoot -Force | Out-Null
-
-$releaseRoot = Join-Path $projectRoot 'src-tauri/target/release'
-Copy-Item -LiteralPath (Join-Path $releaseRoot 'm3u8-queue-downloader.exe') `
-  -Destination $portableDir -Force
-
-Get-ChildItem -LiteralPath $releaseRoot -Filter '*.dll' -File | ForEach-Object {
-  Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $portableDir $_.Name) -Force
-}
-
-$resources = Join-Path $releaseRoot 'resources'
-if (-not (Test-Path -LiteralPath $resources)) {
-  throw "Portable resources directory was not found: $resources"
-}
-Copy-Item -LiteralPath $resources -Destination (Join-Path $portableDir 'resources') `
-  -Recurse -Force
-
-$defaultFfmpegDir = Join-Path $portableDir 'lib/ffmpeg/tools/ffmpeg/bin'
-New-Item -ItemType Directory -Path $defaultFfmpegDir -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $portableDir 'resources/ffmpeg.exe') `
-  -Destination (Join-Path $defaultFfmpegDir 'ffmpeg.exe') -Force
-
-$installerDir = Join-Path $releaseRoot 'bundle/nsis'
-$installers = @(Get-ChildItem -LiteralPath $installerDir -Filter '*-setup.exe' -File)
-if ($installers.Count -ne 1) {
-  throw "Expected exactly one NSIS installer, found $($installers.Count)."
-}
-
-$installerTarget = Join-Path $releaseAssetsRoot '${{ steps.release.outputs.installer }}'
-$portableTarget = Join-Path $releaseAssetsRoot '${{ steps.release.outputs.portable }}'
-Copy-Item -LiteralPath $installers[0].FullName -Destination $installerTarget -Force
-Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath $portableTarget -Force
-```
-
-- [ ] **Step 5: Verify local assets before creating any Release**
-
-Add `Verify local release assets` that requires:
-
-```powershell
-$expected = @(
-  '${{ steps.release.outputs.installer }}',
-  '${{ steps.release.outputs.portable }}'
-)
-$files = @(Get-ChildItem -LiteralPath 'release-assets' -File)
-if ($files.Count -ne 2) { throw 'Expected exactly two release assets.' }
-foreach ($name in $expected) {
-  $matches = @($files | Where-Object Name -eq $name)
-  if ($matches.Count -ne 1 -or $matches[0].Length -le 0) {
-    throw "Missing, duplicate, or empty release asset: $name"
-  }
-}
-```
-
-- [ ] **Step 6: Stage a draft Release and support safe retries**
-
-Add `Stage draft GitHub Release` using `GH_TOKEN`:
-
-```powershell
-$tag = '${{ github.ref_name }}'
-$repo = '${{ github.repository }}'
-$existingJson = & gh release view $tag --repo $repo --json isDraft 2>$null
-$existingExit = $LASTEXITCODE
-
-if ($existingExit -eq 0) {
-  $existing = $existingJson | ConvertFrom-Json
-  if (-not $existing.isDraft) {
-    throw "Published release already exists for $tag; refusing to modify it."
-  }
-  & gh release delete $tag --repo $repo --yes
-  if ($LASTEXITCODE -ne 0) {
-    throw "Failed to delete stale draft release for $tag."
-  }
-}
-
-& gh release create $tag `
-  'release-assets/${{ steps.release.outputs.installer }}' `
-  'release-assets/${{ steps.release.outputs.portable }}' `
-  --repo $repo `
-  --title 'm3u8 Queue Downloader v${{ steps.release.outputs.version }}' `
-  --draft `
-  --verify-tag `
-  --generate-notes
-if ($LASTEXITCODE -ne 0) {
-  throw "Failed to stage draft GitHub Release for $tag."
-}
-```
-
-`gh release delete` is intentionally called without `--cleanup-tag`, so the
-immutable release tag remains intact. A failed lookup is allowed to fall
-through to `gh release create`; creation still fails safely on network or API
-errors.
-
-- [ ] **Step 7: Verify remote draft assets**
-
-Add `Verify draft release assets`:
-
-```powershell
-$tag = '${{ github.ref_name }}'
-$repo = '${{ github.repository }}'
-$releaseJson = & gh release view $tag --repo $repo --json isDraft,isPrerelease,assets
-if ($LASTEXITCODE -ne 0) {
-  throw "Failed to read draft release for $tag."
-}
-
-$release = $releaseJson | ConvertFrom-Json
-if (-not $release.isDraft) {
-  throw "Release $tag became public before asset verification."
-}
-
-$expected = @(
-  '${{ steps.release.outputs.installer }}',
-  '${{ steps.release.outputs.portable }}'
-)
-$assets = @($release.assets)
-if ($assets.Count -ne 2) {
-  throw "Expected exactly two remote release assets, found $($assets.Count)."
-}
-foreach ($name in $expected) {
-  $matches = @($assets | Where-Object name -eq $name)
-  if ($matches.Count -ne 1 -or [int64]$matches[0].size -le 0) {
-    throw "Missing, duplicate, or empty remote release asset: $name"
-  }
-}
-```
-
-- [ ] **Step 8: Publish only the verified draft**
-
-Add `Publish verified GitHub Release`:
-
-```powershell
-$tag = '${{ github.ref_name }}'
-$args = @('release', 'edit', $tag, '--repo', '${{ github.repository }}', '--draft=false')
-if ($tag -match '-(rc|beta|alpha)') {
-  $args += '--prerelease'
-} else {
-  $args += '--prerelease=false'
-  $args += '--latest'
-}
-& gh @args
-if ($LASTEXITCODE -ne 0) { throw 'Failed to publish verified GitHub Release.' }
-```
-
-- [ ] **Step 9: Run focused tests and verify GREEN**
-
-Run:
-
-```powershell
-node --test scripts/release-workflow.test.mjs
-```
-
-Expected: 3 tests pass.
-
-- [ ] **Step 10: Commit the workflow contract**
-
-```powershell
-git add .github/workflows/release.yml m3u8-queue-downloader/scripts/release-workflow.test.mjs
-git commit -m "ci: publish verified release downloads"
-```
-
-## Chunk 2: User Download Entry And Version
-
-### Task 3: Add The README Download Section
+**Status:** complete
 
 **Files:**
-- Modify: `README.md`
-- Test: `m3u8-queue-downloader/scripts/release-workflow.test.mjs`
 
-- [ ] **Step 1: Add the failing README contract test**
+- `README.md`
+- `AGENTS.md`
+- `m3u8-queue-downloader/scripts/release-workflow.test.mjs`
+- `docs/superpowers/specs/2026-07-14-release-download-page-design.md`
+- `docs/superpowers/plans/2026-07-14-release-download-page.md`
 
-Extend `release-workflow.test.mjs`:
+Completed outcomes:
 
-```js
-const readme = fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
+- README links to this repository's Latest Release page.
+- From `0.2.2`, README presents the two versioned asset patterns as the primary
+  path and states Windows x64 plus bundled N_m3u8DL-CLI and ffmpeg support.
+- A short compatibility note explains that a Latest Release still at `0.2.1`
+  uses `portable.zip`, while its installer must be selected from that Release's
+  actual asset list.
+- The README contract extracts only the `## 下载` section and checks the exact
+  URL, asset names, compatibility note, platform, and bundled components.
+- AGENTS and design documentation use the workflow and contract test as their
+  behavior source of truth.
 
-test('README exposes the latest release download page and both package choices', () => {
-  assert.match(readme, /## 下载/);
-  assert.match(readme, /releases\/latest/);
-  assert.match(readme, /安装版/);
-  assert.match(readme, /便携版/);
-});
-```
+## Task 4: Prepare Version 0.2.2
 
-- [ ] **Step 2: Run the README contract test and verify RED**
+**Status:** pending
 
-Run:
+**Version files in the final Task 4 commit:**
 
-```powershell
-node --test scripts/release-workflow.test.mjs
-```
+- `m3u8-queue-downloader/package.json`
+- `m3u8-queue-downloader/package-lock.json`
+- `m3u8-queue-downloader/src-tauri/tauri.conf.json`
+- `m3u8-queue-downloader/src-tauri/Cargo.toml`
+- `m3u8-queue-downloader/src-tauri/Cargo.lock`
 
-Expected: the three workflow tests pass and the README test fails because the
-download section is absent.
+1. From `m3u8-queue-downloader`, update `package.json`, `tauri.conf.json`,
+   `Cargo.toml`, and `Cargo.lock`:
 
-- [ ] **Step 3: Add a concise download section after the introduction**
+   ```powershell
+   npm run release:prepare -- 0.2.2
+   ```
 
-```markdown
-## 下载
+2. Update only the npm lockfile metadata without running lifecycle scripts:
 
-前往 [GitHub Releases 最新版本](https://github.com/jaredshuai/N_m3u8DL-CLI_Queue/releases/latest) 下载：
+   ```powershell
+   npm install --package-lock-only --ignore-scripts
+   ```
 
-- **安装版**：`m3u8-queue-downloader_<版本>_x64-setup.exe`
-- **便携版**：`m3u8-queue-downloader_<版本>_portable_x64.zip`，解压后直接运行
+3. Confirm the four release versions agree, then use one multiline `rg`
+   invocation to verify that both the package-lock root version and
+   `packages[""]` version are `0.2.2`:
 
-两个版本都已内置 N_m3u8DL-CLI 和 ffmpeg，仅支持 Windows x64。
-```
+   ```powershell
+   npm run check:versions
+   rg -n -U -e '\A\{\r?\n  "name": "m3u8-queue-downloader",\r?\n  "version": "0\.2\.2",' -e '  "packages": \{\r?\n    "": \{\r?\n      "name": "m3u8-queue-downloader",\r?\n      "version": "0\.2\.2",' package-lock.json
+   ```
 
-- [ ] **Step 4: Run the README contract test and verify GREEN**
+   Expected: exactly two matches, one for each required package-lock location.
 
-Run:
+4. Review the diff and confirm no workflow, generated schema, or unrelated file
+   changed.
 
-```powershell
-node --test scripts/release-workflow.test.mjs
-```
+5. Commit exactly the five version files:
 
-Expected: all 4 tests pass.
+   ```powershell
+   git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+   git commit -m "chore(release): v0.2.2"
+   ```
 
-- [ ] **Step 5: Commit the README entry and its contract test**
+Do not create or push the tag during Task 4.
 
-```powershell
-git add README.md m3u8-queue-downloader/scripts/release-workflow.test.mjs
-git commit -m "docs: add release download entry"
-```
+## Task 5: Verify The Release Candidate
 
-### Task 4: Prepare Version 0.2.2
+**Status:** pending
 
-**Files:**
-- Modify: `m3u8-queue-downloader/package.json`
-- Modify: `m3u8-queue-downloader/package-lock.json`
-- Modify: `m3u8-queue-downloader/src-tauri/tauri.conf.json`
-- Modify: `m3u8-queue-downloader/src-tauri/Cargo.toml`
-- Modify: `m3u8-queue-downloader/src-tauri/Cargo.lock`
+Run from `m3u8-queue-downloader` unless noted otherwise:
 
-- [ ] **Step 1: Run the repository release preparation command**
+1. Verify the nine release/README contracts:
 
-```powershell
-npm run release:prepare -- 0.2.2
-```
+   ```powershell
+   node --test scripts/release-workflow.test.mjs
+   ```
 
-Working directory: `m3u8-queue-downloader`
+2. Run the complete frontend/script suite and static checks:
 
-- [ ] **Step 2: Refresh npm lockfile metadata**
+   ```powershell
+   npm test
+   ```
 
-```powershell
-npm install --package-lock-only --ignore-scripts
-```
+3. Build the frontend production bundle:
 
-- [ ] **Step 3: Verify all version-bearing files**
+   ```powershell
+   npm run build
+   ```
 
-```powershell
-npm run check:versions
-rg -n '"version": "0\.2\.2"' package.json package-lock.json src-tauri/tauri.conf.json
-rg -n '^version = "0\.2\.2"$' src-tauri/Cargo.toml src-tauri/Cargo.lock
-```
+4. Run the Rust tests using the same command as the Release build job:
 
-Expected: version guard passes; package and lock metadata report `0.2.2`.
+   ```powershell
+   cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+   ```
 
-- [ ] **Step 4: Commit the release version**
+5. From the repository root, verify whitespace and repository scope:
 
-```powershell
-git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
-git commit -m "chore(release): v0.2.2"
-```
+   ```powershell
+   git diff --check
+   git status --short --branch
+   ```
 
-## Chunk 3: Verification And Publication
+Do not substitute a local Tauri package for the GitHub Actions Release build;
+this machine's local packaging remains secondary to the tag workflow.
 
-### Task 5: Verify The Release Candidate
+## Task 6: Configure Tag Protection And Publish app-v0.2.2
 
-**Files:**
-- Verify all modified files; no new edits expected.
+**Status:** pending
 
-- [ ] **Step 1: Run frontend tests and checks**
+### 1. Put the reviewed commits on master
 
-```powershell
-npm test
-```
-
-Expected: version check, Svelte check, Node tests, and script tests pass.
-
-- [ ] **Step 2: Run the frontend production build**
-
-```powershell
-npm run build
-```
-
-Expected: Vite exits 0; the existing mixed dynamic/static import warning is
-allowed.
-
-- [ ] **Step 3: Run Rust verification**
-
-```powershell
-cargo check --locked --manifest-path src-tauri/Cargo.toml
-cargo test --locked --manifest-path src-tauri/Cargo.toml
-```
-
-Expected: all Rust and architecture tests pass.
-
-- [ ] **Step 4: Verify repository state**
-
-```powershell
-git diff --check
-git status --short --branch
-```
-
-Expected: no whitespace errors and only committed release work.
-
-### Task 6: Push And Publish app-v0.2.2
-
-**Files:**
-- No source edits.
-
-- [ ] **Step 1: Push master**
+After Tasks 1-5 are reviewed and integrated, update and push `master` before
+creating the release tag.
 
 ```powershell
 git push origin master
 ```
 
-- [ ] **Step 2: Create and push the immutable release tag**
+### 2. Configure and verify the external tag ruleset
+
+Before creating or pushing `app-v0.2.2`, use repository settings to create or
+confirm one active ruleset with:
+
+- target `tag`
+- ref include `refs/tags/app-v*`
+- rules `update` and `deletion`
+- no bypass actors
+
+Inspect the active repository rulesets with:
+
+```powershell
+gh api repos/jaredshuai/N_m3u8DL-CLI_Queue/rulesets
+gh api repos/jaredshuai/N_m3u8DL-CLI_Queue/rulesets/<ruleset-id>
+```
+
+Do not proceed until the detailed ruleset confirms all four properties. This is
+an external prerequisite and must not be assumed from repository files.
+
+### 3. Create and push the immutable tag
+
+Confirm the release commit is the intended `master` commit, then run:
 
 ```powershell
 git tag app-v0.2.2
 git push origin app-v0.2.2
 ```
 
-- [ ] **Step 3: Identify and watch the Release workflow**
+The push triggers the Release workflow. The ruleset prevents later tag update or
+deletion, so recovery must never move or recreate this tag.
+
+### 4. Identify and watch the matching workflow run
 
 ```powershell
 $tagSha = git rev-list -n 1 app-v0.2.2
-$run = $null
-for ($attempt = 0; $attempt -lt 12 -and $null -eq $run; $attempt++) {
-  $runs = gh run list --workflow release.yml --event push --limit 20 `
-    --json databaseId,headSha,status,conclusion,url | ConvertFrom-Json
-  $run = $runs | Where-Object headSha -eq $tagSha | Select-Object -First 1
-  if ($null -eq $run) {
-    Start-Sleep -Seconds 5
-  }
-}
-if ($null -eq $run) {
-  throw "Release workflow run was not found for tag SHA $tagSha."
-}
-gh run watch $run.databaseId --exit-status
-if ($LASTEXITCODE -ne 0) {
-  throw "Release workflow failed: $($run.url)"
-}
+gh run list --workflow release.yml --event push --limit 20 --json databaseId,headSha,status,conclusion,url
+gh run watch <matching-run-id> --exit-status
 ```
 
-Expected: workflow conclusion `success`.
+Select the run whose `headSha` equals `$tagSha`.
 
-- [ ] **Step 4: Verify the public Release page**
+### 5. Verify the public Release
 
 ```powershell
 gh release view app-v0.2.2 --json url,name,tagName,isDraft,isPrerelease,assets
+gh api repos/jaredshuai/N_m3u8DL-CLI_Queue/releases/latest --jq .tag_name
 ```
 
-Expected:
+Expected Release state:
 
-- `isDraft: false`
-- `isPrerelease: false`
-- exactly two non-empty assets with the approved installer and portable names
+- `isDraft` is false.
+- `isPrerelease` is false.
+- Exactly these two non-empty assets exist:
+  - `m3u8-queue-downloader_0.2.2_x64-setup.exe`
+  - `m3u8-queue-downloader_0.2.2_portable_x64.zip`
+- If no Latest existed, or the previous Latest was lower than `0.2.2`, Latest is
+  `app-v0.2.2`.
+- If a higher stable Latest already exists, `0.2.2` is a backfill with
+  `latest=false`; the higher Latest remains unchanged.
 
-- [ ] **Step 5: Download and validate both published assets**
+Download both assets to a temporary directory and confirm their names and
+positive byte sizes:
 
 ```powershell
-$tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-$validationRoot = Join-Path $tempRoot "m3u8-release-verify-$([guid]::NewGuid())"
-$expectedNames = @(
-  'm3u8-queue-downloader_0.2.2_x64-setup.exe',
-  'm3u8-queue-downloader_0.2.2_portable_x64.zip'
-)
-
-New-Item -ItemType Directory -Path $validationRoot -Force | Out-Null
-try {
-  gh release download app-v0.2.2 --dir $validationRoot
-  if ($LASTEXITCODE -ne 0) {
-    throw 'Failed to download published release assets.'
-  }
-
-  $files = @(Get-ChildItem -LiteralPath $validationRoot -File)
-  if ($files.Count -ne 2) {
-    throw "Expected exactly two downloaded assets, found $($files.Count)."
-  }
-  foreach ($name in $expectedNames) {
-    $matches = @($files | Where-Object Name -eq $name)
-    if ($matches.Count -ne 1 -or $matches[0].Length -le 0) {
-      throw "Missing, duplicate, or empty downloaded asset: $name"
-    }
-  }
-} finally {
-  $resolvedValidationRoot = [System.IO.Path]::GetFullPath($validationRoot)
-  $tempPrefix = $tempRoot.TrimEnd('\') + '\'
-  if (-not $resolvedValidationRoot.StartsWith(
-    $tempPrefix,
-    [System.StringComparison]::OrdinalIgnoreCase
-  )) {
-    throw "Refusing to remove validation path outside temp: $resolvedValidationRoot"
-  }
-  if (Test-Path -LiteralPath $resolvedValidationRoot) {
-    Remove-Item -LiteralPath $resolvedValidationRoot -Recurse -Force
-  }
-}
+gh release download app-v0.2.2 --dir <temporary-directory>
 ```
+
+### 6. Recover only through the supported path
+
+- **Failure before any Release exists:** fix the cause and rerun the same Actions
+  run with `gh run rerun <run-id> --failed`.
+- **Existing draft from the failed run:** inspect it first. If it is confirmed
+  unpublished and disposable, delete only that draft Release in GitHub, retain
+  the existing tag, do not request tag cleanup, then run
+  `gh run rerun <run-id> --failed`.
+- **Publish job failed after a successful windows job:** `--failed` preserves the
+  successful build job and its existing `release-assets` artifact, then reruns
+  the failed publish path. Do not request a full rerun: rebuilding would attempt
+  to upload the same fixed `upload-artifact@v4` artifact name again.
+- **Windows build job failed:** `--failed` reruns that failed job and the
+  necessary downstream publish work after the build succeeds.
+- **Existing published Release:** do not delete, replace, or reuse it. Return to
+  Task 4 with a higher version and publish from a new tag.
+- **Build source or code must change:** prepare a higher version and new tag.
+  Never rewrite, move, or recreate the protected existing tag.
+
+The workflow itself never performs existing-Release cleanup, and the recovery
+procedure never uses a full workflow rerun.

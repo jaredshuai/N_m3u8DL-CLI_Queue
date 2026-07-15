@@ -123,16 +123,23 @@ portable 目录当前应至少包含：
 
 ## GitHub Actions 约定
 
+Release 行为以 `.github/workflows/release.yml` 和
+`m3u8-queue-downloader/scripts/release-workflow.test.mjs` 为 source of truth；
+本文只记录操作入口和必须保持的不变量，避免复制 workflow 脚本造成漂移。
+
 - `Package GUI`
   - 用于测试包/日常包
   - 产出 installer + portable 目录
   - 本地 `package:sync` 默认使用它
   - 三个 workflow 均缓存 ffmpeg upstream bundle（`actions/cache`，key `ffmpeg-upstream-3.0.2`）
 - `Release`
-  - 用于 draft/prerelease/release 发布
-  - 产出 installer（NSIS）+ portable.zip 上传到 GitHub Release
-  - 由 `app-v*` tag push 自动触发
-  - prerelease 标记：仅当版本号含 `-rc`/`-beta`/`-alpha` 时为 prerelease，正式版（如 `app-v0.2.0`）不会误标
+  - workflow 触发任何 `app-v*` tag push；没有分支或手工触发入口。外部 active ruleset 保证匹配 tag 只能创建一次，之后不可更新或删除
+  - build job 只有 `contents: read`；publish job 只有 `contents: write` + `actions: read`，且不 checkout 或重新构建。`GH_TOKEN` 只绑定到实际调用 `gh` 的 step
+  - 自 `0.2.2` 起，Release 资产固定为 `m3u8-queue-downloader_<版本>_x64-setup.exe` 和 `m3u8-queue-downloader_<版本>_portable_x64.zip`
+  - 本地、draft、published 三阶段都校验两个精确资产名和字节大小；draft 校验通过且远端 tag 再次匹配 build `source_sha` 后才公开
+  - publish 使用全局 `release-publication` concurrency。没有当前 Latest 时，首个 stable 成为 Latest；更高 stable 更新 Latest；相同或更低 stable（包括旧版本 backfill）使用 `latest=false`；prerelease 永不成为 Latest
+  - existing same-tag draft：自动化不修改。人工确认其未公开且可安全丢弃后，只删除 draft Release，保留并且不移动 tag，不使用任何 cleanup tag 操作；随后通过 Actions rerun 重跑同一 tag workflow
+  - existing same-tag published：绝不删除、覆盖或复用；必须准备更高的新版本并创建新 tag
 
 ## 发版流程
 
@@ -144,12 +151,30 @@ npm run release:prepare -- <版本号>
 
 此命令自动更新四个文件的版本号：`package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock`。
 
-然后提交、打 tag、推送（推送 tag 会自动触发 Release workflow）：
+先提交版本变更并把 reviewed commits 推送到 `master`：
 
 ```bash
 git commit -am "chore(release): v<版本号>"
+git push origin master
+```
+
+在创建或推送任何新 `app-v*` tag 前，必须先确认仓库存在一条 **active** tag ruleset，并逐项核实：
+
+- target 为 `tag`
+- include pattern 为 `refs/tags/app-v*`
+- rules 同时包含 `update` 和 `deletion`
+- 没有 bypass actor 或其他 bypass 条件
+
+这是发布前的外部安全前提，不得写成或假定为已经配置；当前发布计划由 Task 6 负责实际配置并确认。
+
+该 ruleset 使匹配 `refs/tags/app-v*` 的 tag 在首次创建后不能 update 或
+delete；没有 bypass，因此不要通过移动、重推或删除 tag 来恢复发布。
+
+确认 ruleset 后再创建和推送 tag（tag push 会自动触发 Release workflow）：
+
+```bash
 git tag app-v<版本号>
-git push origin master app-v<版本号>
+git push origin app-v<版本号>
 ```
 
 ## 运行时数据排查
