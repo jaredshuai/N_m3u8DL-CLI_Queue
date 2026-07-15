@@ -9,6 +9,7 @@
 - Task 5: complete
 - Task 6: complete
 - Task 7: complete
+- Task 8: complete
 
 The executable behavior source of truth is `.github/workflows/release.yml` plus
 `m3u8-queue-downloader/scripts/release-workflow.test.mjs` and
@@ -371,7 +372,28 @@ Completed outcomes:
   the cache stores only `upstream-bundle.zip`, and every cache hit/miss verifies
   that digest and exactly `6,846,809` bytes before guarded replacement of the
   extraction directory.
-- No Release workflow or tag was triggered. Read-only `Package GUI` probes were
-  run only to verify token permissions and the configured policy secret. The
-  published `app-v0.2.2` tag remains at its original release commit and is not
-  moved to Task 7 changes.
+- Task 7 itself did not trigger a Release workflow or create a tag. Read-only
+  `Package GUI` probes were run only to verify token permissions and the
+  configured policy secret.
+
+## Task 8: Publish Hardened v0.2.3
+
+**Status:** complete
+
+Completed outcomes:
+
+- Version commit `381cb1410740f2edae71d8872a209db1e7e159b2` updated exactly the five
+  release version files to `0.2.3` and passed frontend, Svelte, Vite, Rust,
+  actionlint, and diff checks before tagging.
+- The mechanical pre-tag gate passed against clean `master == origin/master`,
+  ruleset `18966944`, enabled Immutable Releases, and absent local/remote
+  `app-v0.2.3` refs before creating the SHA-bound tag.
+- Release workflow run `29404677585` completed successfully. The published
+  stable Release is non-draft, non-prerelease, immutable, and current Latest.
+- Installer `m3u8-queue-downloader_0.2.3_x64-setup.exe` is `8,513,342` bytes
+  with SHA256 `d546ad9286bc7ab3426c66a036a99b59a1f3b1bf72b3c8b74f95beafe45a5370`.
+- Portable `m3u8-queue-downloader_0.2.3_portable_x64.zip` is `16,743,818`
+  bytes with SHA256
+  `c922ac2fdba8a4ba513e72b018e812211587ccd63887745ff119bcf9b5b54469`.
+  Independent download inspection confirmed the application executable,
+  bundled ffmpeg, and `N_m3u8DL-CLI_v3.0.2.exe` are present.

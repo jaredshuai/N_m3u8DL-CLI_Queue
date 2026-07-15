@@ -12,16 +12,17 @@ operator recovery rules without duplicating the workflow's PowerShell blocks.
 
 ## Deployed State
 
-- Public Latest Release: `app-v0.2.2`
-- Release URL: `https://github.com/jaredshuai/N_m3u8DL-CLI_Queue/releases/tag/app-v0.2.2`
-- Successful Release workflow run: `29387505665`
+- Public Latest Release: `app-v0.2.3`
+- Release URL: `https://github.com/jaredshuai/N_m3u8DL-CLI_Queue/releases/tag/app-v0.2.3`
+- Successful Release workflow run: `29404677585`
+- Release source: `381cb1410740f2edae71d8872a209db1e7e159b2`
 - Active tag ruleset: `18966944`
-- Repository Immutable Releases: enabled after `app-v0.2.2` was published
+- Repository Immutable Releases: enabled; `app-v0.2.3` verified immutable
 
-Because repository immutability was enabled after publication, the existing
-`app-v0.2.2` Release remains mutable. It is not deleted, replaced, or
-retroactively repaired. The hardened workflow applies to future tags and
-requires every newly published Release to report `isImmutable=true`.
+The hardened workflow published `app-v0.2.3` with `isImmutable=true`, exact
+asset sizes, and matching remote/local SHA256 digests. Because repository
+immutability was enabled after `app-v0.2.2` was published, that historical
+Release remains mutable. It is not deleted, replaced, or retroactively repaired.
 
 ## Scope
 

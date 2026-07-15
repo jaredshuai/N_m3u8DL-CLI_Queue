@@ -108,16 +108,19 @@ node scripts/prepare-release.mjs package-sync --run-id <已成功的_actions_run
 
 ## 当前发布状态
 
-- 公开 Latest Release 已完成：`app-v0.2.2`
-  - Release：`https://github.com/jaredshuai/N_m3u8DL-CLI_Queue/releases/tag/app-v0.2.2`
-  - 成功 workflow run：`29387505665`
+- 公开 Latest Release 已完成：`app-v0.2.3`
+  - Release：`https://github.com/jaredshuai/N_m3u8DL-CLI_Queue/releases/tag/app-v0.2.3`
+  - 成功 workflow run：`29404677585`
+  - tag commit：`381cb1410740f2edae71d8872a209db1e7e159b2`
+  - 安装包：`8,513,342` bytes，SHA256 `d546ad9286bc7ab3426c66a036a99b59a1f3b1bf72b3c8b74f95beafe45a5370`
+  - portable：`16,743,818` bytes，SHA256 `c922ac2fdba8a4ba513e72b018e812211587ccd63887745ff119bcf9b5b54469`
 - tag ruleset `18966944` 已 active：target `tag`、include `refs/tags/app-v*`、同时禁止 update/deletion、无 bypass。
-- 仓库级 Immutable Releases 已启用，但启用时间晚于 `app-v0.2.2` 发布，因此现有 `0.2.2` Release 仍是 mutable；不要删除、替换或尝试追溯修正它。未来 Release 必须由 workflow 验证 `isImmutable=true`。
+- 仓库级 Immutable Releases 已启用；`app-v0.2.3` 已由 workflow 和公开 API 验证 `isImmutable=true`。启用时间早于本次发布、晚于 `app-v0.2.2`，因此历史 `0.2.2` Release 仍是 mutable；不要删除、替换或尝试追溯修正它。
 - repository Actions secret `RELEASE_POLICY_TOKEN` 已配置，并由只读 probe run `29402129399` 验证可读取完整 ruleset 与 Immutable Releases 状态。它必须保持为仅限本仓库的 fine-grained token，只授予 `Contents: read` 与 `Administration: read`；不要替换为个人 broad/classic PAT。该 secret 只绑定到两个只读 safety step。
 
 ## 当前约定产物
 
-这里记录的是本地 `Package GUI` 同步目录，不是公开 Latest Release。Task 7 未执行新的 `package:sync`，所以本地同步产物仍为 `0.2.1`：
+这里记录的是本地 `Package GUI` 同步目录，不是公开 Latest Release。本次 `app-v0.2.3` 发布未执行新的 `package:sync`，所以本地同步产物仍为 `0.2.1`：
 
 同步回本地 `artifacts/` 后，应看到：
 
