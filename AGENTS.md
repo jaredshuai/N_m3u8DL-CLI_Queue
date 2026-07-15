@@ -150,7 +150,7 @@ Release 与 `release:prepare` 行为以 `.github/workflows/release.yml`、
   - Release workflow 只缓存 ffmpeg upstream zip，content-addressed key 固定绑定其 SHA256；无论 cache hit/miss，都必须先校验 ZIP 恰好 `6,846,809` bytes 和 SHA256 `5005b9d49fad0a4fb2c34eb60fbb25739d00d01651255258c2f408c7ee8dc7be`，再清理受 workspace-child guard 约束的固定解压目录并展开
   - 自 `0.2.2` 起，Release 资产固定为 `m3u8-queue-downloader_<版本>_x64-setup.exe` 和 `m3u8-queue-downloader_<版本>_portable_x64.zip`
   - 本地、draft、published 三阶段都校验恰好两个精确资产名和字节大小；draft 与 published 还要求远端 `assets.digest` 精确匹配本地 SHA256
-  - draft 校验通过且远端 tag 再次匹配 build `source_sha` 后才公开；published 校验还必须确认 `isImmutable=true`
+  - 创建 draft 前、公开前都必须独立确认：远端 tag 匹配 build `source_sha`、该 commit 可从远端 `master` 到达、唯一命名 ruleset 的完整配置仍满足约束、repository Immutable Releases 仍为 enabled；published 校验还必须确认 `isImmutable=true`
   - publish 使用全局 `release-publication` concurrency。没有当前 Latest 时，首个 stable 成为 Latest；更高 stable 更新 Latest；相同或更低 stable（包括旧版本 backfill）使用 `latest=false`；prerelease 永不成为 Latest
   - existing same-tag draft：自动化读取状态后立即失败且不修改。人工确认其未公开且可安全丢弃后，只删除 draft Release 对象，保留并且不 cleanup/delete/move tag；随后运行 `gh run rerun <run-id> --failed`
   - existing same-tag published：绝不删除、覆盖或复用；必须准备更高的新版本并创建新 tag
@@ -186,11 +186,11 @@ node scripts/prepare-release.mjs pre-tag <版本号>
 该 ruleset 使匹配 `refs/tags/app-v*` 的 tag 在首次创建后不能 update 或
 delete；没有 bypass，因此不要通过移动、重推或删除 tag 来恢复发布。
 
-`pre-tag` gate 成功后，最后才创建和单独推送 tag（tag push 会自动触发 Release workflow）：
+`pre-tag` gate 成功后会打印绑定到已验证 `HEAD == origin/master` SHA 的精确命令。必须使用该 SHA 创建并单独推送 tag（tag push 会自动触发 Release workflow）：
 
 ```bash
-git tag app-v<版本号>
-git push origin app-v<版本号>
+git tag app-v<版本号> <pre-tag 输出的已验证 SHA>
+git push origin refs/tags/app-v<版本号>
 ```
 
 ## 运行时数据排查

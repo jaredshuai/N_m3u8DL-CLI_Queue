@@ -753,9 +753,7 @@ test('ReleasePrepareReporter writes usage and release instructions', () => {
     'Run the mechanical pre-tag gate:',
     '  node scripts/prepare-release.mjs pre-tag 0.2.0',
     '',
-    'Only after the pre-tag gate passes:',
-    '  git tag app-v0.2.0',
-    '  git push origin app-v0.2.0',
+    'The pre-tag gate prints SHA-bound tag commands after it passes.',
   ]);
 });
 
@@ -797,6 +795,10 @@ test('ReleasePrepareReporter writes pre-tag usage, failure, and verified state',
     '  local and remote tag: absent',
     '  ruleset: Protect app-v release tags (18966944)',
     '  repository Immutable Releases: enabled',
+    '',
+    'Create the tag at the verified commit:',
+    `  git tag app-v0.2.3 ${'a'.repeat(40)}`,
+    '  git push origin refs/tags/app-v0.2.3',
   ]);
 });
 

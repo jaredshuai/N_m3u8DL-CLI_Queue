@@ -49,8 +49,10 @@ or previously observed repository state is not sufficient.
 
 The workflow triggers on any push of a matching tag. The external ruleset makes
 that tag a create-once reference: after creation it cannot be moved, updated, or
-deleted. The workflow verifies tag identity, but the ruleset is the control that
-prevents a race between verification points.
+deleted. Before draft creation and again before publication, the workflow
+verifies tag identity, remote `master` ancestry, the complete ruleset shape, and
+repository Immutable Releases. The ruleset remains the control that prevents a
+race between verification points.
 
 ## Mechanical Pre-Tag Gate
 
@@ -80,9 +82,11 @@ this order:
 8. `GET repos/jaredshuai/N_m3u8DL-CLI_Queue/immutable-releases` with GitHub API
    version `2026-03-10` reports `enabled=true`.
 
-Only a successful gate permits the separate `git tag` and tag push commands.
-The Release workflow still performs final remote tag-source and published
-`isImmutable` checks because pre-tag validation cannot replace publication-time
+Only a successful gate permits tag creation. Its success output prints a
+`git tag app-v<version> <verified-head-sha>` command, so tag creation is bound to
+the commit that passed `HEAD == origin/master`, followed by an explicit
+`refs/tags/app-v<version>` push. The Release workflow still performs independent
+remote checks because pre-tag validation cannot replace publication-time
 verification.
 
 ## Workflow Boundaries
@@ -138,11 +142,13 @@ Its required order is:
 2. Verify the downloaded local assets.
 3. Determine prerelease and Latest policy.
 4. Resolve and peel the remote release tag to a commit; compare it with
-   `source_sha`.
+   `source_sha`, require it to be reachable from remote `master`, then require
+   the exact active no-bypass tag ruleset and Immutable Releases setting.
 5. Refuse to continue if any same-tag Release already exists.
 6. Create one draft Release with both assets.
 7. Verify the draft Release and its assets.
-8. Resolve and peel the remote tag again; compare it with `source_sha`.
+8. Repeat the tag, remote `master` ancestry, complete ruleset, and Immutable
+   Releases checks.
 9. Publish the verified draft.
 10. Verify the published Release, asset sizes and SHA256 digests, immutable
     state, prerelease state, and Latest result.
@@ -154,8 +160,9 @@ repository token.
 
 The publish job reads the remote tag through the GitHub API and recursively
 peels annotated tags until it reaches a commit. Cycles, excessive tag depth,
-unexpected object types, malformed SHAs, API failures, and a commit different
-from `source_sha` all fail closed.
+unexpected object types, malformed SHAs, API failures, a commit different from
+`source_sha`, a commit outside remote `master`, ruleset drift, and disabled
+Immutable Releases all fail closed.
 
 The check runs twice: once immediately before draft creation and once after
 draft asset verification immediately before publication.

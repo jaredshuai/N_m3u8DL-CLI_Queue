@@ -728,6 +728,45 @@ test('release tag source is peeled to the build commit before create and before 
   }
 });
 
+test('release safety prerequisites are enforced before create and before publish', () => {
+  const stage = requireStep(publishSteps, 'Stage draft GitHub Release');
+  const publish = requireStep(publishSteps, 'Publish verified GitHub Release');
+
+  for (const name of ['Verify release tag source', 'Reverify release tag source']) {
+    const step = requireStep(publishSteps, name);
+    const run = normalizePowerShell(extractRunBlock(step.text) ?? '');
+
+    assert.match(
+      run,
+      /gh api --method GET -H 'X-GitHub-Api-Version: 2026-03-10' \$endpoint/,
+    );
+    assert.match(run, /git\/ref\/heads\/master/);
+    assert.match(
+      run,
+      /repos\/\$env:RELEASE_REPO\/compare\/\$tagCommit\.\.\.\$masterSha/,
+    );
+    assert.match(run, /\$comparison\.merge_base_commit\.sha\s+-ine\s+\$tagCommit/);
+    assert.match(run, /repos\/\$env:RELEASE_REPO\/rulesets/);
+    assert.match(run, /Protect app-v release tags/);
+    assert.match(run, /\$matchingRulesets\.Count\s+-ne\s+1/);
+    assert.match(run, /\$ruleset\.enforcement\s+-cne\s+'active'/);
+    assert.match(run, /\$ruleset\.target\s+-cne\s+'tag'/);
+    assert.match(run, /refs\/tags\/app-v\*/);
+    assert.match(run, /\$exclude\.Count\s+-ne\s+0/);
+    assert.match(run, /\$ruleTypes\s+-cne\s+'deletion,update'/);
+    assert.match(run, /\$ruleset\.bypass_actors\.Count\s+-ne\s+0/);
+    assert.match(run, /\$ruleset\.current_user_can_bypass\s+-cne\s+'never'/);
+    assert.match(run, /repos\/\$env:RELEASE_REPO\/immutable-releases/);
+    assert.match(run, /\$immutableReleases\.enabled\s+-ne\s+\$true/);
+
+    if (name.startsWith('Reverify')) {
+      assert.ok(step.start < publish.start, 'safety prerequisites must be reverified before publish');
+    } else {
+      assert.ok(step.start < stage.start, 'safety prerequisites must be verified before draft create');
+    }
+  }
+});
+
 function assertLocalAssetVerification(run, stepName) {
   assert.match(run, /\$env:INSTALLER_ASSET/);
   assert.match(run, /\$env:PORTABLE_ASSET/);

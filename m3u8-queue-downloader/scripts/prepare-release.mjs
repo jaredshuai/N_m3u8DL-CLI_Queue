@@ -317,6 +317,10 @@ export class ReleasePrepareReporter {
     this.log('  local and remote tag: absent');
     this.log(`  ruleset: ${result.rulesetName} (${result.rulesetId})`);
     this.log('  repository Immutable Releases: enabled');
+    this.log('');
+    this.log('Create the tag at the verified commit:');
+    this.log(`  git tag ${result.tag} ${result.headSha}`);
+    this.log(`  git push origin refs/tags/${result.tag}`);
   }
 
   versionFilesUpdated(files, version) {
@@ -336,9 +340,7 @@ export class ReleasePrepareReporter {
     this.log('Run the mechanical pre-tag gate:');
     this.log(`  node scripts/prepare-release.mjs pre-tag ${version}`);
     this.log('');
-    this.log('Only after the pre-tag gate passes:');
-    this.log(`  git tag app-v${version}`);
-    this.log(`  git push origin app-v${version}`);
+    this.log('The pre-tag gate prints SHA-bound tag commands after it passes.');
   }
 }
 

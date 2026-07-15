@@ -337,8 +337,14 @@ Completed outcomes:
   operator gate. It requires clean `master` at `origin/master`, validates all
   five version files and tag absence, reads the exact named no-bypass ruleset,
   and requires repository Immutable Releases through API version `2026-03-10`.
+  On success it prints tag commands bound to the verified `origin/master` SHA;
+  the earlier `release:prepare` output no longer prints an unbound tag command.
   Unit tests inject fake git/gh dependencies; Task 7 does not run the real gate
   from its feature branch.
+- Before draft creation and again before publication, the Release workflow
+  independently requires tag/source equality, remote `master` ancestry, the
+  complete named no-bypass ruleset, and enabled repository Immutable Releases.
+  A direct tag push therefore cannot bypass the local operator gate.
 - Existing same-tag draft and published Releases produce opposite, explicit
   recovery instructions after a read-only state query; automation always throws
   without mutation.

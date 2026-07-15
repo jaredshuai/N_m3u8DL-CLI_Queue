@@ -464,7 +464,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           function Invoke-GitHubJson([string]$endpoint) {
-            $jsonLines = & gh api $endpoint 2>&1
+            $jsonLines = & gh api --method GET -H 'X-GitHub-Api-Version: 2026-03-10' $endpoint 2>&1
             $apiExit = $LASTEXITCODE
             $jsonText = @($jsonLines) -join "`n"
             if ($apiExit -ne 0) {
@@ -514,10 +514,92 @@ jobs:
             throw 'Release tag peel is too deep.'
           }
 
+          function Assert-ReleaseCommitOnMaster([string]$tagCommit) {
+            $masterReference = Invoke-GitHubJson "repos/$env:RELEASE_REPO/git/ref/heads/master"
+            $masterObject = $masterReference.object
+            $masterSha = [string]$masterObject.sha
+            if (
+              [string]$masterObject.type -cne 'commit' -or
+              $masterSha -cnotmatch '\A[0-9A-Fa-f]{40}\z'
+            ) {
+              throw "Remote master reference is invalid: type=$($masterObject.type), sha=$masterSha"
+            }
+
+            $comparison = Invoke-GitHubJson "repos/$env:RELEASE_REPO/compare/$tagCommit...$masterSha"
+            $mergeBaseSha = [string]$comparison.merge_base_commit.sha
+            if ($mergeBaseSha -cnotmatch '\A[0-9A-Fa-f]{40}\z') {
+              throw "GitHub comparison returned an invalid merge-base SHA: $mergeBaseSha"
+            }
+            if ($comparison.merge_base_commit.sha -ine $tagCommit) {
+              throw "Release source $tagCommit is not reachable from remote master $masterSha. Merge and push the reviewed commit to master before creating the tag."
+            }
+          }
+
+          function Assert-ReleaseTagRuleset {
+            $rulesetName = 'Protect app-v release tags'
+            $rulesets = @(Invoke-GitHubJson "repos/$env:RELEASE_REPO/rulesets")
+            $matchingRulesets = @(
+              $rulesets | Where-Object { [string]$_.name -ceq $rulesetName }
+            )
+            if ($matchingRulesets.Count -ne 1) {
+              throw "Expected exactly one repository ruleset named '$rulesetName'; found $($matchingRulesets.Count)."
+            }
+
+            $rulesetId = [string]$matchingRulesets[0].id
+            if ($rulesetId -cnotmatch '\A[1-9][0-9]*\z') {
+              throw "Release tag ruleset has an invalid id: $rulesetId"
+            }
+            $ruleset = Invoke-GitHubJson "repos/$env:RELEASE_REPO/rulesets/$rulesetId"
+            if ([string]$ruleset.name -cne $rulesetName) {
+              throw "Release tag ruleset name changed unexpectedly: $($ruleset.name)"
+            }
+            if ($ruleset.enforcement -cne 'active') {
+              throw "Release tag ruleset enforcement must be active; got $($ruleset.enforcement)."
+            }
+            if ($ruleset.target -cne 'tag') {
+              throw "Release tag ruleset target must be tag; got $($ruleset.target)."
+            }
+
+            $include = @($ruleset.conditions.ref_name.include)
+            if ($include.Count -ne 1 -or [string]$include[0] -cne 'refs/tags/app-v*') {
+              throw "Release tag ruleset include must be exactly refs/tags/app-v*; got $($include | ConvertTo-Json -Compress)."
+            }
+            $exclude = @($ruleset.conditions.ref_name.exclude)
+            if ($exclude.Count -ne 0) {
+              throw "Release tag ruleset exclude must be empty; got $($exclude | ConvertTo-Json -Compress)."
+            }
+
+            $ruleTypes = @(
+              $ruleset.rules | ForEach-Object { [string]$_.type } | Sort-Object -CaseSensitive
+            ) -join ','
+            if ($ruleTypes -cne 'deletion,update') {
+              throw "Release tag ruleset must contain exactly deletion and update rules; got $ruleTypes."
+            }
+            if (
+              $null -eq $ruleset.PSObject.Properties['bypass_actors'] -or
+              $ruleset.bypass_actors.Count -ne 0
+            ) {
+              throw 'Release tag ruleset bypass actors must be present and empty.'
+            }
+            if ($ruleset.current_user_can_bypass -cne 'never') {
+              throw "Release tag ruleset current_user_can_bypass must be never; got $($ruleset.current_user_can_bypass)."
+            }
+          }
+
+          function Assert-ImmutableReleases {
+            $immutableReleases = Invoke-GitHubJson "repos/$env:RELEASE_REPO/immutable-releases"
+            if ($immutableReleases.enabled -ne $true) {
+              throw 'Repository Immutable Releases must be enabled before staging a Release.'
+            }
+          }
+
           $tagCommit = Resolve-ReleaseTagCommit
           if ($tagCommit -ine $env:SOURCE_SHA) {
             throw "Release tag $env:RELEASE_TAG resolves to $tagCommit, not build source $env:SOURCE_SHA. The external app-v* update/delete ruleset must be configured before publishing."
           }
+          Assert-ReleaseCommitOnMaster -tagCommit $tagCommit
+          Assert-ReleaseTagRuleset
+          Assert-ImmutableReleases
 
       - name: Stage draft GitHub Release
         env:
@@ -676,7 +758,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           function Invoke-GitHubJson([string]$endpoint) {
-            $jsonLines = & gh api $endpoint 2>&1
+            $jsonLines = & gh api --method GET -H 'X-GitHub-Api-Version: 2026-03-10' $endpoint 2>&1
             $apiExit = $LASTEXITCODE
             $jsonText = @($jsonLines) -join "`n"
             if ($apiExit -ne 0) {
@@ -726,10 +808,92 @@ jobs:
             throw 'Release tag peel is too deep.'
           }
 
+          function Assert-ReleaseCommitOnMaster([string]$tagCommit) {
+            $masterReference = Invoke-GitHubJson "repos/$env:RELEASE_REPO/git/ref/heads/master"
+            $masterObject = $masterReference.object
+            $masterSha = [string]$masterObject.sha
+            if (
+              [string]$masterObject.type -cne 'commit' -or
+              $masterSha -cnotmatch '\A[0-9A-Fa-f]{40}\z'
+            ) {
+              throw "Remote master reference is invalid: type=$($masterObject.type), sha=$masterSha"
+            }
+
+            $comparison = Invoke-GitHubJson "repos/$env:RELEASE_REPO/compare/$tagCommit...$masterSha"
+            $mergeBaseSha = [string]$comparison.merge_base_commit.sha
+            if ($mergeBaseSha -cnotmatch '\A[0-9A-Fa-f]{40}\z') {
+              throw "GitHub comparison returned an invalid merge-base SHA: $mergeBaseSha"
+            }
+            if ($comparison.merge_base_commit.sha -ine $tagCommit) {
+              throw "Release source $tagCommit is not reachable from remote master $masterSha. Merge and push the reviewed commit to master before creating the tag."
+            }
+          }
+
+          function Assert-ReleaseTagRuleset {
+            $rulesetName = 'Protect app-v release tags'
+            $rulesets = @(Invoke-GitHubJson "repos/$env:RELEASE_REPO/rulesets")
+            $matchingRulesets = @(
+              $rulesets | Where-Object { [string]$_.name -ceq $rulesetName }
+            )
+            if ($matchingRulesets.Count -ne 1) {
+              throw "Expected exactly one repository ruleset named '$rulesetName'; found $($matchingRulesets.Count)."
+            }
+
+            $rulesetId = [string]$matchingRulesets[0].id
+            if ($rulesetId -cnotmatch '\A[1-9][0-9]*\z') {
+              throw "Release tag ruleset has an invalid id: $rulesetId"
+            }
+            $ruleset = Invoke-GitHubJson "repos/$env:RELEASE_REPO/rulesets/$rulesetId"
+            if ([string]$ruleset.name -cne $rulesetName) {
+              throw "Release tag ruleset name changed unexpectedly: $($ruleset.name)"
+            }
+            if ($ruleset.enforcement -cne 'active') {
+              throw "Release tag ruleset enforcement must be active; got $($ruleset.enforcement)."
+            }
+            if ($ruleset.target -cne 'tag') {
+              throw "Release tag ruleset target must be tag; got $($ruleset.target)."
+            }
+
+            $include = @($ruleset.conditions.ref_name.include)
+            if ($include.Count -ne 1 -or [string]$include[0] -cne 'refs/tags/app-v*') {
+              throw "Release tag ruleset include must be exactly refs/tags/app-v*; got $($include | ConvertTo-Json -Compress)."
+            }
+            $exclude = @($ruleset.conditions.ref_name.exclude)
+            if ($exclude.Count -ne 0) {
+              throw "Release tag ruleset exclude must be empty; got $($exclude | ConvertTo-Json -Compress)."
+            }
+
+            $ruleTypes = @(
+              $ruleset.rules | ForEach-Object { [string]$_.type } | Sort-Object -CaseSensitive
+            ) -join ','
+            if ($ruleTypes -cne 'deletion,update') {
+              throw "Release tag ruleset must contain exactly deletion and update rules; got $ruleTypes."
+            }
+            if (
+              $null -eq $ruleset.PSObject.Properties['bypass_actors'] -or
+              $ruleset.bypass_actors.Count -ne 0
+            ) {
+              throw 'Release tag ruleset bypass actors must be present and empty.'
+            }
+            if ($ruleset.current_user_can_bypass -cne 'never') {
+              throw "Release tag ruleset current_user_can_bypass must be never; got $($ruleset.current_user_can_bypass)."
+            }
+          }
+
+          function Assert-ImmutableReleases {
+            $immutableReleases = Invoke-GitHubJson "repos/$env:RELEASE_REPO/immutable-releases"
+            if ($immutableReleases.enabled -ne $true) {
+              throw 'Repository Immutable Releases must be enabled before publishing a Release.'
+            }
+          }
+
           $tagCommit = Resolve-ReleaseTagCommit
           if ($tagCommit -ine $env:SOURCE_SHA) {
             throw "Release tag $env:RELEASE_TAG resolves to $tagCommit, not build source $env:SOURCE_SHA. The external app-v* update/delete ruleset must be configured before publishing."
           }
+          Assert-ReleaseCommitOnMaster -tagCommit $tagCommit
+          Assert-ReleaseTagRuleset
+          Assert-ImmutableReleases
 
       - name: Publish verified GitHub Release
         env:
