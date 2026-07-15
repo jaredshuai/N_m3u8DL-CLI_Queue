@@ -113,6 +113,7 @@ node scripts/prepare-release.mjs package-sync --run-id <已成功的_actions_run
   - 成功 workflow run：`29387505665`
 - tag ruleset `18966944` 已 active：target `tag`、include `refs/tags/app-v*`、同时禁止 update/deletion、无 bypass。
 - 仓库级 Immutable Releases 已启用，但启用时间晚于 `app-v0.2.2` 发布，因此现有 `0.2.2` Release 仍是 mutable；不要删除、替换或尝试追溯修正它。未来 Release 必须由 workflow 验证 `isImmutable=true`。
+- 未来 Release 还要求 repository Actions secret `RELEASE_POLICY_TOKEN`。它必须是仅限本仓库的 fine-grained token，只授予 `Contents: read` 与 `Administration: read`；不要使用个人 broad/classic PAT。该 secret 只绑定到两个只读 safety step。
 
 ## 当前约定产物
 
@@ -145,7 +146,7 @@ Release 与 `release:prepare` 行为以 `.github/workflows/release.yml`、
   - 本地同步产物版本与公开 Release 版本相互独立；未实际运行 `package:sync` 时不要更新“当前约定产物”版本
 - `Release`
   - workflow 触发任何 `app-v*` tag push；没有分支或手工触发入口。外部 active ruleset 保证匹配 tag 只能创建一次，之后不可更新或删除
-  - build job 只有 `contents: read`；publish job 只有 `contents: write` + `actions: read`，且不 checkout 或重新构建。`GH_TOKEN` 只绑定到实际调用 `gh` 的 step
+  - build job 只有 `contents: read`；publish job 只有 `contents: write` + `actions: read`，且不 checkout 或重新构建。普通发布步骤使用短期 `GITHUB_TOKEN`；两个只读 safety step 使用 `RELEASE_POLICY_TOKEN`，因为 Actions `GITHUB_TOKEN` 无法读取完整 ruleset/Immutable 管理状态
   - 所有 `uses:` 都必须固定到批准的 40 位 commit SHA，并保留版本注释；Tauri action 仍只负责 build，不接收发布参数或 token
   - Release workflow 只缓存 ffmpeg upstream zip，content-addressed key 固定绑定其 SHA256；无论 cache hit/miss，都必须先校验 ZIP 恰好 `6,846,809` bytes 和 SHA256 `5005b9d49fad0a4fb2c34eb60fbb25739d00d01651255258c2f408c7ee8dc7be`，再清理受 workspace-child guard 约束的固定解压目录并展开
   - 自 `0.2.2` 起，Release 资产固定为 `m3u8-queue-downloader_<版本>_x64-setup.exe` 和 `m3u8-queue-downloader_<版本>_portable_x64.zip`
@@ -182,6 +183,8 @@ node scripts/prepare-release.mjs pre-tag <版本号>
 ```
 
 此命令不更新版本文件、不创建 tag。它只能在 clean `master` 上通过，并机械执行：`git fetch origin master`、确认 `HEAD == origin/master`、确认五个版本文件均等于请求版本、确认本地/远端 tag 都不存在、通过操作者本地 `gh` 凭据确认唯一的 `Protect app-v release tags` ruleset 完整满足 active/tag/精确 include/空 exclude/update+deletion/无 bypass，以及确认 repository Immutable Releases 为 enabled。任一步失败都必须先修复，不得继续创建 tag。
+
+创建 tag 前还必须确认 repository secret `RELEASE_POLICY_TOKEN` 已按上述最小权限配置；缺失时 workflow 会在 draft 创建前明确失败。
 
 该 ruleset 使匹配 `refs/tags/app-v*` 的 tag 在首次创建后不能 update 或
 delete；没有 bypass，因此不要通过移动、重推或删除 tag 来恢复发布。

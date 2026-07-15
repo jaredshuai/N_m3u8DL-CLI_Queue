@@ -397,9 +397,15 @@ test('release metadata is validated before outputs and run scripts read expressi
 });
 
 test('GitHub token is step-scoped only where the step actually calls gh', () => {
+  const policyTokenSteps = new Set([
+    'Verify release tag source',
+    'Reverify release tag source',
+  ]);
   for (const job of [windowsJob, publishJob]) {
     const jobEnv = extractIndentedBlock(job.text, /^    env:\s*$/, 4);
-    if (jobEnv) assert.doesNotMatch(jobEnv.text, /GH_TOKEN|GITHUB_TOKEN/);
+    if (jobEnv) {
+      assert.doesNotMatch(jobEnv.text, /GH_TOKEN|GITHUB_TOKEN|RELEASE_POLICY_TOKEN/);
+    }
   }
 
   const tokenSteps = [];
@@ -407,7 +413,7 @@ test('GitHub token is step-scoped only where the step actually calls gh', () => 
     const run = extractRunBlock(step.text) ?? '';
     const env = extractIndentedBlock(step.text, /^        env:\s*$/, 8);
     const tokenBindings = env?.text.match(
-      /^ {10}GH_TOKEN:\s*\$\{\{ secrets\.GITHUB_TOKEN \}\}\s*$/gm,
+      /^ {10}GH_TOKEN:\s*\$\{\{ secrets\.(?:GITHUB_TOKEN|RELEASE_POLICY_TOKEN) \}\}\s*$/gm,
     ) ?? [];
     const callsGh = run.split('\n').some(isGhCommandLine);
     assert.equal(
@@ -415,7 +421,17 @@ test('GitHub token is step-scoped only where the step actually calls gh', () => 
       callsGh ? 1 : 0,
       `${step.name} must have one step token exactly when its run block calls gh`,
     );
-    if (tokenBindings.length === 1) tokenSteps.push(step.name);
+    if (tokenBindings.length === 1) {
+      const expectedSecret = policyTokenSteps.has(step.name)
+        ? 'RELEASE_POLICY_TOKEN'
+        : 'GITHUB_TOKEN';
+      assert.equal(
+        tokenBindings[0].trim(),
+        `GH_TOKEN: \${{ secrets.${expectedSecret} }}`,
+        `${step.name} must use ${expectedSecret}`,
+      );
+      tokenSteps.push(step.name);
+    }
     if (callsGh) assertNativeGhExitChecked(run, step.name);
   }
 
@@ -436,6 +452,10 @@ test('GitHub token is step-scoped only where the step actually calls gh', () => 
   );
   assert.equal((workflow.match(/^\s*GH_TOKEN:/gm) ?? []).length, tokenSteps.length);
   assert.equal((workflow.match(/^\s*GITHUB_TOKEN:/gm) ?? []).length, 0);
+  assert.equal(
+    (workflow.match(/secrets\.RELEASE_POLICY_TOKEN/g) ?? []).length,
+    policyTokenSteps.size,
+  );
 });
 
 test('release lifecycle never mutates an existing release and publishes only after verification', () => {
@@ -740,6 +760,8 @@ test('release safety prerequisites are enforced before create and before publish
       run,
       /gh api --method GET -H 'X-GitHub-Api-Version: 2026-03-10' \$endpoint/,
     );
+    assert.match(run, /\[string\]::IsNullOrWhiteSpace\(\$env:GH_TOKEN\)/);
+    assert.match(run, /RELEASE_POLICY_TOKEN secret is not configured/);
     assert.match(run, /git\/ref\/heads\/master/);
     assert.match(
       run,

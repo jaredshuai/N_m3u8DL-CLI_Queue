@@ -458,10 +458,13 @@ jobs:
 
       - name: Verify release tag source
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_POLICY_TOKEN }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw 'RELEASE_POLICY_TOKEN secret is not configured.'
+          }
 
           function Invoke-GitHubJson([string]$endpoint) {
             $jsonLines = & gh api --method GET -H 'X-GitHub-Api-Version: 2026-03-10' $endpoint 2>&1
@@ -752,10 +755,13 @@ jobs:
 
       - name: Reverify release tag source
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_POLICY_TOKEN }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw 'RELEASE_POLICY_TOKEN secret is not configured.'
+          }
 
           function Invoke-GitHubJson([string]$endpoint) {
             $jsonLines = & gh api --method GET -H 'X-GitHub-Api-Version: 2026-03-10' $endpoint 2>&1

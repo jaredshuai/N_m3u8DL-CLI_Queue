@@ -46,7 +46,9 @@ The workflow order guarded by those tests is:
    publish, then verify the public Release including `isImmutable=true`.
 
 The publish job is serialized by `release-publication`. Repository credentials
-are available only to individual steps that invoke `gh`.
+are available only to individual steps that invoke `gh`; the two read-only
+policy checks use a separate repository-scoped `RELEASE_POLICY_TOKEN` with
+`Contents: read` and `Administration: read`.
 
 ## Task 1: Release Workflow Contract
 
@@ -345,6 +347,11 @@ Completed outcomes:
   independently requires tag/source equality, remote `master` ancestry, the
   complete named no-bypass ruleset, and enabled repository Immutable Releases.
   A direct tag push therefore cannot bypass the local operator gate.
+- A real Actions probe run (`29399211296`) confirmed that the ordinary
+  `GITHUB_TOKEN` cannot expose the complete policy state. The two safety steps
+  therefore require repository secret `RELEASE_POLICY_TOKEN`, scoped only to
+  this repository with `Contents: read` and `Administration: read`; all Release
+  mutations continue to use the short-lived `GITHUB_TOKEN`.
 - Existing same-tag draft and published Releases produce opposite, explicit
   recovery instructions after a read-only state query; automation always throws
   without mutation.
@@ -362,5 +369,6 @@ Completed outcomes:
   the cache stores only `upstream-bundle.zip`, and every cache hit/miss verifies
   that digest and exactly `6,846,809` bytes before guarded replacement of the
   extraction directory.
-- No workflow, Release, or tag was triggered. The published `app-v0.2.2` tag
-  remains at its original release commit and is not moved to Task 7 changes.
+- No Release workflow or tag was triggered. A read-only `Package GUI` probe was
+  run only to verify token permissions. The published `app-v0.2.2` tag remains
+  at its original release commit and is not moved to Task 7 changes.

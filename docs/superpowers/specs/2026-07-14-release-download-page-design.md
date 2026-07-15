@@ -136,6 +136,13 @@ The `publish` job depends on the build job and has only `contents: write` plus
 steps are serialized repository-wide by the `release-publication` concurrency
 group with in-progress publication runs left intact.
 
+Ordinary publish steps use the short-lived repository `GITHUB_TOKEN`. The two
+read-only safety steps instead require repository secret `RELEASE_POLICY_TOKEN`,
+a repository-scoped fine-grained token with only `Contents: read` and
+`Administration: read`. A real Actions probe (run `29399211296`) confirmed that
+the normal `GITHUB_TOKEN` cannot read the complete ruleset/Immutable management
+state. Missing policy credentials fail before any draft Release is created.
+
 Its required order is:
 
 1. Download the build artifact.
@@ -154,7 +161,8 @@ Its required order is:
     state, prerelease state, and Latest result.
 
 `GH_TOKEN` is scoped only to steps that invoke `gh`. Non-`gh` steps receive no
-repository token.
+repository token, and the policy token is never exposed to Release mutation or
+asset-transfer steps.
 
 ## Tag Source Integrity
 
