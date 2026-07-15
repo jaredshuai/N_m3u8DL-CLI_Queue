@@ -351,7 +351,9 @@ Completed outcomes:
   `GITHUB_TOKEN` cannot expose the complete policy state. The two safety steps
   therefore require repository secret `RELEASE_POLICY_TOKEN`, scoped only to
   this repository with `Contents: read` and `Administration: read`; all Release
-  mutations continue to use the short-lived `GITHUB_TOKEN`.
+  mutations continue to use the short-lived `GITHUB_TOKEN`. After the secret
+  was configured, read-only probe run `29402129399` passed the full ruleset and
+  Immutable Releases checks with the Windows package job skipped.
 - Existing same-tag draft and published Releases produce opposite, explicit
   recovery instructions after a read-only state query; automation always throws
   without mutation.
@@ -369,6 +371,7 @@ Completed outcomes:
   the cache stores only `upstream-bundle.zip`, and every cache hit/miss verifies
   that digest and exactly `6,846,809` bytes before guarded replacement of the
   extraction directory.
-- No Release workflow or tag was triggered. A read-only `Package GUI` probe was
-  run only to verify token permissions. The published `app-v0.2.2` tag remains
-  at its original release commit and is not moved to Task 7 changes.
+- No Release workflow or tag was triggered. Read-only `Package GUI` probes were
+  run only to verify token permissions and the configured policy secret. The
+  published `app-v0.2.2` tag remains at its original release commit and is not
+  moved to Task 7 changes.

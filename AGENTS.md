@@ -113,7 +113,7 @@ node scripts/prepare-release.mjs package-sync --run-id <已成功的_actions_run
   - 成功 workflow run：`29387505665`
 - tag ruleset `18966944` 已 active：target `tag`、include `refs/tags/app-v*`、同时禁止 update/deletion、无 bypass。
 - 仓库级 Immutable Releases 已启用，但启用时间晚于 `app-v0.2.2` 发布，因此现有 `0.2.2` Release 仍是 mutable；不要删除、替换或尝试追溯修正它。未来 Release 必须由 workflow 验证 `isImmutable=true`。
-- 未来 Release 还要求 repository Actions secret `RELEASE_POLICY_TOKEN`。它必须是仅限本仓库的 fine-grained token，只授予 `Contents: read` 与 `Administration: read`；不要使用个人 broad/classic PAT。该 secret 只绑定到两个只读 safety step。
+- repository Actions secret `RELEASE_POLICY_TOKEN` 已配置，并由只读 probe run `29402129399` 验证可读取完整 ruleset 与 Immutable Releases 状态。它必须保持为仅限本仓库的 fine-grained token，只授予 `Contents: read` 与 `Administration: read`；不要替换为个人 broad/classic PAT。该 secret 只绑定到两个只读 safety step。
 
 ## 当前约定产物
 

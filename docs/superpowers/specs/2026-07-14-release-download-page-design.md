@@ -141,7 +141,9 @@ read-only safety steps instead require repository secret `RELEASE_POLICY_TOKEN`,
 a repository-scoped fine-grained token with only `Contents: read` and
 `Administration: read`. A real Actions probe (run `29399211296`) confirmed that
 the normal `GITHUB_TOKEN` cannot read the complete ruleset/Immutable management
-state. Missing policy credentials fail before any draft Release is created.
+state. After configuring the fine-grained secret, read-only probe run
+`29402129399` passed the complete policy check while the package job remained
+skipped. Missing policy credentials fail before any draft Release is created.
 
 Its required order is:
 
